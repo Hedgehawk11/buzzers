@@ -176,6 +176,30 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.toggle-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.toggle-list {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.toggle-chip {
+  font-size: 0.9rem;
+  padding: 0.45rem 0.65rem;
+}
+
+.toggle-chip.is-on {
+  background: color-mix(in srgb, var(--green) 42%, transparent);
+}
+
+.toggle-chip.is-off {
+  background: color-mix(in srgb, var(--red) 42%, transparent);
+}
+
 .status-strip {
   display: flex;
   gap: 1rem;
@@ -194,6 +218,10 @@ button:disabled {
   grid-template-columns: 1.4fr 1fr;
 }
 
+.grid-single {
+  grid-template-columns: 1fr;
+}
+
 .player-card {
   min-height: 220px;
 }
@@ -209,7 +237,36 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(100px, 1fr));
 }
 
+.abxy-diamond {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(3, minmax(84px, 1fr));
+  align-items: center;
+}
+
+.abxy-diamond .pos-y {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.abxy-diamond .pos-b {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.abxy-diamond .pos-x {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.abxy-diamond .pos-a {
+  grid-column: 2;
+  grid-row: 3;
+}
+
 .abxy button,
+.abxy-diamond button,
 .six-grid button {
   font-size: 1.1rem;
   font-weight: 700;
@@ -225,7 +282,7 @@ button:disabled {
 .big-red {
   width: min(360px, 100%);
   min-height: 140px;
-  margin-top: 1rem;
+  margin: 1rem auto 0;
   border-radius: 18px;
   background: linear-gradient(160deg, #ff5b4d, var(--red));
   border-color: rgba(255, 255, 255, 0.22);
@@ -250,6 +307,10 @@ button:disabled {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   padding: 0.55rem 0.7rem;
+}
+
+.muted-card {
+  border-style: dashed;
 }
 
 .ruling-card {

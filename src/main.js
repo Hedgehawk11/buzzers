@@ -4,7 +4,11 @@ import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, se
 const DEFAULT_SETTINGS = {
   timeOpen: 20,
   lockAfterBuzz: true,
+  rebuzzAllowed: false,
+  closeBuzzersOnPointsGiven: false,
   optionCount: 4,
+  disabledOptions: [],
+  disabledPlayerIds: [],
   scoringMode: "uniform",
   uniformPoints: 1000,
   jackMultiplier: 1,
@@ -20,6 +24,8 @@ const ROUND_STATUSES = {
 const app = document.querySelector("#app");
 const NAME_KEY = "buzzer_player_name";
 let gameLaunched = false;
+let buzzNotice = "";
+let buzzNoticeTs = 0;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
@@ -27,6 +33,21 @@ const now = () => Date.now();
 function getSafeState(key, fallback) {
   const value = getState(key);
   return value === undefined || value === null ? fallback : value;
+}
+
+function setBuzzNotice(message) {
+  buzzNotice = String(message || "");
+  buzzNoticeTs = now();
+}
+
+function getRecentBuzzNotice(maxAgeMs = 4000) {
+  if (!buzzNotice) {
+    return "";
+  }
+  if (now() - buzzNoticeTs > maxAgeMs) {
+    return "";
+  }
+  return buzzNotice;
 }
 
 function currentParticipants() {
@@ -44,6 +65,30 @@ function getPlayerName(player) {
 
 function getSettings() {
   return { ...DEFAULT_SETTINGS, ...getSafeState("settings", {}) };
+}
+
+function normalizeDisabledOptions(options, optionCount) {
+  const max = Number(optionCount) || 0;
+  return [...new Set((options || []).map(Number).filter((opt) => Number.isInteger(opt) && opt >= 1 && opt <= max))];
+}
+
+function isOptionEnabled(settings, option) {
+  const disabledOptions = normalizeDisabledOptions(settings.disabledOptions, settings.optionCount);
+  return !disabledOptions.includes(Number(option));
+}
+
+function normalizeDisabledPlayerIds(disabledIds, players, controllerId) {
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId));
+  return [...new Set((disabledIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
+}
+
+function isPlayerBuzzerEnabled(settings, playerId) {
+  const controllerId = getControllerId();
+  if (playerId === controllerId) {
+    return false;
+  }
+  const disabledPlayerIds = normalizeDisabledPlayerIds(settings.disabledPlayerIds, currentParticipants(), controllerId);
+  return !disabledPlayerIds.includes(playerId);
 }
 
 function getRound() {
@@ -80,16 +125,28 @@ function isControllerPlayer() {
   return me().id === getControllerId();
 }
 
-function canBuzz(playerId) {
+function canBuzz(playerId, option) {
   const round = getRound();
   const controllerId = getControllerId();
+  const settings = getSettings();
   if (playerId === controllerId) {
     return false;
   }
   if (round.status !== ROUND_STATUSES.OPEN) {
     return false;
   }
-  return !round.buzzedPlayerIds.includes(playerId);
+  if (!settings.rebuzzAllowed && round.buzzedPlayerIds.includes(playerId)) {
+    return false;
+  }
+  if (!isPlayerBuzzerEnabled(settings, playerId)) {
+    return false;
+  }
+  if (option !== undefined) {
+    if (!isOptionEnabled(settings, option)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function getTimeLeftCs(round, settings) {
@@ -154,11 +211,35 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
     setState("pendingLogId", null, true);
     const round = getRound();
     if (round.status === ROUND_STATUSES.LOCKED) {
+      const settings = getSettings();
+      const shouldCloseOnPointsGiven =
+        Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
+      const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
+
+      if (shouldCloseOnPointsGiven || remainingCs <= 0) {
+        setState(
+          "round",
+          {
+            ...round,
+            status: ROUND_STATUSES.CLOSED,
+            winnerId: null,
+            winnerOption: null,
+            winnerName: null,
+          },
+          true,
+        );
+        return;
+      }
+
+      const reopenedAt = now();
       setState(
         "round",
         {
           ...round,
-          status: ROUND_STATUSES.CLOSED,
+          status: ROUND_STATUSES.OPEN,
+          opensAt: reopenedAt,
+          closesAt: reopenedAt + remainingCs * 10,
+          remainingCs,
           winnerId: null,
           winnerOption: null,
           winnerName: null,
@@ -196,21 +277,24 @@ function pushBuzzLogEntry(player, option, timeLeftCs) {
 function hostHandleBuzz(player, option) {
   const settings = getSettings();
   const round = getRound();
-
-  if (!canBuzz(player.id)) {
-    return { ok: false, reason: "Buzzers are not open or you already buzzed." };
-  }
+  const shouldLockAfterBuzz = settings.lockAfterBuzz && !settings.rebuzzAllowed;
 
   const validOption = Number(option);
   if (!Number.isInteger(validOption) || validOption < 1 || validOption > settings.optionCount) {
     return { ok: false, reason: "Invalid option." };
   }
 
+  if (!canBuzz(player.id, validOption)) {
+    return { ok: false, reason: "Buzzers are not open, disabled, or you already buzzed." };
+  }
+
   const timeLeftCs = getTimeLeftCs(round, settings);
   const logEntry = pushBuzzLogEntry(player, validOption, timeLeftCs);
-  const buzzedPlayerIds = [...round.buzzedPlayerIds, player.id];
+  const buzzedPlayerIds = round.buzzedPlayerIds.includes(player.id)
+    ? round.buzzedPlayerIds
+    : [...round.buzzedPlayerIds, player.id];
 
-  if (settings.lockAfterBuzz) {
+  if (shouldLockAfterBuzz) {
     setState(
       "round",
       {
@@ -238,7 +322,7 @@ function hostHandleBuzz(player, option) {
 
   return {
     ok: true,
-    message: settings.lockAfterBuzz
+    message: shouldLockAfterBuzz
       ? `${getPlayerName(player)} locked in option ${validOption}.`
       : `${getPlayerName(player)} buzzed option ${validOption}.`,
   };
@@ -249,9 +333,18 @@ async function submitBuzz(option) {
     return;
   }
   try {
-    await RPC.call("buzz", { option }, RPC.Mode.HOST);
+    const result = await RPC.call("buzz", { option }, RPC.Mode.HOST);
+    if (result?.ok === false) {
+      setBuzzNotice(result.reason || "Buzz blocked.");
+      return;
+    }
+    if (result?.message) {
+      setBuzzNotice(result.message);
+    } else {
+      setBuzzNotice("Buzz sent.");
+    }
   } catch {
-    // Ignore noisy transport errors in UI.
+    setBuzzNotice("Could not send buzz. Check connection/room.");
   }
 }
 
@@ -362,7 +455,70 @@ function setHostSetting(key, value) {
   if (key === "scoringMode" && value === "jack") {
     next.jackMultiplier = settings.jackMultiplier || 1;
   }
+  if (key === "optionCount") {
+    next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
+  }
   setState("settings", next, true);
+}
+
+function toggleBuzzerOption(option) {
+  if (!isHost()) {
+    return;
+  }
+  const settings = getSettings();
+  const opt = Number(option);
+  if (!Number.isInteger(opt) || opt < 1 || opt > settings.optionCount) {
+    return;
+  }
+
+  const disabledOptions = normalizeDisabledOptions(settings.disabledOptions, settings.optionCount);
+  const currentlyDisabled = disabledOptions.includes(opt);
+  const enabledCount = settings.optionCount - disabledOptions.length;
+
+  if (!currentlyDisabled && enabledCount <= 1) {
+    return;
+  }
+
+  const nextDisabled = currentlyDisabled
+    ? disabledOptions.filter((value) => value !== opt)
+    : [...disabledOptions, opt].sort((a, b) => a - b);
+
+  setState(
+    "settings",
+    {
+      ...settings,
+      disabledOptions: nextDisabled,
+    },
+    true,
+  );
+}
+
+function togglePlayerBuzzer(playerId) {
+  if (!isHost()) {
+    return;
+  }
+
+  const settings = getSettings();
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((player) => player.id === playerId) || playerId === controllerId) {
+    return;
+  }
+
+  const disabledPlayerIds = normalizeDisabledPlayerIds(settings.disabledPlayerIds, players, controllerId);
+  const currentlyDisabled = disabledPlayerIds.includes(playerId);
+  const nextDisabled = currentlyDisabled
+    ? disabledPlayerIds.filter((id) => id !== playerId)
+    : [...disabledPlayerIds, playerId];
+
+  setState(
+    "settings",
+    {
+      ...settings,
+      disabledPlayerIds: nextDisabled,
+    },
+    true,
+  );
 }
 
 function assignControllerIfNeeded() {
@@ -408,32 +564,40 @@ function optionButtonLabel(option) {
   return labels[option] || String(option);
 }
 
-function renderBuzzerPanel(settings, round, mePlayer) {
+function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isControllerPlayer()) {
     return `
       <section class="card player-card controller-card">
-        <h2>Player 1 Control Screen</h2>
-        <p>You are Player 1 and do not have a buzzer input.</p>
+        <h2>Host Control Screen</h2>
+        <p>You are the Host and do not have a buzzer input.</p>
       </section>
     `;
   }
 
   const disabled = round.status !== ROUND_STATUSES.OPEN;
   const alreadyBuzzed = round.buzzedPlayerIds.includes(mePlayer.id);
-  const notAllowed = disabled || alreadyBuzzed;
-
-  const disabledAttr = notAllowed ? "disabled" : "";
-  const helperText = disabled
+  const rebuzzAllowed = Boolean(settings.rebuzzAllowed);
+  const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
+  const globalDisabled = disabled || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled;
+  const helperText = playerDisabled
+    ? "Your buzzer is disabled by the Host."
+    : disabled
     ? "Buzzers are currently closed."
-    : alreadyBuzzed
+    : !rebuzzAllowed && alreadyBuzzed
       ? "You already buzzed this round."
       : "Buzz now.";
+  const notice = getRecentBuzzNotice();
+  const timeText = `Time left: ${formatSeconds(timeLeftCs)}s`;
 
   if (settings.optionCount === 1) {
+    const optionDisabled = !isOptionEnabled(settings, 1);
+    const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
-        <p class="muted">${helperText}</p>
+        <p class="muted">${optionDisabled ? "This buzzer is disabled by the Host." : helperText}</p>
+        <p class="muted">${timeText}</p>
+        ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button class="big-red" data-buzz="1" ${disabledAttr}>BUZZ</button>
       </section>
     `;
@@ -441,13 +605,40 @@ function renderBuzzerPanel(settings, round, mePlayer) {
 
   if (settings.optionCount === 6) {
     const buttons = [1, 2, 3, 4, 5, 6]
-      .map((opt) => `<button data-buzz="${opt}" ${disabledAttr}>${opt}</button>`)
+      .map((opt) => {
+        const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
+        return `<button data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
+      })
       .join("");
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
+        <p class="muted">${timeText}</p>
+        ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
+      </section>
+    `;
+  }
+
+  if (settings.optionCount === 4) {
+    const button = (opt, cls) => {
+      const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
+      return `<button class="${cls}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+    };
+
+    return `
+      <section class="card player-card">
+        <h2>Your Buzzer</h2>
+        <p class="muted">${helperText}</p>
+        <p class="muted">${timeText}</p>
+        ${notice ? `<p class="muted">${notice}</p>` : ""}
+        <div class="abxy-diamond">
+          ${button(4, "pos-y")}
+          ${button(2, "pos-b")}
+          ${button(3, "pos-x")}
+          ${button(1, "pos-a")}
+        </div>
       </section>
     `;
   }
@@ -455,19 +646,68 @@ function renderBuzzerPanel(settings, round, mePlayer) {
   const max = settings.optionCount;
   const buttons = [1, 2, 3, 4]
     .filter((opt) => opt <= max)
-    .map((opt) => `<button data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`)
+    .map((opt) => {
+      const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
+      return `<button data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+    })
     .join("");
 
   return `
     <section class="card player-card">
       <h2>Your Buzzer</h2>
       <p class="muted">${helperText}</p>
+      <p class="muted">${timeText}</p>
+      ${notice ? `<p class="muted">${notice}</p>` : ""}
       <div class="abxy">${buttons}</div>
     </section>
   `;
 }
 
-function renderHostSettings(settings, round, timeLeftCs) {
+function renderBuzzerToggles(settings, settingDisabledAttr) {
+  const options = Array.from({ length: settings.optionCount }, (_, index) => index + 1);
+  const toggles = options
+    .map((option) => {
+      const enabled = isOptionEnabled(settings, option);
+      const label = settings.optionCount <= 4 ? optionButtonLabel(option) : String(option);
+      return `<button class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-toggle-option="${option}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+    })
+    .join("");
+
+  return `
+    <div class="toggle-group">
+      <span class="muted">Enabled buzzers</span>
+      <div class="toggle-list">${toggles}</div>
+    </div>
+  `;
+}
+
+function renderPlayerToggles(settings, players, controllerId, settingDisabledAttr) {
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  if (nonControllerPlayers.length === 0) {
+    return `
+      <div class="toggle-group">
+        <span class="muted">Player buzzers</span>
+        <p class="muted">No non-Host participants connected yet.</p>
+      </div>
+    `;
+  }
+
+  const toggles = nonControllerPlayers
+    .map((player) => {
+      const enabled = isPlayerBuzzerEnabled(settings, player.id);
+      return `<button class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-toggle-player="${player.id}" ${settingDisabledAttr}>${getPlayerName(player)} ${enabled ? "On" : "Off"}</button>`;
+    })
+    .join("");
+
+  return `
+    <div class="toggle-group">
+      <span class="muted">Player buzzers</span>
+      <div class="toggle-list">${toggles}</div>
+    </div>
+  `;
+}
+
+function renderHostSettings(settings, round, timeLeftCs, players, controllerId) {
   if (!isControllerPlayer()) {
     return "";
   }
@@ -484,7 +724,7 @@ function renderHostSettings(settings, round, timeLeftCs) {
 
   return `
     <section class="card host-panel">
-      <h2>Player 1 Controls</h2>
+      <h2>Host Controls</h2>
       <div class="control-grid">
         <label>
           Time open
@@ -498,6 +738,26 @@ function renderHostSettings(settings, round, timeLeftCs) {
             <option value="false" ${!settings.lockAfterBuzz ? "selected" : ""}>Off</option>
           </select>
         </label>
+
+        <label>
+          Re-Buzz allowed
+          <select data-setting="rebuzzAllowed" ${settingDisabledAttr}>
+            <option value="true" ${settings.rebuzzAllowed ? "selected" : ""}>On</option>
+            <option value="false" ${!settings.rebuzzAllowed ? "selected" : ""}>Off</option>
+          </select>
+        </label>
+
+        ${
+          settings.lockAfterBuzz
+            ? `<label>
+                Close buzzers on points given
+                <select data-setting="closeBuzzersOnPointsGiven" ${settingDisabledAttr}>
+                  <option value="true" ${settings.closeBuzzersOnPointsGiven ? "selected" : ""}>On</option>
+                  <option value="false" ${!settings.closeBuzzersOnPointsGiven ? "selected" : ""}>Off</option>
+                </select>
+              </label>`
+            : ""
+        }
 
         <label>
           Option count
@@ -538,6 +798,9 @@ function renderHostSettings(settings, round, timeLeftCs) {
         }
       </div>
 
+      ${renderBuzzerToggles(settings, settingDisabledAttr)}
+      ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
+
       <div class="host-actions">
         <button data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
         <button data-host-action="close">Close Buzzers</button>
@@ -547,6 +810,8 @@ function renderHostSettings(settings, round, timeLeftCs) {
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
         <span>Time left: <strong>${formatSeconds(timeLeftCs)}s</strong></span>
+        ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
+        ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
         ${settingsLocked ? "<span>Settings are locked while buzzers are open.</span>" : ""}
       </div>
     </section>
@@ -611,7 +876,7 @@ function renderLog(log, settings) {
         <li>
           <div class="log-main">
             <span class="log-player">${entry.playerName}</span>
-            <span>Option ${entry.option}</span>
+            <span>Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}</span>
             <span>${formatSeconds(entry.timeLeftCs)}s</span>
             <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : `Jx${entry.jackMultiplier}`}</span>
             <span>Base ${entry.basePoints}</span>
@@ -636,6 +901,15 @@ function renderLog(log, settings) {
   `;
 }
 
+function renderHiddenPanel(title, helper) {
+  return `
+    <section class="card muted-card">
+      <h2>${title}</h2>
+      <p class="muted">${helper}</p>
+    </section>
+  `;
+}
+
 function render() {
   const mePlayer = me();
   const players = currentParticipants();
@@ -647,6 +921,7 @@ function render() {
   const pendingLogId = getSafeState("pendingLogId", null);
   const pendingEntry = gameLog.find((entry) => entry.id === pendingLogId) || null;
   const controller = getController();
+  const showAdminData = isControllerPlayer();
 
   app.innerHTML = `
     <main class="layout">
@@ -657,19 +932,19 @@ function render() {
         </div>
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
-          <span>Player 1: ${controller ? getPlayerName(controller) : "-"}</span>
+          <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
         </div>
       </header>
 
-      ${renderHostSettings(settings, round, timeLeftCs)}
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
 
-      <section class="grid">
-        ${renderBuzzerPanel(settings, round, mePlayer)}
-        ${renderScores(players, scores)}
+      <section class="grid ${showAdminData ? "" : "grid-single"}">
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${showAdminData ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores.")}
       </section>
 
       ${renderLockedRuling(settings, pendingEntry)}
-      ${renderLog(gameLog, settings)}
+      ${showAdminData ? renderLog(gameLog, settings) : renderHiddenPanel("Game Log", "Only the Host can view the game log.")}
     </main>
   `;
 
@@ -678,7 +953,8 @@ function render() {
 
 function bindEvents() {
   app.querySelectorAll("[data-buzz]").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
       submitBuzz(Number(button.dataset.buzz));
     });
   });
@@ -694,6 +970,14 @@ function bindEvents() {
         }
         if (setting === "lockAfterBuzz") {
           setHostSetting("lockAfterBuzz", input.value === "true");
+          return;
+        }
+        if (setting === "rebuzzAllowed") {
+          setHostSetting("rebuzzAllowed", input.value === "true");
+          return;
+        }
+        if (setting === "closeBuzzersOnPointsGiven") {
+          setHostSetting("closeBuzzersOnPointsGiven", input.value === "true");
           return;
         }
         if (setting === "optionCount") {
@@ -724,6 +1008,18 @@ function bindEvents() {
         } else if (action === "reset") {
           resetRound();
         }
+      });
+    });
+
+    app.querySelectorAll("[data-toggle-option]").forEach((button) => {
+      button.addEventListener("click", () => {
+        toggleBuzzerOption(Number(button.dataset.toggleOption));
+      });
+    });
+
+    app.querySelectorAll("[data-toggle-player]").forEach((button) => {
+      button.addEventListener("click", () => {
+        togglePlayerBuzzer(button.dataset.togglePlayer);
       });
     });
 
