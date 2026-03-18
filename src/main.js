@@ -1138,6 +1138,7 @@ async function launchGame({ playerName, roomCode }) {
   try {
     await insertCoin({
       skipLobby: true,
+      maxPlayersPerRoom: 11,
       roomCode,
     });
   } catch {
