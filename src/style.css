@@ -291,6 +291,20 @@ button:disabled {
   font-weight: 900;
 }
 
+.text-entry {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.text-entry input {
+  width: 100%;
+}
+
+.text-entry button {
+  font-weight: 700;
+}
+
 .score-card ul {
   margin: 1rem 0 0;
   padding: 0;

@@ -6,6 +6,7 @@ const DEFAULT_SETTINGS = {
   lockAfterBuzz: true,
   rebuzzAllowed: false,
   closeBuzzersOnPointsGiven: false,
+  inputMode: "buttons",
   optionCount: 4,
   disabledOptions: [],
   disabledPlayerIds: [],
@@ -29,6 +30,13 @@ let buzzNoticeTs = 0;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
+const escapeHtml = (value) =>
+  String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 function getSafeState(key, fallback) {
   const value = getState(key);
@@ -99,6 +107,7 @@ function getRound() {
     remainingCs: null,
     winnerId: null,
     winnerOption: null,
+    winnerAnswer: null,
     winnerName: null,
     buzzedPlayerIds: [],
   });
@@ -242,6 +251,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           remainingCs,
           winnerId: null,
           winnerOption: null,
+          winnerAnswer: null,
           winnerName: null,
         },
         true,
@@ -250,7 +260,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   }
 }
 
-function pushBuzzLogEntry(player, option, timeLeftCs) {
+function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeftCs) {
   const settings = getSettings();
   const points = computeBasePoints(settings, timeLeftCs);
   const entry = {
@@ -260,6 +270,7 @@ function pushBuzzLogEntry(player, option, timeLeftCs) {
     playerId: player.id,
     playerName: getPlayerName(player),
     option,
+    answerText,
     timeLeftCs,
     scoringMode: settings.scoringMode,
     jackMultiplier: settings.jackMultiplier,
@@ -274,22 +285,43 @@ function pushBuzzLogEntry(player, option, timeLeftCs) {
   return entry;
 }
 
-function hostHandleBuzz(player, option) {
+function hostHandleBuzz(player, payload) {
   const settings = getSettings();
   const round = getRound();
   const shouldLockAfterBuzz = settings.lockAfterBuzz && !settings.rebuzzAllowed;
+  const usingTextEntry = settings.inputMode === "text";
 
-  const validOption = Number(option);
-  if (!Number.isInteger(validOption) || validOption < 1 || validOption > settings.optionCount) {
-    return { ok: false, reason: "Invalid option." };
+  let validOption = null;
+  let answerText = null;
+
+  if (usingTextEntry) {
+    answerText = String(payload?.answerText || "").trim();
+    if (!answerText) {
+      return { ok: false, reason: "Answer cannot be empty." };
+    }
+    if (answerText.length > 120) {
+      return { ok: false, reason: "Answer is too long." };
+    }
+  } else {
+    validOption = Number(payload?.option);
+    if (!Number.isInteger(validOption) || validOption < 1 || validOption > settings.optionCount) {
+      return { ok: false, reason: "Invalid option." };
+    }
   }
 
-  if (!canBuzz(player.id, validOption)) {
+  if (!canBuzz(player.id, validOption === null ? undefined : validOption)) {
     return { ok: false, reason: "Buzzers are not open, disabled, or you already buzzed." };
   }
 
   const timeLeftCs = getTimeLeftCs(round, settings);
-  const logEntry = pushBuzzLogEntry(player, validOption, timeLeftCs);
+  const logEntry = pushBuzzLogEntry(
+    player,
+    {
+      option: validOption,
+      answerText,
+    },
+    timeLeftCs,
+  );
   const buzzedPlayerIds = round.buzzedPlayerIds.includes(player.id)
     ? round.buzzedPlayerIds
     : [...round.buzzedPlayerIds, player.id];
@@ -302,6 +334,7 @@ function hostHandleBuzz(player, option) {
         status: ROUND_STATUSES.LOCKED,
         winnerId: player.id,
         winnerOption: validOption,
+        winnerAnswer: answerText,
         winnerName: getPlayerName(player),
         remainingCs: timeLeftCs,
         buzzedPlayerIds,
@@ -323,17 +356,21 @@ function hostHandleBuzz(player, option) {
   return {
     ok: true,
     message: shouldLockAfterBuzz
-      ? `${getPlayerName(player)} locked in option ${validOption}.`
-      : `${getPlayerName(player)} buzzed option ${validOption}.`,
+      ? usingTextEntry
+        ? `${getPlayerName(player)} locked in an answer.`
+        : `${getPlayerName(player)} locked in option ${validOption}.`
+      : usingTextEntry
+        ? `${getPlayerName(player)} submitted an answer.`
+        : `${getPlayerName(player)} buzzed option ${validOption}.`,
   };
 }
 
-async function submitBuzz(option) {
+async function submitResponse(payload) {
   if (isControllerPlayer()) {
     return;
   }
   try {
-    const result = await RPC.call("buzz", { option }, RPC.Mode.HOST);
+    const result = await RPC.call("buzz", payload, RPC.Mode.HOST);
     if (result?.ok === false) {
       setBuzzNotice(result.reason || "Buzz blocked.");
       return;
@@ -365,6 +402,7 @@ function openBuzzers() {
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
       winnerOption: null,
+      winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
     },
@@ -387,6 +425,7 @@ function closeBuzzers() {
       remainingCs: getTimeLeftCs(round, settings),
       winnerId: null,
       winnerOption: null,
+      winnerAnswer: null,
       winnerName: null,
     },
     true,
@@ -408,6 +447,7 @@ function resetRound() {
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
       winnerOption: null,
+      winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
     },
@@ -435,6 +475,7 @@ function hostTick() {
         remainingCs: 0,
         winnerId: null,
         winnerOption: null,
+        winnerAnswer: null,
         winnerName: null,
       },
       true,
@@ -457,6 +498,10 @@ function setHostSetting(key, value) {
   }
   if (key === "optionCount") {
     next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
+  }
+  if (key === "inputMode" && value === "text") {
+    next.optionCount = settings.optionCount || 4;
+    next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
   }
   setState("settings", next, true);
 }
@@ -588,6 +633,31 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       : "Buzz now.";
   const notice = getRecentBuzzNotice();
   const timeText = `Time left: ${formatSeconds(timeLeftCs)}s`;
+  const usingTextEntry = settings.inputMode === "text";
+
+  if (usingTextEntry) {
+    const disabledAttr = globalDisabled ? "disabled" : "";
+    const textHelper = playerDisabled
+      ? "Your answer input is disabled by the Host."
+      : disabled
+      ? "Answers are currently closed."
+      : !rebuzzAllowed && alreadyBuzzed
+        ? "You already submitted an answer this round."
+        : "Type your answer and submit.";
+
+    return `
+      <section class="card player-card">
+        <h2>Your Answer</h2>
+        <p class="muted">${textHelper}</p>
+        <p class="muted">${timeText}</p>
+        ${notice ? `<p class="muted">${notice}</p>` : ""}
+        <div class="text-entry">
+          <input id="answer-entry" type="text" maxlength="120" placeholder="Type your answer" ${disabledAttr} />
+          <button data-answer-submit ${disabledAttr}>Submit Answer</button>
+        </div>
+      </section>
+    `;
+  }
 
   if (settings.optionCount === 1) {
     const optionDisabled = !isOptionEnabled(settings, 1);
@@ -747,6 +817,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           </select>
         </label>
 
+        <label>
+          Answer mode
+          <select data-setting="inputMode" ${settingDisabledAttr}>
+            <option value="buttons" ${settings.inputMode !== "text" ? "selected" : ""}>Button buzzer</option>
+            <option value="text" ${settings.inputMode === "text" ? "selected" : ""}>Text entry</option>
+          </select>
+        </label>
+
         ${
           settings.lockAfterBuzz
             ? `<label>
@@ -759,15 +837,19 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             : ""
         }
 
-        <label>
-          Option count
-          <select data-setting="optionCount" ${settingDisabledAttr}>
-            <option value="1" ${settings.optionCount === 1 ? "selected" : ""}>1</option>
-            <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>
-            <option value="4" ${settings.optionCount === 4 ? "selected" : ""}>4</option>
-            <option value="6" ${settings.optionCount === 6 ? "selected" : ""}>6</option>
-          </select>
-        </label>
+        ${
+          settings.inputMode === "text"
+            ? ""
+            : `<label>
+                Option count
+                <select data-setting="optionCount" ${settingDisabledAttr}>
+                  <option value="1" ${settings.optionCount === 1 ? "selected" : ""}>1</option>
+                  <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>
+                  <option value="4" ${settings.optionCount === 4 ? "selected" : ""}>4</option>
+                  <option value="6" ${settings.optionCount === 6 ? "selected" : ""}>6</option>
+                </select>
+              </label>`
+        }
 
         <label>
           Scoring
@@ -798,7 +880,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         }
       </div>
 
-      ${renderBuzzerToggles(settings, settingDisabledAttr)}
+      ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
       ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
 
       <div class="host-actions">
@@ -826,11 +908,14 @@ function renderLockedRuling(settings, pendingEntry) {
   const plusVal = pendingEntry.basePoints;
   const minusVal = -pendingEntry.basePoints;
 
+  const renderedAnswer = pendingEntry.answerText ? `\"${escapeHtml(pendingEntry.answerText)}\"` : pendingEntry.option;
+
   return `
     <section class="card ruling-card">
       <h3>Locked Ruling</h3>
       <p>
-        ${pendingEntry.playerName} buzzed <strong>${pendingEntry.option}</strong> with
+        ${pendingEntry.playerName} buzzed
+        <strong>${renderedAnswer}</strong> with
         <strong>${formatSeconds(pendingEntry.timeLeftCs)}s</strong> left.
       </p>
       <p>Base points: <strong>${pendingEntry.basePoints}</strong></p>
@@ -876,7 +961,13 @@ function renderLog(log, settings) {
         <li>
           <div class="log-main">
             <span class="log-player">${entry.playerName}</span>
-            <span>Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}</span>
+            <span>
+              ${
+                entry.answerText
+                  ? `Answer \"${escapeHtml(entry.answerText)}\"`
+                  : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
+              }
+            </span>
             <span>${formatSeconds(entry.timeLeftCs)}s</span>
             <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : `Jx${entry.jackMultiplier}`}</span>
             <span>Base ${entry.basePoints}</span>
@@ -955,9 +1046,33 @@ function bindEvents() {
   app.querySelectorAll("[data-buzz]").forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
-      submitBuzz(Number(button.dataset.buzz));
+      submitResponse({ option: Number(button.dataset.buzz) });
     });
   });
+
+  app.querySelectorAll("[data-answer-submit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const input = app.querySelector("#answer-entry");
+      const answerText = String(input?.value || "").trim();
+      submitResponse({ answerText });
+      if (input) {
+        input.value = "";
+      }
+    });
+  });
+
+  const answerInput = app.querySelector("#answer-entry");
+  if (answerInput) {
+    answerInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      const answerText = String(answerInput.value || "").trim();
+      submitResponse({ answerText });
+      answerInput.value = "";
+    });
+  }
 
   if (isControllerPlayer()) {
     app.querySelectorAll("[data-setting]").forEach((input) => {
@@ -978,6 +1093,10 @@ function bindEvents() {
         }
         if (setting === "closeBuzzersOnPointsGiven") {
           setHostSetting("closeBuzzersOnPointsGiven", input.value === "true");
+          return;
+        }
+        if (setting === "inputMode") {
+          setHostSetting("inputMode", input.value === "text" ? "text" : "buttons");
           return;
         }
         if (setting === "optionCount") {
@@ -1067,6 +1186,7 @@ function isEditingControl() {
   return Boolean(
     active.closest("[data-setting]") ||
       active.closest("[data-log-input]") ||
+      active.id === "answer-entry" ||
       active.id === "player-name" ||
       active.id === "join-room-code",
   );
@@ -1154,7 +1274,7 @@ async function launchGame({ playerName, roomCode }) {
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
     }
-    return hostHandleBuzz(senderPlayer, Number(payload?.option));
+    return hostHandleBuzz(senderPlayer, payload);
   });
 
   ensureHostInit();
