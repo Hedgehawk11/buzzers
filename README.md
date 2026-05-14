@@ -7,6 +7,9 @@ Just run the thing as you would a node app, ive only tested it on Linux Mint and
 
 ## How make work?
 
+USE NODE 20+
+(I used the latest lts (v24.15.0 at time of writing) and it worked for me)
+
 ### Setup:
 ```
 npm install
