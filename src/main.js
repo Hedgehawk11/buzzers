@@ -27,6 +27,7 @@ const NAME_KEY = "buzzer_player_name";
 let gameLaunched = false;
 let buzzNotice = "";
 let buzzNoticeTs = 0;
+let lastUiSignature = "";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
@@ -179,6 +180,49 @@ function formatSeconds(cs) {
   return (cs / 100).toFixed(2);
 }
 
+function updateTimerDisplays() {
+  const round = getRound();
+  const settings = getSettings();
+  const timeLeftText = `${formatSeconds(getTimeLeftCs(round, settings))}s`;
+  document.querySelectorAll("[data-live-time-left]").forEach((element) => {
+    element.textContent = timeLeftText;
+  });
+}
+
+function getUiSignature() {
+  const round = getRound();
+  const settings = getSettings();
+  const pendingLogId = getSafeState("pendingLogId", null);
+  return JSON.stringify({
+    round: {
+      status: round.status,
+      opensAt: round.opensAt,
+      closesAt: round.closesAt,
+      remainingCs: round.remainingCs,
+      winnerId: round.winnerId,
+      winnerOption: round.winnerOption,
+      winnerAnswer: round.winnerAnswer,
+      winnerName: round.winnerName,
+      buzzedPlayerIds: round.buzzedPlayerIds,
+    },
+    settings: {
+      inputMode: settings.inputMode,
+      optionCount: settings.optionCount,
+      rebuzzAllowed: settings.rebuzzAllowed,
+      lockAfterBuzz: settings.lockAfterBuzz,
+      closeBuzzersOnPointsGiven: settings.closeBuzzersOnPointsGiven,
+      disabledOptions: settings.disabledOptions,
+      disabledPlayerIds: settings.disabledPlayerIds,
+      scoringMode: settings.scoringMode,
+      uniformPoints: settings.uniformPoints,
+      jackMultiplier: settings.jackMultiplier,
+    },
+    pendingLogId,
+    controllerId: getControllerId(),
+    participantCount: currentParticipants().length,
+  });
+}
+
 function computeBasePoints(settings, timeLeftCs) {
   if (settings.scoringMode === "uniform") {
     return settings.uniformPoints;
@@ -217,6 +261,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 
   const pendingId = getSafeState("pendingLogId", null);
   if (pendingId === logId) {
+
+  render();
     setState("pendingLogId", null, true);
     const round = getRound();
     if (round.status === ROUND_STATUSES.LOCKED) {
@@ -342,6 +388,28 @@ function hostHandleBuzz(player, payload) {
       true,
     );
     setState("pendingLogId", logEntry.id, true);
+      // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+      try {
+        const currentRound = getRound();
+        let isCorrect = false;
+        if (settings.inputMode === "text" && currentRound.correctAnswer) {
+          const correct = String(currentRound.correctAnswer || "").trim().toLowerCase();
+          if (answerText && String(answerText).trim().toLowerCase() === correct) {
+            isCorrect = true;
+          }
+        } else if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
+          if (validOption !== null && currentRound.correctOptions.map(Number).includes(Number(validOption))) {
+            isCorrect = true;
+          }
+        }
+
+          if (isCorrect) {
+            // award base points automatically
+            updateScoresForLogEntry(logEntry.id, logEntry.basePoints);
+        }
+      } catch (e) {
+        // ignore auto-eval errors
+      }
   } else {
     setState(
       "round",
@@ -352,6 +420,8 @@ function hostHandleBuzz(player, payload) {
       true,
     );
   }
+
+  render();
 
   return {
     ok: true,
@@ -373,6 +443,7 @@ async function submitResponse(payload) {
     const result = await RPC.call("buzz", payload, RPC.Mode.HOST);
     if (result?.ok === false) {
       setBuzzNotice(result.reason || "Buzz blocked.");
+      render();
       return;
     }
     if (result?.message) {
@@ -380,8 +451,10 @@ async function submitResponse(payload) {
     } else {
       setBuzzNotice("Buzz sent.");
     }
+    render();
   } catch {
     setBuzzNotice("Could not send buzz. Check connection/room.");
+    render();
   }
 }
 
@@ -389,13 +462,15 @@ function openBuzzers() {
   if (!isHost()) {
     return;
   }
+  console.log("openBuzzers: host triggered");
   const settings = getSettings();
   const openedAt = now();
   const closesAt = openedAt + settings.timeOpen * 1000;
-
+  const round = getRound();
   setState(
     "round",
     {
+      ...round,
       status: ROUND_STATUSES.OPEN,
       opensAt: openedAt,
       closesAt,
@@ -409,12 +484,12 @@ function openBuzzers() {
     true,
   );
   setState("pendingLogId", null, true);
+  render();
 }
 
 function closeBuzzers() {
-  if (!isHost()) {
-    return;
-  }
+  if (!isHost()) return;
+  console.log("closeBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
   setState(
@@ -431,6 +506,7 @@ function closeBuzzers() {
     true,
   );
   setState("pendingLogId", null, true);
+  render();
 }
 
 function resetRound() {
@@ -454,6 +530,7 @@ function resetRound() {
     true,
   );
   setState("pendingLogId", null, true);
+  render();
 }
 
 function hostTick() {
@@ -481,6 +558,7 @@ function hostTick() {
       true,
     );
     setState("pendingLogId", null, true);
+    render();
   }
 }
 
@@ -504,6 +582,7 @@ function setHostSetting(key, value) {
     next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
   }
   setState("settings", next, true);
+  render();
 }
 
 function toggleBuzzerOption(option) {
@@ -536,6 +615,7 @@ function toggleBuzzerOption(option) {
     },
     true,
   );
+  render();
 }
 
 function togglePlayerBuzzer(playerId) {
@@ -564,6 +644,7 @@ function togglePlayerBuzzer(playerId) {
     },
     true,
   );
+  render();
 }
 
 function assignControllerIfNeeded() {
@@ -610,6 +691,7 @@ function optionButtonLabel(option) {
 }
 
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
+  console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   if (isControllerPlayer()) {
     return `
       <section class="card player-card controller-card">
@@ -632,7 +714,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       ? "You already buzzed this round."
       : "Buzz now.";
   const notice = getRecentBuzzNotice();
-  const timeText = `Time left: ${formatSeconds(timeLeftCs)}s`;
+  const timeText = formatSeconds(timeLeftCs);
   const usingTextEntry = settings.inputMode === "text";
 
   if (usingTextEntry) {
@@ -649,7 +731,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Answer</h2>
         <p class="muted">${textHelper}</p>
-        <p class="muted">${timeText}</p>
+        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="Type your answer" ${disabledAttr} />
@@ -666,9 +748,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${optionDisabled ? "This buzzer is disabled by the Host." : helperText}</p>
-        <p class="muted">${timeText}</p>
+        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
-        <button class="big-red" data-buzz="1" ${disabledAttr}>BUZZ</button>
+        <button type="button" class="big-red" data-buzz="1" ${disabledAttr}>BUZZ</button>
       </section>
     `;
   }
@@ -677,14 +759,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const buttons = [1, 2, 3, 4, 5, 6]
       .map((opt) => {
         const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-        return `<button data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
+        return `<button type="button" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
       })
       .join("");
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
-        <p class="muted">${timeText}</p>
+        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
       </section>
@@ -694,14 +776,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (settings.optionCount === 4) {
     const button = (opt, cls) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-      return `<button class="${cls}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      return `<button type="button" class="${cls}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
 
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
-        <p class="muted">${timeText}</p>
+        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="abxy-diamond">
           ${button(4, "pos-y")}
@@ -718,7 +800,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     .filter((opt) => opt <= max)
     .map((opt) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-      return `<button data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      return `<button type="button" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     })
     .join("");
 
@@ -739,7 +821,7 @@ function renderBuzzerToggles(settings, settingDisabledAttr) {
     .map((option) => {
       const enabled = isOptionEnabled(settings, option);
       const label = settings.optionCount <= 4 ? optionButtonLabel(option) : String(option);
-      return `<button class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-toggle-option="${option}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+      return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-toggle-option="${option}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
     })
     .join("");
 
@@ -880,18 +962,47 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         }
       </div>
 
+      <!-- Pre-set correct answer UI -->
+      <div class="correct-answer">
+        <h3>Pre-set correct answer</h3>
+        <p class="muted">Optionally set the correct answer before opening buzzers. Text mode is case-insensitive.</p>
+        <div class="correct-controls">
+          ${settings.inputMode === "text"
+            ? `<label>Correct answer text
+                 <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
+                 <div style="margin-top:0.5rem">
+                   <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
+                   <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
+                 </div>
+               </label>`
+            : `<div>
+                 <span class="muted">Correct options</span>
+                 <div class="toggle-list" style="margin-top:0.5rem">
+                   ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
+                     .map((opt) => {
+                       const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
+                       const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
+                       return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+                     })
+                     .join("")}
+                 </div>
+                 <div style="margin-top:0.5rem"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
+               </div>`}
+        </div>
+      </div>
+
       ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
       ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
 
       <div class="host-actions">
-        <button data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
-        <button data-host-action="close">Close Buzzers</button>
-        <button data-host-action="reset">Reset Round</button>
+        <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
+        <button type="button" data-host-action="close">Close Buzzers</button>
+        <button type="button" data-host-action="reset">Reset Round</button>
       </div>
 
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
-        <span>Time left: <strong>${formatSeconds(timeLeftCs)}s</strong></span>
+        <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
         ${settingsLocked ? "<span>Settings are locked while buzzers are open.</span>" : ""}
@@ -920,8 +1031,8 @@ function renderLockedRuling(settings, pendingEntry) {
       </p>
       <p>Base points: <strong>${pendingEntry.basePoints}</strong></p>
       <div class="ruling-actions">
-        <button class="green" data-ruling="${plusVal}" data-log-id="${pendingEntry.id}">Correct (+${plusVal})</button>
-        <button class="red" data-ruling="${minusVal}" data-log-id="${pendingEntry.id}">Incorrect (${minusVal})</button>
+        <button type="button" class="green" data-ruling="${plusVal}" data-log-id="${pendingEntry.id}">Correct (+${plusVal})</button>
+        <button type="button" class="red" data-ruling="${minusVal}" data-log-id="${pendingEntry.id}">Incorrect (${minusVal})</button>
       </div>
     </section>
   `;
@@ -950,9 +1061,9 @@ function renderLog(log, settings) {
         ? `
           <div class="log-controls">
             <input type="number" value="${Number(entry.awardedDelta || 0)}" data-log-input="${entry.id}" />
-            <button data-log-apply="${entry.id}">Apply</button>
-            <button class="green" data-log-quick="plus" data-log-id="${entry.id}">+${entry.basePoints}</button>
-            <button class="red" data-log-quick="minus" data-log-id="${entry.id}">-${entry.basePoints}</button>
+            <button type="button" data-log-apply="${entry.id}">Apply</button>
+            <button type="button" class="green" data-log-quick="plus" data-log-id="${entry.id}">+${entry.basePoints}</button>
+            <button type="button" class="red" data-log-quick="minus" data-log-id="${entry.id}">-${entry.basePoints}</button>
           </div>
         `
         : "";
@@ -1024,6 +1135,8 @@ function render() {
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
           <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
+          <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
+          <span style="font-size:0.8rem;margin-left:1rem;color:#999" data-debug-ids>me:${escapeHtml(mePlayer?.id||"?")} controller:${escapeHtml(getControllerId()||"?")} participants:${currentParticipants().length}</span>
         </div>
       </header>
 
@@ -1039,6 +1152,7 @@ function render() {
     </main>
   `;
 
+  lastUiSignature = getUiSignature();
   bindEvents();
 }
 
@@ -1141,6 +1255,42 @@ function bindEvents() {
         togglePlayerBuzzer(button.dataset.togglePlayer);
       });
     });
+
+    // Correct answer handlers (host)
+    app.querySelectorAll("[data-set-correct-text]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const input = app.querySelector("#correct-answer-entry");
+        const val = String(input?.value || "").trim();
+        if (!val) return;
+        const round = getRound();
+        setState("round", { ...round, correctAnswer: val, correctOptions: null }, true);
+        render();
+      });
+    });
+
+    app.querySelectorAll("[data-clear-correct]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const round = getRound();
+        setState("round", { ...round, correctAnswer: null, correctOptions: null }, true);
+        render();
+      });
+    });
+
+    app.querySelectorAll("[data-correct-option]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!isControllerPlayer()) return;
+        const opt = Number(button.dataset.correctOption);
+        if (!Number.isInteger(opt)) return;
+        const round = getRound();
+        const current = Array.isArray(round.correctOptions) ? round.correctOptions.map(Number) : [];
+        const included = current.includes(opt);
+        const next = included ? current.filter((v) => Number(v) !== opt) : [...current, opt].sort((a,b)=>a-b);
+        setState("round", { ...round, correctOptions: next.length ? next : null, correctAnswer: null }, true);
+        render();
+      });
+    });
+
+    
 
     app.querySelectorAll("[data-ruling]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1283,11 +1433,13 @@ async function launchGame({ playerName, roomCode }) {
   setInterval(() => {
     ensureHostInit();
     hostTick();
-      if (isEditingControl()) {
-        return;
-      }
-    render();
-  }, 100);
+    const signature = getUiSignature();
+    if (signature !== lastUiSignature) {
+      render();
+      return;
+    }
+    updateTimerDisplays();
+  }, 1000);
 }
 
 function boot() {
