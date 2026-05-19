@@ -3,7 +3,7 @@ Have you ever wanted to run a gameshow, but never had the buzzers?
 Now you do.
 
 Built on playroom kit and nodejs
-Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows 
+Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows, or just use the vercel instance, linked on the right (or below if on mobile)
 
 ## How make work?
 
