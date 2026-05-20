@@ -1357,7 +1357,7 @@ function renderJoinScreen(error = "") {
 
         <label>
           Room code (for Join)
-          <input id="join-room-code" type="text" maxlength="12" placeholder="ABCD" />
+          <input id="join-room-code" type="text" maxlength="12" placeholder="XXXX" />
         </label>
 
         ${error ? `<p class="error-text">${error}</p>` : ""}
