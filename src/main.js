@@ -261,8 +261,6 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 
   const pendingId = getSafeState("pendingLogId", null);
   if (pendingId === logId) {
-
-  render();
     setState("pendingLogId", null, true);
     const round = getRound();
     if (round.status === ROUND_STATUSES.LOCKED) {
@@ -283,6 +281,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           },
           true,
         );
+        render();
         return;
       }
 
@@ -304,6 +303,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       );
     }
   }
+
+  render();
 }
 
 function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeftCs) {
