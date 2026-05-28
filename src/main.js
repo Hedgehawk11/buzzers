@@ -1696,6 +1696,26 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           </select>
         </label>
 
+        ${
+          settings.scoringMode === "uniform"
+            ? `<label>
+                Uniform points
+                  <select data-setting="uniformPoints" ${settingDisabledAttr}>
+                  <option value="1000" ${settings.uniformPoints === 1000 ? "selected" : ""}>1000</option>
+                  <option value="2000" ${settings.uniformPoints === 2000 ? "selected" : ""}>2000</option>
+                  <option value="3000" ${settings.uniformPoints === 3000 ? "selected" : ""}>3000</option>
+                </select>
+              </label>`
+            : `<label>
+                JACK multiplier
+                  <select data-setting="jackMultiplier" ${settingDisabledAttr}>
+                  <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
+                  <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
+                  <option value="3" ${settings.jackMultiplier === 3 ? "selected" : ""}>3x</option>
+                </select>
+              </label>`
+        }
+
         <label>
           Value selection
           <select data-setting="valueSelectionMethod" ${settingDisabledAttr}>
@@ -1736,26 +1756,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 : ""}
               <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}. The locked roulette total becomes the round value.</div>`
             : ""
-        }
-
-        ${
-          settings.scoringMode === "uniform"
-            ? `<label>
-                Uniform points
-                  <select data-setting="uniformPoints" ${settingDisabledAttr}>
-                  <option value="1000" ${settings.uniformPoints === 1000 ? "selected" : ""}>1000</option>
-                  <option value="2000" ${settings.uniformPoints === 2000 ? "selected" : ""}>2000</option>
-                  <option value="3000" ${settings.uniformPoints === 3000 ? "selected" : ""}>3000</option>
-                </select>
-              </label>`
-            : `<label>
-                JACK multiplier
-                  <select data-setting="jackMultiplier" ${settingDisabledAttr}>
-                  <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
-                  <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
-                  <option value="3" ${settings.jackMultiplier === 3 ? "selected" : ""}>3x</option>
-                </select>
-              </label>`
         }
 
         <label>
