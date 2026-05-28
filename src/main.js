@@ -1212,9 +1212,14 @@ function setHostSetting(key, value) {
   const next = { ...settings, [key]: value };
   if (key === "scoringMode" && value === "uniform") {
     next.uniformPoints = settings.uniformPoints || 1000;
+    next.valueSelectionMethod = "standard";
   }
   if (key === "scoringMode" && value === "jack") {
     next.jackMultiplier = settings.jackMultiplier || 1;
+    next.valueSelectionMethod = "standard";
+  }
+  if (key === "scoringMode" && value === "roulette") {
+    next.valueSelectionMethod = "roulette";
   }
   if (key === "optionCount") {
     next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
@@ -1693,6 +1698,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           <select data-setting="scoringMode" ${settingDisabledAttr}>
             <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform</option>
             <option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK</option>
+            <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Roulette</option>
           </select>
         </label>
 
@@ -1716,16 +1722,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </label>`
         }
 
-        <label>
-          Value selection
-          <select data-setting="valueSelectionMethod" ${settingDisabledAttr}>
-            <option value="standard" ${settings.valueSelectionMethod !== "roulette" ? "selected" : ""}>Standard</option>
-            <option value="roulette" ${settings.valueSelectionMethod === "roulette" ? "selected" : ""}>Roulette</option>
-          </select>
-        </label>
-
         ${
-          settings.valueSelectionMethod === "roulette"
+          settings.scoringMode === "roulette"
             ? `<label>
                 Roulette mode
                 <select data-setting="rouletteMode" ${settingDisabledAttr}>
@@ -1926,7 +1924,7 @@ function renderLog(log, settings) {
               }
             </span>
             <span>${formatSeconds(entry.timeLeftCs)}s</span>
-            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : `Jx${entry.jackMultiplier}`}</span>
+            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Roulette`}</span>
             <span>Base ${entry.basePoints}</span>
             <span>Score ${Number(entry.awardedDelta || 0)}</span>
           </div>
@@ -2079,11 +2077,7 @@ function bindEvents() {
           return;
         }
         if (setting === "scoringMode") {
-          setHostSetting("scoringMode", input.value);
-          return;
-        }
-        if (setting === "valueSelectionMethod") {
-          setHostSetting("valueSelectionMethod", input.value === "roulette" ? "roulette" : "standard");
+          setHostSetting("scoringMode", input.value === "jack" ? "jack" : input.value === "roulette" ? "roulette" : "uniform");
           return;
         }
         if (setting === "rouletteMode") {
