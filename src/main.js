@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   scoringMode: "uniform",
   uniformPoints: 1000,
   jackMultiplier: 1,
+  allowScrewing: false,
 };
 
 const ROUND_STATUSES = {
@@ -111,6 +112,15 @@ function getRound() {
     winnerAnswer: null,
     winnerName: null,
     buzzedPlayerIds: [],
+    screw: {
+      active: false,
+      screwerId: null,
+      screwerName: null,
+      screweeId: null,
+      screeeName: null,
+      screwTimerMs: null,
+    },
+    screwsUsed: 0,
   });
 }
 
@@ -145,6 +155,17 @@ function canBuzz(playerId, option) {
   if (round.status !== ROUND_STATUSES.OPEN) {
     return false;
   }
+  
+  // If screw is active with a timer running, only screwee can buzz
+  if (round.screw.active && round.screw.screwTimerMs !== null && round.screw.screwTimerMs > 0) {
+    return playerId === round.screw.screweeId;
+  }
+  
+  // If screw is active but timer not started, no one can buzz
+  if (round.screw.active) {
+    return false;
+  }
+  
   if (!settings.rebuzzAllowed && round.buzzedPlayerIds.includes(playerId)) {
     return false;
   }
@@ -204,6 +225,8 @@ function getUiSignature() {
       winnerAnswer: round.winnerAnswer,
       winnerName: round.winnerName,
       buzzedPlayerIds: round.buzzedPlayerIds,
+      screw: round.screw,
+      screwsUsed: round.screwsUsed,
     },
     settings: {
       inputMode: settings.inputMode,
@@ -216,6 +239,7 @@ function getUiSignature() {
       scoringMode: settings.scoringMode,
       uniformPoints: settings.uniformPoints,
       jackMultiplier: settings.jackMultiplier,
+      allowScrewing: settings.allowScrewing,
     },
     pendingLogId,
     controllerId: getControllerId(),
@@ -241,12 +265,25 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   }
 
   const entry = log[entryIndex];
+  const round = getRound();
   const oldAwarded = Number(entry.awardedDelta || 0);
-  const nextAwarded = Number(newAwardedDelta || 0);
+  let nextAwarded = Number(newAwardedDelta || 0);
+  
+  // Handle screw scoring: reverse the points if screw is active
+  if (round.screw.active && round.screw.screweeId === entry.playerId) {
+    nextAwarded = -nextAwarded;
+  }
+  
   const diff = nextAwarded - oldAwarded;
 
   const scores = getScores();
   scores[entry.playerId] = Number(scores[entry.playerId] || 0) + diff;
+  
+  // If screw is active, also update the screwer's score (opposite)
+  if (round.screw.active && round.screw.screwerId) {
+    const screwReverseDiff = -diff;
+    scores[round.screw.screwerId] = Number(scores[round.screw.screwerId] || 0) + screwReverseDiff;
+  }
 
   const updatedLog = [...log];
   updatedLog[entryIndex] = {
@@ -262,7 +299,6 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const pendingId = getSafeState("pendingLogId", null);
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
-    const round = getRound();
     if (round.status === ROUND_STATUSES.LOCKED) {
       const settings = getSettings();
       const shouldCloseOnPointsGiven =
@@ -281,6 +317,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           },
           true,
         );
+        // Close screw mode after ruling
+        closeScrewMode();
         render();
         return;
       }
@@ -481,6 +519,14 @@ function openBuzzers() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      screw: {
+        active: false,
+        screwerId: null,
+        screwerName: null,
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
     },
     true,
   );
@@ -503,6 +549,14 @@ function closeBuzzers() {
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      screw: {
+        active: false,
+        screwerId: null,
+        screwerName: null,
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
     },
     true,
   );
@@ -527,10 +581,181 @@ function resetRound() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      screw: {
+        active: false,
+        screwerId: null,
+        screwerName: null,
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
     },
     true,
   );
   setState("pendingLogId", null, true);
+  render();
+}
+
+function initiateScrew(screwerId) {
+  if (!isHost()) {
+    return { ok: false, reason: "Only host can initiate screw." };
+  }
+  const round = getRound();
+  const settings = getSettings();
+  
+  if (!settings.allowScrewing) {
+    return { ok: false, reason: "Screwing is not enabled." };
+  }
+  if (round.status !== ROUND_STATUSES.OPEN) {
+    return { ok: false, reason: "Buzzers are not open." };
+  }
+  if (round.screw.active) {
+    return { ok: false, reason: "A screw is already in progress." };
+  }
+  if (round.screwsUsed >= 1) {
+    return { ok: false, reason: "A screw has already been used this game." };
+  }
+  
+  const screwer = currentParticipants().find((p) => p.id === screwerId);
+  if (!screwer) {
+    return { ok: false, reason: "Invalid screwer." };
+  }
+  
+  setState(
+    "round",
+    {
+      ...round,
+      screw: {
+        ...round.screw,
+        active: true,
+        screwerId,
+        screwerName: getPlayerName(screwer),
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
+    },
+    true,
+  );
+  
+  setBuzzNotice("A screw is being used...");
+  render();
+  return { ok: true, message: `${getPlayerName(screwer)} initiated a screw.` };
+}
+
+function selectScrewee(screweeId) {
+  if (!isHost()) {
+    return { ok: false, reason: "Only host can select screwee." };
+  }
+  const round = getRound();
+  
+  if (!round.screw.active) {
+    return { ok: false, reason: "No screw in progress." };
+  }
+  if (round.screw.screweeId !== null) {
+    return { ok: false, reason: "Screwee already selected." };
+  }
+  
+  const screwee = currentParticipants().find((p) => p.id === screweeId);
+  if (!screwee) {
+    return { ok: false, reason: "Invalid screwee." };
+  }
+  if (screwee.id === getControllerId()) {
+    return { ok: false, reason: "Cannot screw the host." };
+  }
+  if (screwee.id === round.screw.screwerId) {
+    return { ok: false, reason: "Cannot screw yourself." };
+  }
+  
+  setState(
+    "round",
+    {
+      ...round,
+      screw: {
+        ...round.screw,
+        screweeId,
+        screeeName: getPlayerName(screwee),
+        screwTimerMs: null,
+      },
+    },
+    true,
+  );
+  
+  render();
+  return { ok: true, message: `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.` };
+}
+
+function startScrewTimer() {
+  if (!isHost()) {
+    return { ok: false, reason: "Only host can start screw timer." };
+  }
+  const round = getRound();
+  
+  if (!round.screw.active || !round.screw.screweeId) {
+    return { ok: false, reason: "No screw in progress or screwee not selected." };
+  }
+  
+  setState(
+    "round",
+    {
+      ...round,
+      screw: {
+        ...round.screw,
+        screwTimerMs: 5000,
+      },
+    },
+    true,
+  );
+  
+  render();
+  return { ok: true, message: "Screw timer started." };
+}
+
+function closeScrewMode() {
+  if (!isHost()) {
+    return;
+  }
+  const round = getRound();
+  setState(
+    "round",
+    {
+      ...round,
+      screw: {
+        active: false,
+        screwerId: null,
+        screwerName: null,
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
+      screwsUsed: round.screwsUsed + 1,
+    },
+    true,
+  );
+  render();
+}
+
+function resetScrews() {
+  if (!isHost()) {
+    return;
+  }
+  const round = getRound();
+  setState(
+    "round",
+    {
+      ...round,
+      screw: {
+        active: false,
+        screwerId: null,
+        screwerName: null,
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
+      screwsUsed: 0,
+    },
+    true,
+  );
   render();
 }
 
@@ -542,6 +767,70 @@ function hostTick() {
   if (round.status !== ROUND_STATUSES.OPEN) {
     return;
   }
+  
+  // Handle screw timer
+  if (round.screw.active && round.screw.screwTimerMs !== null && round.screw.screwTimerMs > 0) {
+    const nextMs = Math.max(0, round.screw.screwTimerMs - 100);
+    setState(
+      "round",
+      {
+        ...round,
+        screw: {
+          ...round.screw,
+          screwTimerMs: nextMs,
+        },
+      },
+      true,
+    );
+    
+    if (nextMs <= 0) {
+      // Screw timer expired - check if screwee buzzed
+      const pendingId = getSafeState("pendingLogId", null);
+      if (!pendingId) {
+        // Screwee didn't buzz - auto-fail them
+        const screweePlayer = currentParticipants().find((p) => p.id === round.screw.screweeId);
+        if (screweePlayer) {
+          const settings = getSettings();
+          const basePoints = computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100);
+          const entry = {
+            id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+            type: "buzz",
+            ts: now(),
+            playerId: round.screw.screweeId,
+            playerName: round.screw.screeeName,
+            option: null,
+            answerText: "[No answer - Screw timeout]",
+            timeLeftCs: round.remainingCs || settings.timeOpen * 100,
+            scoringMode: settings.scoringMode,
+            jackMultiplier: settings.jackMultiplier,
+            uniformPoints: settings.uniformPoints,
+            basePoints: basePoints,
+            awardedDelta: -basePoints,
+            resolved: true,
+          };
+          const log = getLog();
+          setState("gameLog", [...log, entry], true);
+          
+          // Auto-award points (screwee loses, screwer gains)
+          const scores = getScores();
+          scores[round.screw.screweeId] = Number(scores[round.screw.screweeId] || 0) - basePoints;
+          scores[round.screw.screwerId] = Number(scores[round.screw.screwerId] || 0) + basePoints;
+          setState("scores", scores, true);
+        }
+      }
+      closeScrewMode();
+    }
+    render();
+    return;
+  }
+  
+  // When screw is active but timer not started, don't tick main timer
+  if (round.screw.active) {
+    render();
+    return;
+  }
+  
+  // Normal timer tick
   const settings = getSettings();
   const timeLeftCs = getTimeLeftCs(round, settings);
   if (timeLeftCs <= 0) {
@@ -702,17 +991,91 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     `;
   }
 
+  // Show screw player selection UI if screw is active but screwee not yet selected
+  if (round.screw.active && !round.screw.screweeId && mePlayer.id === round.screw.screwerId) {
+    const nonHostPlayers = currentParticipants().filter(
+      (p) => p.id !== getControllerId() && p.id !== mePlayer.id
+    );
+    const playerButtons = nonHostPlayers
+      .map((p) => `<button type="button" data-screw-player="${p.id}">${getPlayerName(p)}</button>`)
+      .join("");
+    
+    return `
+      <section class="card player-card">
+        <h2>Select Who to Screw</h2>
+        <p class="muted">Choose another player to screw over:</p>
+        <div class="screw-player-list">${playerButtons}</div>
+      </section>
+    `;
+  }
+
+  // Show "hold up, a screw is getting used" message for other players during screw
+  if (round.screw.active && mePlayer.id !== round.screw.screwerId && mePlayer.id !== round.screw.screweeId) {
+    const timeText = round.screw.screwTimerMs !== null
+      ? formatSeconds(Math.ceil(round.screw.screwTimerMs / 10))
+      : "pending";
+    
+    return `
+      <section class="card player-card">
+        <h2>Hold Up!</h2>
+        <p class="muted">A screw is being used by <strong>${round.screw.screwerName}</strong> on <strong>${round.screw.screeeName}</strong>.</p>
+        <p class="muted">Time: <strong>${timeText}s</strong></p>
+      </section>
+    `;
+  }
+
+  // Show screw timer UI for the screwee
+  if (round.screw.active && mePlayer.id === round.screw.screweeId) {
+    const timeText = round.screw.screwTimerMs !== null
+      ? formatSeconds(Math.ceil(round.screw.screwTimerMs / 10))
+      : "waiting";
+    const buzzerDisabled = round.screw.screwTimerMs === null || round.screw.screwTimerMs <= 0;
+    
+    if (settings.optionCount === 1) {
+      return `
+        <section class="card player-card">
+          <h2>You're Being Screwed!</h2>
+          <p class="muted">Screw timer: <strong>${timeText}s</strong></p>
+          <p class="muted">Answer quickly!</p>
+          <button type="button" class="big-red" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>BUZZ</button>
+        </section>
+      `;
+    }
+    
+    if (settings.optionCount === 4) {
+      const button = (opt, cls) => {
+        return `<button type="button" class="${cls}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
+      };
+      return `
+        <section class="card player-card">
+          <h2>You're Being Screwed!</h2>
+          <p class="muted">Screw timer: <strong>${timeText}s</strong></p>
+          <p class="muted">Answer quickly!</p>
+          <div class="abxy-diamond">
+            ${button(4, "pos-y")}
+            ${button(2, "pos-b")}
+            ${button(3, "pos-x")}
+            ${button(1, "pos-a")}
+          </div>
+        </section>
+      `;
+    }
+  }
+
   const disabled = round.status !== ROUND_STATUSES.OPEN;
   const alreadyBuzzed = round.buzzedPlayerIds.includes(mePlayer.id);
   const rebuzzAllowed = Boolean(settings.rebuzzAllowed);
   const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
-  const globalDisabled = disabled || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled;
+  const screwInProgress = round.screw.active;
+  const globalDisabled = disabled || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled || screwInProgress;
   const helperText = playerDisabled
     ? "Your buzzer is disabled by the Host."
     : disabled
     ? "Buzzers are currently closed."
     : !rebuzzAllowed && alreadyBuzzed
       ? "You already buzzed this round."
+      : screwInProgress
+      ? "A screw is in progress."
       : "Buzz now.";
   const notice = getRecentBuzzNotice();
   const timeText = formatSeconds(timeLeftCs);
@@ -726,6 +1089,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       ? "Answers are currently closed."
       : !rebuzzAllowed && alreadyBuzzed
         ? "You already submitted an answer this round."
+        : screwInProgress
+        ? "A screw is in progress."
         : "Type your answer and submit.";
 
     return `
@@ -745,6 +1110,10 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (settings.optionCount === 1) {
     const optionDisabled = !isOptionEnabled(settings, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
+    const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
+      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+      : "";
+    
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
@@ -752,6 +1121,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button type="button" class="big-red" data-buzz="1" ${disabledAttr}>BUZZ</button>
+        ${screwBtn}
       </section>
     `;
   }
@@ -763,6 +1133,10 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         return `<button type="button" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
       })
       .join("");
+    const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
+      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+      : "";
+    
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
@@ -770,6 +1144,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
+        ${screwBtn}
       </section>
     `;
   }
@@ -779,6 +1154,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
       return `<button type="button" class="${cls}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
+    const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
+      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+      : "";
 
     return `
       <section class="card player-card">
@@ -792,6 +1170,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           ${button(3, "pos-x")}
           ${button(1, "pos-a")}
         </div>
+        ${screwBtn}
       </section>
     `;
   }
@@ -804,6 +1183,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `<button type="button" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     })
     .join("");
+  const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
+    ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+    : "";
 
   return `
     <section class="card player-card">
@@ -812,6 +1194,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <p class="muted">${timeText}</p>
       ${notice ? `<p class="muted">${notice}</p>` : ""}
       <div class="abxy">${buttons}</div>
+      ${screwBtn}
     </section>
   `;
 }
@@ -961,6 +1344,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 </select>
               </label>`
         }
+
+        <label>
+          Allow Screwing
+          <select data-setting="allowScrewing" ${settingDisabledAttr}>
+            <option value="true" ${settings.allowScrewing ? "selected" : ""}>On</option>
+            <option value="false" ${!settings.allowScrewing ? "selected" : ""}>Off</option>
+          </select>
+        </label>
       </div>
 
       <!-- Pre-set correct answer UI -->
@@ -999,6 +1390,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
         <button type="button" data-host-action="close">Close Buzzers</button>
         <button type="button" data-host-action="reset">Reset Round</button>
+        ${settings.allowScrewing && round.screwsUsed >= 1 ? `<button type="button" data-host-action="reset-screws">Reset Screws</button>` : ""}
       </div>
 
       <div class="status-strip">
@@ -1008,6 +1400,43 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
         ${settingsLocked ? "<span>Settings are locked while buzzers are open.</span>" : ""}
       </div>
+    </section>
+  `;
+}
+
+function renderScrewNotice(round) {
+  if (!isControllerPlayer() || !round.screw.active) {
+    return "";
+  }
+
+  // Screw is active but screwee not selected yet - show waiting
+  if (!round.screw.screweeId) {
+    return `
+      <section class="card screw-card">
+        <h3>Screw In Progress</h3>
+        <p><strong>${round.screw.screwerName}</strong> is selecting a target...</p>
+      </section>
+    `;
+  }
+
+  // Screwee selected but timer not started yet
+  if (round.screw.screwTimerMs === null) {
+    return `
+      <section class="card screw-card">
+        <h3>Screw Status</h3>
+        <p><strong>${round.screw.screwerName}</strong> is screwing over <strong>${round.screw.screeeName}</strong>!</p>
+        <button type="button" class="green" data-screw-start-timer>Start Timer (5s)</button>
+      </section>
+    `;
+  }
+
+  // Timer is running
+  const timeText = formatSeconds(Math.ceil(round.screw.screwTimerMs / 10));
+  return `
+    <section class="card screw-card">
+      <h3>Screw Timer</h3>
+      <p><strong>${round.screw.screwerName}</strong> is screwing over <strong>${round.screw.screeeName}</strong>.</p>
+      <p>Time left: <strong>${timeText}s</strong></p>
     </section>
   `;
 }
@@ -1143,6 +1572,8 @@ function render() {
 
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
 
+      ${renderScrewNotice(round)}
+
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showAdminData ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores.")}
@@ -1228,6 +1659,11 @@ function bindEvents() {
         }
         if (setting === "jackMultiplier") {
           setHostSetting("jackMultiplier", Number(input.value));
+          return;
+        }
+        if (setting === "allowScrewing") {
+          setHostSetting("allowScrewing", input.value === "true");
+          return;
         }
       });
     });
@@ -1241,6 +1677,8 @@ function bindEvents() {
           closeBuzzers();
         } else if (action === "reset") {
           resetRound();
+        } else if (action === "reset-screws") {
+          resetScrews();
         }
       });
     });
@@ -1322,7 +1760,56 @@ function bindEvents() {
         updateScoresForLogEntry(id, delta);
       });
     });
+
+    // Screw handlers (host and players)
+    app.querySelectorAll("[data-screw-start-timer]").forEach((button) => {
+      button.addEventListener("click", () => {
+        startScrewTimer();
+      });
+    });
   }
+
+  // Screw button for players
+  app.querySelectorAll("[data-screw]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const mePlayer = me();
+      if (isHost()) {
+        initiateScrew(mePlayer.id);
+      } else {
+        try {
+          const result = await RPC.call("screw", { screweeId: null }, RPC.Mode.HOST);
+          if (!result?.ok) {
+            setBuzzNotice(result?.reason || "Screw failed.");
+          }
+          render();
+        } catch {
+          setBuzzNotice("Could not send screw. Check connection/room.");
+          render();
+        }
+      }
+    });
+  });
+
+  // Player selection for screw
+  app.querySelectorAll("[data-screw-player]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const screweeId = button.dataset.screwPlayer;
+      if (isHost()) {
+        selectScrewee(screweeId);
+      } else {
+        try {
+          const result = await RPC.call("screw", { screweeId }, RPC.Mode.HOST);
+          if (!result?.ok) {
+            setBuzzNotice(result?.reason || "Screw selection failed.");
+          }
+          render();
+        } catch {
+          setBuzzNotice("Could not send screw selection. Check connection/room.");
+          render();
+        }
+      }
+    });
+  });
 }
 
 function isEditingControl() {
@@ -1426,6 +1913,25 @@ async function launchGame({ playerName, roomCode }) {
       return { ok: false, reason: "Not host" };
     }
     return hostHandleBuzz(senderPlayer, payload);
+  });
+
+  RPC.register("screw", async (payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+    const round = getRound();
+    const screweeId = payload?.screweeId;
+
+    // If screweeId is null, player is initiating a screw (first step)
+    if (screweeId === null || screweeId === undefined) {
+      return initiateScrew(senderPlayer.id);
+    }
+
+    // Otherwise, they're selecting a screwee
+    if (!round.screw.active) {
+      return { ok: false, reason: "No screw in progress" };
+    }
+    return selectScrewee(screweeId);
   });
 
   ensureHostInit();
