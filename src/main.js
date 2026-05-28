@@ -6,6 +6,7 @@ const DEFAULT_SETTINGS = {
   lockAfterBuzz: true,
   rebuzzAllowed: false,
   closeBuzzersOnPointsGiven: false,
+  showScoresToPlayers: false,
   inputMode: "buttons",
   optionCount: 4,
   disabledOptions: [],
@@ -29,6 +30,7 @@ let gameLaunched = false;
 let buzzNotice = "";
 let buzzNoticeTs = 0;
 let lastUiSignature = "";
+let prejoinMode = "landing";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
@@ -234,6 +236,7 @@ function getUiSignature() {
       rebuzzAllowed: settings.rebuzzAllowed,
       lockAfterBuzz: settings.lockAfterBuzz,
       closeBuzzersOnPointsGiven: settings.closeBuzzersOnPointsGiven,
+      showScoresToPlayers: settings.showScoresToPlayers,
       disabledOptions: settings.disabledOptions,
       disabledPlayerIds: settings.disabledPlayerIds,
       scoringMode: settings.scoringMode,
@@ -1284,6 +1287,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         </label>
 
         <label>
+          Show scores to players
+          <select data-setting="showScoresToPlayers" ${settingDisabledAttr}>
+            <option value="true" ${settings.showScoresToPlayers ? "selected" : ""}>On</option>
+            <option value="false" ${!settings.showScoresToPlayers ? "selected" : ""}>Off</option>
+          </select>
+        </label>
+
+        <label>
           Answer mode
           <select data-setting="inputMode" ${settingDisabledAttr}>
             <option value="buttons" ${settings.inputMode !== "text" ? "selected" : ""}>Button buzzer</option>
@@ -1469,7 +1480,9 @@ function renderLockedRuling(settings, pendingEntry) {
 }
 
 function renderScores(players, scores) {
-  const items = players
+  const controllerId = getControllerId();
+  const visiblePlayers = players.filter((player) => player.id !== controllerId);
+  const items = visiblePlayers
     .map((player) => {
       const value = Number(scores[player.id] || 0);
       return `<li><span>${getPlayerName(player)}</span><strong>${value}</strong></li>`;
@@ -1554,6 +1567,7 @@ function render() {
   const pendingEntry = gameLog.find((entry) => entry.id === pendingLogId) || null;
   const controller = getController();
   const showAdminData = isControllerPlayer();
+  const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
 
   app.innerHTML = `
     <main class="layout">
@@ -1576,7 +1590,9 @@ function render() {
 
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showAdminData ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores.")}
+        ${(showAdminData || showScoresToPlayers)
+          ? renderScores(players, scores)
+          : renderHiddenPanel("Scores", "Only the Host can view scores.")}
       </section>
 
       ${renderLockedRuling(settings, pendingEntry)}
@@ -1635,6 +1651,10 @@ function bindEvents() {
         }
         if (setting === "rebuzzAllowed") {
           setHostSetting("rebuzzAllowed", input.value === "true");
+          return;
+        }
+        if (setting === "showScoresToPlayers") {
+          setHostSetting("showScoresToPlayers", input.value === "true");
           return;
         }
         if (setting === "closeBuzzersOnPointsGiven") {
@@ -1825,60 +1845,159 @@ function isEditingControl() {
     active.closest("[data-setting]") ||
       active.closest("[data-log-input]") ||
       active.id === "answer-entry" ||
-      active.id === "player-name" ||
-      active.id === "join-room-code",
+      active.matches("[data-prejoin-input]"),
   );
 }
 
-function renderJoinScreen(error = "") {
-  const savedName = localStorage.getItem(NAME_KEY) || "";
-  app.innerHTML = `
-    <main class="prejoin-layout">
-      <section class="card prejoin-card">
-        <h1>Playroom Buzzers</h1>
-        <p class="muted">Choose a name, then host a room or join by code.</p>
+function getSavedPlayerName() {
+  return localStorage.getItem(NAME_KEY) || "";
+}
 
-        <label>
-          Name
-          <input id="player-name" type="text" maxlength="32" value="${savedName}" placeholder="Your name" />
-        </label>
+function getPrejoinNameDraft() {
+  const draft = app.querySelector("#prejoin-name")?.value?.trim() || "";
+  return draft || getSavedPlayerName();
+}
 
-        <label>
-          Room code (for Join)
-          <input id="join-room-code" type="text" maxlength="12" placeholder="XXXX" />
-        </label>
+function renderPrejoinScreen(mode = "landing", error = "") {
+  prejoinMode = mode;
+  const savedName = getPrejoinNameDraft();
 
-        ${error ? `<p class="error-text">${error}</p>` : ""}
+  if (mode === "host") {
+    app.innerHTML = `
+      <main class="prejoin-layout">
+        <section class="card prejoin-panel prejoin-panel-host">
+          <div class="prejoin-header">
+            <button class="prejoin-back" data-prejoin-back type="button">Back</button>
+            <div>
+              <p class="prejoin-kicker">Host game</p>
+              <h1>Set up a room</h1>
+              <p class="muted">Create the game, then let players join with the room code.</p>
+            </div>
+          </div>
 
-        <div class="prejoin-actions">
-          <button data-prejoin="host">Host Game</button>
-          <button data-prejoin="join">Join Game</button>
-        </div>
-      </section>
-    </main>
-  `;
+          <form class="prejoin-form" data-prejoin-form="host">
+            <label>
+              Host name
+              <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
+            </label>
 
-  app.querySelectorAll("[data-prejoin]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const mode = button.dataset.prejoin;
-      const nameInput = app.querySelector("#player-name");
-      const roomInput = app.querySelector("#join-room-code");
+            <p class="prejoin-note">You do not need a room code to host. A new room will be created automatically.</p>
+
+            ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
+
+            <div class="prejoin-actions">
+              <button class="primary-action" type="submit">Host Game</button>
+              <button class="secondary-action" data-prejoin-switch="join" type="button">Join Instead</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  } else if (mode === "join") {
+    app.innerHTML = `
+      <main class="prejoin-layout">
+        <section class="card prejoin-panel prejoin-panel-join">
+          <div class="prejoin-header">
+            <button class="prejoin-back" data-prejoin-back type="button">Back</button>
+            <div>
+              <p class="prejoin-kicker">Join game</p>
+              <h1>Enter the room code</h1>
+              <p class="muted">Use the code from the host to connect as a player.</p>
+            </div>
+          </div>
+
+          <form class="prejoin-form" data-prejoin-form="join">
+            <label>
+              Player name
+              <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
+            </label>
+
+            <label>
+              Room code
+              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="12" placeholder="XXXX" />
+            </label>
+
+            ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
+
+            <div class="prejoin-actions">
+              <button class="primary-action" type="submit">Join Game</button>
+              <button class="secondary-action" data-prejoin-switch="host" type="button">Host Instead</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  } else {
+    app.innerHTML = `
+      <main class="prejoin-layout">
+        <section class="card prejoin-landing">
+          <div class="prejoin-hero">
+            <p class="prejoin-kicker">Playroom Buzzers</p>
+            <h1>Pick how you want to start</h1>
+            <p class="muted">Host a new room or jump into an existing one with a code.</p>
+          </div>
+
+          ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
+
+          <div class="prejoin-choice-grid">
+            <button class="prejoin-choice" data-prejoin-open="host" type="button">
+              <span class="prejoin-choice-label">Host game</span>
+              <span class="muted">Create a new room and control the round.</span>
+            </button>
+            <button class="prejoin-choice" data-prejoin-open="join" type="button">
+              <span class="prejoin-choice-label">Join game</span>
+              <span class="muted">Enter a room code and play as a contestant.</span>
+            </button>
+          </div>
+        </section>
+      </main>
+    `;
+  }
+
+  app.querySelectorAll("[data-prejoin-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      renderPrejoinScreen(button.dataset.prejoinOpen || "landing");
+    });
+  });
+
+  app.querySelectorAll("[data-prejoin-switch]").forEach((button) => {
+    button.addEventListener("click", () => {
+      renderPrejoinScreen(button.dataset.prejoinSwitch || "landing");
+    });
+  });
+
+  app.querySelectorAll("[data-prejoin-back]").forEach((button) => {
+    button.addEventListener("click", () => {
+      renderPrejoinScreen();
+    });
+  });
+
+  app.querySelectorAll("[data-prejoin-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const mode = form.dataset.prejoinForm;
+      const nameInput = app.querySelector("#prejoin-name");
+      const roomInput = app.querySelector("#prejoin-room-code");
 
       const chosenName = nameInput?.value?.trim() || "";
       const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
 
       if (!chosenName) {
-        renderJoinScreen("Please choose a player name.");
+        renderPrejoinScreen(mode || "landing", "Please choose a player name.");
         return;
       }
 
       if (mode === "join" && !roomCode) {
-        renderJoinScreen("Enter a room code to join.");
+        renderPrejoinScreen("join", "Enter a room code to join.");
         return;
       }
 
       localStorage.setItem(NAME_KEY, chosenName);
-      button.disabled = true;
+
+      const submitButton = form.querySelector("button[type='submit']");
+      if (submitButton instanceof HTMLButtonElement) {
+        submitButton.disabled = true;
+      }
 
       await launchGame({
         playerName: chosenName,
@@ -1900,7 +2019,7 @@ async function launchGame({ playerName, roomCode }) {
       roomCode,
     });
   } catch {
-    renderJoinScreen("Could not connect to Playroom. Try again.");
+    renderPrejoinScreen(prejoinMode, "Could not connect to Playroom. Try again.");
     return;
   }
 
@@ -1950,7 +2069,7 @@ async function launchGame({ playerName, roomCode }) {
 }
 
 function boot() {
-  renderJoinScreen();
+  renderPrejoinScreen();
 }
 
 boot();
