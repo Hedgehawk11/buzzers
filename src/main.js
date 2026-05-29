@@ -437,7 +437,9 @@ function startRoulettePhase() {
   const round = getRound();
   const players = getRoulettePlayers();
   const topAmount = normalizeRouletteTopAmount(settings.rouletteTopAmount);
-  const ceiling = Math.max(1, Math.floor(topAmount / Math.max(1, players.length || 1)));
+  const ceiling = settings.rouletteMode === "additive"
+    ? Math.max(1, Math.floor(topAmount / Math.max(1, players.length || 1)))
+    : topAmount;
   const targetPlayer = getSelectedRouletteTarget(settings, players);
 
   if (players.length === 0) {
@@ -1756,7 +1758,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                     </select>
                   </label>`
                 : ""}
-              <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}. The locked roulette total becomes the round value.</div>`
+              <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</div>`
             : ""
         }
 
