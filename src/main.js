@@ -2518,7 +2518,7 @@ async function launchGame({ playerName, roomCode }) {
   try {
     const insertCoinOptions = {
       skipLobby: true,
-      maxPlayersPerRoom: 11,
+      maxPlayersPerRoom: 31,
     };
     if (roomCode) {
       insertCoinOptions.roomCode = roomCode;
