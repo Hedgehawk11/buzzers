@@ -584,7 +584,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   
   const diff = nextAwarded - oldAwarded;
 
-  const scores = getScores();
+  const scores = { ...getScores() };
   scores[entry.playerId] = Number(scores[entry.playerId] || 0) + diff;
   
   // If screw is active, also update the screwer's score (opposite)
@@ -1168,7 +1168,7 @@ function hostTick() {
           setState("gameLog", [...log, entry], true);
           
           // Auto-award points (screwee loses, screwer gains)
-          const scores = getScores();
+          const scores = { ...getScores() };
           scores[round.screw.screweeId] = Number(scores[round.screw.screweeId] || 0) - basePoints;
           scores[round.screw.screwerId] = Number(scores[round.screw.screwerId] || 0) + basePoints;
           setState("scores", scores, true);
@@ -2005,7 +2005,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores)
-          : renderHiddenPanel("Scores", "Only the Host can view scores.")}
+          : renderHiddenPanel("Scores", "Only the Host can view scores right now, if you want to see them, ask the Host to enable.")}
       </section>
 
       ${renderLockedRuling(settings, pendingEntry)}
