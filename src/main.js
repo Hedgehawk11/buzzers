@@ -2503,6 +2503,12 @@ async function launchGame({ playerName, roomCode }) {
     return;
   }
 
+  // Clear any stale room code from the URL hash. PlayroomKit always prioritises
+  // the hash "r" parameter over the roomCode option, so a leftover hash from a
+  // previous session would make it attempt to join the old room instead of
+  // creating a new one (host flow) or joining the intended room (join flow).
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+
   try {
     const insertCoinOptions = {
       skipLobby: true,
