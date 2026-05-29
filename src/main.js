@@ -295,7 +295,7 @@ function computeBasePoints(settings, timeLeftCs, round = getRound()) {
 }
 
 function normalizeRouletteTopAmount(value) {
-  const allowed = [500, 1000, 1500, 2000];
+  const allowed = [500, 1000, 1500, 2000, 2500, 3000];
   const numeric = Number(value);
   return allowed.includes(numeric) ? numeric : 1000;
 }
@@ -401,15 +401,15 @@ function maybeFinalizeRoulettePhase() {
 
   const settings = getSettings();
   const finalValue = clamp(getRouletteFinalValue(roulette), 1, roulette.ceiling || normalizeRouletteTopAmount(settings.rouletteTopAmount));
-  const openedAt = now();
+  const finishedAt = now();
 
   setState(
     "round",
     {
       ...round,
-      status: ROUND_STATUSES.OPEN,
-      opensAt: openedAt,
-      closesAt: openedAt + settings.timeOpen * 1000,
+      status: ROUND_STATUSES.CLOSED,
+      opensAt: null,
+      closesAt: null,
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
       winnerOption: null,
@@ -419,7 +419,7 @@ function maybeFinalizeRoulettePhase() {
         ...roulette,
         active: false,
         finalValue,
-        finishedAt: openedAt,
+        finishedAt,
       },
     },
     true,
@@ -898,6 +898,7 @@ function resetRound() {
     return;
   }
   const settings = getSettings();
+  const currentRound = getRound();
   setState(
     "round",
     {
@@ -920,7 +921,7 @@ function resetRound() {
         targetPlayerName: null,
         selections: {},
         completedPlayerIds: [],
-        finalValue: round.roulette?.finalValue ?? null,
+        finalValue: currentRound.roulette?.finalValue ?? null,
         finishedAt: null,
       },
       screw: {
@@ -1740,6 +1741,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   <option value="1000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1000 ? "selected" : ""}>1000</option>
                   <option value="1500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1500 ? "selected" : ""}>1500</option>
                   <option value="2000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2000 ? "selected" : ""}>2000</option>
+                  <option value="2500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2500 ? "selected" : ""}>2500</option>
+                  <option value="3000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 3000 ? "selected" : ""}>3000</option>
                 </select>
               </label>
               ${settings.rouletteMode === "single-player"
@@ -1811,6 +1814,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
         <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        ${settings.scoringMode === "roulette" && round.roulette?.finalValue !== null && round.roulette?.finalValue !== undefined
+          ? `<span>Final roulette value: <strong>${round.roulette.finalValue}</strong></span>`
+          : ""}
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
         ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Roulette is running.</span>" : ""}
