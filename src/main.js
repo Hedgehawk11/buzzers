@@ -809,13 +809,14 @@ function openBuzzers() {
   }
   console.log("openBuzzers: host triggered");
   const settings = getSettings();
-  if (settings.valueSelectionMethod === "roulette") {
-    startRoulettePhase();
+  const round = getRound();
+  if (settings.valueSelectionMethod === "roulette" && (round.roulette?.finalValue === null || round.roulette?.finalValue === undefined)) {
+    setBuzzNotice("Start roulette first to set the round value.");
+    render();
     return;
   }
   const openedAt = now();
   const closesAt = openedAt + settings.timeOpen * 1000;
-  const round = getRound();
   setState(
     "round",
     {
@@ -840,7 +841,7 @@ function openBuzzers() {
         targetPlayerName: null,
         selections: {},
         completedPlayerIds: [],
-        finalValue: null,
+        finalValue: round.roulette?.finalValue ?? null,
         finishedAt: null,
       },
       screw: {
@@ -919,7 +920,7 @@ function resetRound() {
         targetPlayerName: null,
         selections: {},
         completedPlayerIds: [],
-        finalValue: null,
+        finalValue: round.roulette?.finalValue ?? null,
         finishedAt: null,
       },
       screw: {
@@ -1798,6 +1799,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
 
       <div class="host-actions">
+        ${settings.scoringMode === "roulette"
+          ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
+          : ""}
         <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
         <button type="button" data-host-action="close">Close Buzzers</button>
         <button type="button" data-host-action="reset">Reset Round</button>
@@ -2112,6 +2116,12 @@ function bindEvents() {
         const action = button.dataset.hostAction;
         if (action === "open") {
           openBuzzers();
+        } else if (action === "start-roulette") {
+          const result = startRoulettePhase();
+          if (result?.message) {
+            setBuzzNotice(result.message);
+            render();
+          }
         } else if (action === "close") {
           closeBuzzers();
         } else if (action === "reset") {
