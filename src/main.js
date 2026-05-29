@@ -2380,8 +2380,6 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
             </label>
 
-            <p class="prejoin-note">You do not need a room code to host. A new room will be created automatically.</p>
-
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
 
             <div class="prejoin-actions">
@@ -2413,7 +2411,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
             <label>
               Room code
-              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="12" placeholder="XXXX" />
+              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="4" placeholder="XXXX" />
             </label>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
@@ -2445,7 +2443,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             </button>
             <button class="prejoin-choice" data-prejoin-open="join" type="button">
               <span class="prejoin-choice-label">Join game</span>
-              <span class="muted">Enter a room code and play as a contestant.</span>
+              <span class="muted">Enter a room code and play.</span>
             </button>
           </div>
         </section>
