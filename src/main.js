@@ -15,14 +15,28 @@ const DEFAULT_SETTINGS = {
   uniformPoints: 1000,
   jackMultiplier: 1,
   allowScrewing: false,
+  valueSelectionMethod: "standard",
+  rouletteMode: "additive",
+  rouletteTopAmount: 1000,
+  rouletteSinglePlayerTarget: "random",
 };
 
 const ROUND_STATUSES = {
   IDLE: "idle",
   OPEN: "open",
+  ROULETTE: "roulette",
   LOCKED: "locked",
   CLOSED: "closed",
 };
+
+const ROULETTE_PATTERN = [
+  { label: "Low", min: 0.16, max: 0.34 },
+  { label: "Low", min: 0.14, max: 0.32 },
+  { label: "Medium", min: 0.38, max: 0.62 },
+  { label: "Low", min: 0.15, max: 0.33 },
+  { label: "Really Low", min: 0.04, max: 0.14 },
+  { label: "High", min: 0.68, max: 1 },
+];
 
 const app = document.querySelector("#app");
 const NAME_KEY = "buzzer_player_name";
@@ -31,6 +45,8 @@ let buzzNotice = "";
 let buzzNoticeTs = 0;
 let lastUiSignature = "";
 let prejoinMode = "landing";
+let rouletteAnimationInterval = null;
+let rouletteKeydownBound = false;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
@@ -114,6 +130,19 @@ function getRound() {
     winnerAnswer: null,
     winnerName: null,
     buzzedPlayerIds: [],
+    roulette: {
+      active: false,
+      startedAt: null,
+      mode: "additive",
+      topAmount: 1000,
+      ceiling: 0,
+      targetPlayerId: null,
+      targetPlayerName: null,
+      selections: {},
+      completedPlayerIds: [],
+      finalValue: null,
+      finishedAt: null,
+    },
     screw: {
       active: false,
       screwerId: null,
@@ -227,6 +256,7 @@ function getUiSignature() {
       winnerAnswer: round.winnerAnswer,
       winnerName: round.winnerName,
       buzzedPlayerIds: round.buzzedPlayerIds,
+      roulette: round.roulette,
       screw: round.screw,
       screwsUsed: round.screwsUsed,
     },
@@ -243,6 +273,10 @@ function getUiSignature() {
       uniformPoints: settings.uniformPoints,
       jackMultiplier: settings.jackMultiplier,
       allowScrewing: settings.allowScrewing,
+      valueSelectionMethod: settings.valueSelectionMethod,
+      rouletteMode: settings.rouletteMode,
+      rouletteTopAmount: settings.rouletteTopAmount,
+      rouletteSinglePlayerTarget: settings.rouletteSinglePlayerTarget,
     },
     pendingLogId,
     controllerId: getControllerId(),
@@ -250,11 +284,282 @@ function getUiSignature() {
   });
 }
 
-function computeBasePoints(settings, timeLeftCs) {
+function computeBasePoints(settings, timeLeftCs, round = getRound()) {
+  if (round?.roulette?.finalValue !== null && round?.roulette?.finalValue !== undefined) {
+    return Math.max(0, Number(round.roulette.finalValue) || 0);
+  }
   if (settings.scoringMode === "uniform") {
     return settings.uniformPoints;
   }
   return Math.max(0, Math.round(timeLeftCs * settings.jackMultiplier));
+}
+
+function normalizeRouletteTopAmount(value) {
+  const allowed = [500, 1000, 1500, 2000, 2500, 3000];
+  const numeric = Number(value);
+  return allowed.includes(numeric) ? numeric : 1000;
+}
+
+function seededFraction(seed) {
+  const raw = Math.sin(seed * 12.9898) * 43758.5453;
+  return raw - Math.floor(raw);
+}
+
+function getRouletteFrame(roulette, tick = null) {
+  const ceiling = Math.max(1, Number(roulette?.ceiling || 0) || 1);
+  const currentTick = tick === null ? Math.floor(Math.max(0, now() - Number(roulette?.startedAt || now())) / 500) : Number(tick);
+  const pattern = ROULETTE_PATTERN[currentTick % ROULETTE_PATTERN.length];
+  const min = Math.max(1, Math.floor(ceiling * pattern.min));
+  const max = Math.max(min, Math.floor(ceiling * pattern.max));
+  const value = clamp(Math.round(min + seededFraction(currentTick + ceiling) * (max - min)), 1, ceiling);
+  return { tick: currentTick, label: pattern.label, value, ceiling };
+}
+
+function getRoulettePlayers() {
+  return currentParticipants().filter((player) => player.id !== getControllerId());
+}
+
+function isRoulettePlayerAllowed(roulette, playerId) {
+  if (!roulette?.active) {
+    return false;
+  }
+  if (roulette.mode === "single-player") {
+    return playerId === roulette.targetPlayerId;
+  }
+  return playerId !== getControllerId();
+}
+
+function getRouletteExpectedCount(roulette) {
+  if (!roulette?.active) {
+    return 0;
+  }
+  if (roulette.mode === "single-player") {
+    return 1;
+  }
+  return getRoulettePlayers().length;
+}
+
+function getRouletteFinalValue(roulette) {
+  const values = Object.values(roulette?.selections || {}).map((selection) => Number(selection.value) || 0);
+  if (values.length === 0) {
+    return 0;
+  }
+  if (roulette.mode === "highest") {
+    return Math.max(...values);
+  }
+  if (roulette.mode === "single-player") {
+    const targetSelection = roulette.selections?.[roulette.targetPlayerId] || null;
+    return Number(targetSelection?.value || 0);
+  }
+  return values.reduce((total, value) => total + value, 0);
+}
+
+function startRouletteAnimationLoop() {
+  if (rouletteAnimationInterval) {
+    return;
+  }
+  rouletteAnimationInterval = setInterval(() => {
+    if (getRound().status === ROUND_STATUSES.ROULETTE) {
+      render();
+    }
+  }, 500);
+}
+
+function getSelectedRouletteTarget(settings, players) {
+  if (settings.rouletteMode !== "single-player" || players.length === 0) {
+    return null;
+  }
+
+  const preferredId = settings.rouletteSinglePlayerTarget;
+  if (typeof preferredId === "string" && preferredId !== "random") {
+    const preferredPlayer = players.find((player) => player.id === preferredId);
+    if (preferredPlayer) {
+      return preferredPlayer;
+    }
+  }
+
+  const randomIndex = Math.floor(Math.random() * players.length);
+  return players[randomIndex] || null;
+}
+
+function maybeFinalizeRoulettePhase() {
+  if (!isHost()) {
+    return false;
+  }
+
+  const round = getRound();
+  const roulette = round.roulette;
+  if (round.status !== ROUND_STATUSES.ROULETTE || !roulette?.active) {
+    return false;
+  }
+
+  const expectedCount = getRouletteExpectedCount(roulette);
+  const completedCount = Array.isArray(roulette.completedPlayerIds) ? roulette.completedPlayerIds.length : 0;
+  if (completedCount < expectedCount) {
+    return false;
+  }
+
+  const settings = getSettings();
+  const finalValue = clamp(getRouletteFinalValue(roulette), 1, roulette.ceiling || normalizeRouletteTopAmount(settings.rouletteTopAmount));
+  const finishedAt = now();
+
+  setState(
+    "round",
+    {
+      ...round,
+      status: ROUND_STATUSES.CLOSED,
+      opensAt: null,
+      closesAt: null,
+      remainingCs: settings.timeOpen * 100,
+      winnerId: null,
+      winnerOption: null,
+      winnerAnswer: null,
+      winnerName: null,
+      roulette: {
+        ...roulette,
+        active: false,
+        finalValue,
+        finishedAt,
+      },
+    },
+    true,
+  );
+  render();
+  return true;
+}
+
+function startRoulettePhase() {
+  if (!isHost()) {
+    return { ok: false, reason: "Only host can start roulette." };
+  }
+
+  const settings = getSettings();
+  const round = getRound();
+  const players = getRoulettePlayers();
+  const topAmount = normalizeRouletteTopAmount(settings.rouletteTopAmount);
+  const ceiling = settings.rouletteMode === "additive"
+    ? Math.max(1, Math.floor(topAmount / Math.max(1, players.length || 1)))
+    : topAmount;
+  const targetPlayer = getSelectedRouletteTarget(settings, players);
+
+  if (players.length === 0) {
+    setState(
+      "round",
+      {
+        ...round,
+        status: ROUND_STATUSES.OPEN,
+        opensAt: now(),
+        closesAt: now() + settings.timeOpen * 1000,
+        remainingCs: settings.timeOpen * 100,
+        winnerId: null,
+        winnerOption: null,
+        winnerAnswer: null,
+        winnerName: null,
+        roulette: {
+          ...round.roulette,
+          active: false,
+          startedAt: null,
+          mode: settings.rouletteMode,
+          topAmount,
+          ceiling,
+          targetPlayerId: null,
+          targetPlayerName: null,
+          selections: {},
+          completedPlayerIds: [],
+          finalValue: null,
+          finishedAt: now(),
+        },
+      },
+      true,
+    );
+    setState("pendingLogId", null, true);
+    render();
+    return { ok: true, message: "No players available for roulette, opening buzzers." };
+  }
+
+  setState(
+    "round",
+    {
+      ...round,
+      status: ROUND_STATUSES.ROULETTE,
+      opensAt: null,
+      closesAt: null,
+      remainingCs: settings.timeOpen * 100,
+      winnerId: null,
+      winnerOption: null,
+      winnerAnswer: null,
+      winnerName: null,
+      buzzedPlayerIds: [],
+      roulette: {
+        active: true,
+        startedAt: now(),
+        mode: settings.rouletteMode,
+        topAmount,
+        ceiling,
+        targetPlayerId: targetPlayer ? targetPlayer.id : null,
+        targetPlayerName: targetPlayer ? getPlayerName(targetPlayer) : null,
+        selections: {},
+        completedPlayerIds: [],
+        finalValue: null,
+        finishedAt: null,
+      },
+      screw: {
+        active: false,
+        screwerId: null,
+        screwerName: null,
+        screweeId: null,
+        screeeName: null,
+        screwTimerMs: null,
+      },
+    },
+    true,
+  );
+  setState("pendingLogId", null, true);
+  render();
+  return {
+    ok: true,
+    message: settings.rouletteMode === "single-player" && targetPlayer
+      ? `${getPlayerName(targetPlayer)} will stop the roulette.`
+      : "Roulette started.",
+  };
+}
+
+function renderRoulettePanel(settings, round, mePlayer) {
+  const roulette = round.roulette || {};
+  const currentFrame = getRouletteFrame(roulette);
+  const playerSelection = roulette.selections?.[mePlayer.id] || null;
+  const completedCount = Array.isArray(roulette.completedPlayerIds) ? roulette.completedPlayerIds.length : 0;
+  const expectedCount = getRouletteExpectedCount(roulette);
+  const canStop = isRoulettePlayerAllowed(roulette, mePlayer.id) && !playerSelection;
+  const modeLabel = {
+    additive: "Additive",
+    highest: "Highest value",
+    "single-player": "Single-player",
+  }[roulette.mode || settings.rouletteMode] || "Additive";
+  const targetText = roulette.mode === "single-player"
+    ? roulette.targetPlayerName
+      ? `Only ${roulette.targetPlayerName} can stop this round.`
+      : "Waiting to choose a player."
+    : "Everyone can stop when they want to lock in their number.";
+  const displayedValue = playerSelection ? Number(playerSelection.value || 0) : currentFrame.value;
+  const displayedLabel = playerSelection ? "Locked" : currentFrame.label;
+  const completedLabel = expectedCount > 0 ? `${completedCount}/${expectedCount} players locked in.` : "Waiting for players.";
+
+  return `
+    <section class="card player-card roulette-card">
+      <h2>Value Roulette</h2>
+      <p class="muted">${modeLabel} mode · Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)} · Ceiling ${roulette.ceiling || 0}</p>
+      <div class="roulette-display" aria-live="polite">
+        <span class="roulette-value">${displayedValue}</span>
+        <span class="roulette-label">${displayedLabel}</span>
+      </div>
+      <p class="muted">${targetText}</p>
+      <p class="muted">${completedLabel}</p>
+      ${playerSelection
+        ? `<p class="roulette-locked-note">You locked in ${Number(playerSelection.value || 0)}.</p>`
+        : `<button type="button" class="roulette-stop" data-roulette-stop ${canStop ? "" : "disabled"}>STOP</button>`}
+    </section>
+  `;
 }
 
 function updateScoresForLogEntry(logId, newAwardedDelta) {
@@ -279,7 +584,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   
   const diff = nextAwarded - oldAwarded;
 
-  const scores = getScores();
+  const scores = { ...getScores() };
   scores[entry.playerId] = Number(scores[entry.playerId] || 0) + diff;
   
   // If screw is active, also update the screwer's score (opposite)
@@ -506,9 +811,14 @@ function openBuzzers() {
   }
   console.log("openBuzzers: host triggered");
   const settings = getSettings();
+  const round = getRound();
+  if (settings.valueSelectionMethod === "roulette" && (round.roulette?.finalValue === null || round.roulette?.finalValue === undefined)) {
+    setBuzzNotice("Start roulette first to set the round value.");
+    render();
+    return;
+  }
   const openedAt = now();
   const closesAt = openedAt + settings.timeOpen * 1000;
-  const round = getRound();
   setState(
     "round",
     {
@@ -522,6 +832,20 @@ function openBuzzers() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      roulette: {
+        ...round.roulette,
+        active: false,
+        startedAt: null,
+        mode: settings.rouletteMode,
+        topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount),
+        ceiling: 0,
+        targetPlayerId: null,
+        targetPlayerName: null,
+        selections: {},
+        completedPlayerIds: [],
+        finalValue: round.roulette?.finalValue ?? null,
+        finishedAt: null,
+      },
       screw: {
         active: false,
         screwerId: null,
@@ -552,6 +876,10 @@ function closeBuzzers() {
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      roulette: {
+        ...round.roulette,
+        active: false,
+      },
       screw: {
         active: false,
         screwerId: null,
@@ -572,6 +900,7 @@ function resetRound() {
     return;
   }
   const settings = getSettings();
+  const currentRound = getRound();
   setState(
     "round",
     {
@@ -584,6 +913,19 @@ function resetRound() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      roulette: {
+        active: false,
+        startedAt: null,
+        mode: settings.rouletteMode,
+        topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount),
+        ceiling: 0,
+        targetPlayerId: null,
+        targetPlayerName: null,
+        selections: {},
+        completedPlayerIds: [],
+        finalValue: currentRound.roulette?.finalValue ?? null,
+        finishedAt: null,
+      },
       screw: {
         active: false,
         screwerId: null,
@@ -767,6 +1109,13 @@ function hostTick() {
     return;
   }
   const round = getRound();
+  if (round.status === ROUND_STATUSES.ROULETTE) {
+    if (maybeFinalizeRoulettePhase()) {
+      return;
+    }
+    render();
+    return;
+  }
   if (round.status !== ROUND_STATUSES.OPEN) {
     return;
   }
@@ -794,7 +1143,7 @@ function hostTick() {
         const screweePlayer = currentParticipants().find((p) => p.id === round.screw.screweeId);
         if (screweePlayer) {
           const settings = getSettings();
-          const basePoints = computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100);
+          const basePoints = computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
           const entry = {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
             type: "buzz",
@@ -807,6 +1156,10 @@ function hostTick() {
             scoringMode: settings.scoringMode,
             jackMultiplier: settings.jackMultiplier,
             uniformPoints: settings.uniformPoints,
+            valueSelectionMethod: settings.valueSelectionMethod,
+            rouletteMode: settings.rouletteMode,
+            rouletteTopAmount: settings.rouletteTopAmount,
+            rouletteFinalValue: round.roulette?.finalValue ?? null,
             basePoints: basePoints,
             awardedDelta: -basePoints,
             resolved: true,
@@ -815,7 +1168,7 @@ function hostTick() {
           setState("gameLog", [...log, entry], true);
           
           // Auto-award points (screwee loses, screwer gains)
-          const scores = getScores();
+          const scores = { ...getScores() };
           scores[round.screw.screweeId] = Number(scores[round.screw.screweeId] || 0) - basePoints;
           scores[round.screw.screwerId] = Number(scores[round.screw.screwerId] || 0) + basePoints;
           setState("scores", scores, true);
@@ -863,9 +1216,14 @@ function setHostSetting(key, value) {
   const next = { ...settings, [key]: value };
   if (key === "scoringMode" && value === "uniform") {
     next.uniformPoints = settings.uniformPoints || 1000;
+    next.valueSelectionMethod = "standard";
   }
   if (key === "scoringMode" && value === "jack") {
     next.jackMultiplier = settings.jackMultiplier || 1;
+    next.valueSelectionMethod = "standard";
+  }
+  if (key === "scoringMode" && value === "roulette") {
+    next.valueSelectionMethod = "roulette";
   }
   if (key === "optionCount") {
     next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
@@ -873,6 +1231,9 @@ function setHostSetting(key, value) {
   if (key === "inputMode" && value === "text") {
     next.optionCount = settings.optionCount || 4;
     next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
+  }
+  if (key === "rouletteTopAmount") {
+    next.rouletteTopAmount = normalizeRouletteTopAmount(value);
   }
   setState("settings", next, true);
   render();
@@ -992,6 +1353,10 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <p>You are the Host and do not have a buzzer input.</p>
       </section>
     `;
+  }
+
+  if (round.status === ROUND_STATUSES.ROULETTE) {
+    return renderRoulettePanel(settings, round, mePlayer);
   }
 
   // Show screw player selection UI if screw is active but screwee not yet selected
@@ -1251,12 +1616,16 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     return "";
   }
 
-  const settingsLocked = round.status === ROUND_STATUSES.OPEN;
+  const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
+  const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
 
   const statusText = {
     [ROUND_STATUSES.IDLE]: "Idle",
     [ROUND_STATUSES.OPEN]: "Open",
+    [ROUND_STATUSES.ROULETTE]: "Roulette",
     [ROUND_STATUSES.LOCKED]: "Locked",
     [ROUND_STATUSES.CLOSED]: "Closed",
   }[round.status];
@@ -1333,6 +1702,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           <select data-setting="scoringMode" ${settingDisabledAttr}>
             <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform</option>
             <option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK</option>
+            <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Roulette</option>
           </select>
         </label>
 
@@ -1354,6 +1724,42 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   <option value="3" ${settings.jackMultiplier === 3 ? "selected" : ""}>3x</option>
                 </select>
               </label>`
+        }
+
+        ${
+          settings.scoringMode === "roulette"
+            ? `<label>
+                Roulette mode
+                <select data-setting="rouletteMode" ${settingDisabledAttr}>
+                  <option value="additive" ${settings.rouletteMode === "additive" ? "selected" : ""}>Additive</option>
+                  <option value="highest" ${settings.rouletteMode === "highest" ? "selected" : ""}>Highest value</option>
+                  <option value="single-player" ${settings.rouletteMode === "single-player" ? "selected" : ""}>Single-player</option>
+                </select>
+              </label>
+              <label>
+                Top amount
+                <select data-setting="rouletteTopAmount" ${settingDisabledAttr}>
+                  <option value="500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 500 ? "selected" : ""}>500</option>
+                  <option value="1000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1000 ? "selected" : ""}>1000</option>
+                  <option value="1500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1500 ? "selected" : ""}>1500</option>
+                  <option value="2000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2000 ? "selected" : ""}>2000</option>
+                  <option value="2500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2500 ? "selected" : ""}>2500</option>
+                  <option value="3000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 3000 ? "selected" : ""}>3000</option>
+                </select>
+              </label>
+              ${settings.rouletteMode === "single-player"
+                ? `<label>
+                    Single-player target
+                    <select data-setting="rouletteSinglePlayerTarget" ${settingDisabledAttr}>
+                      <option value="random" ${settings.rouletteSinglePlayerTarget === "random" ? "selected" : ""}>Random player</option>
+                      ${nonControllerPlayers
+                        .map((player) => `<option value="${player.id}" ${settings.rouletteSinglePlayerTarget === player.id ? "selected" : ""}>${escapeHtml(getPlayerName(player))}</option>`)
+                        .join("")}
+                    </select>
+                  </label>`
+                : ""}
+              <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</div>`
+            : ""
         }
 
         <label>
@@ -1398,6 +1804,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
 
       <div class="host-actions">
+        ${settings.scoringMode === "roulette"
+          ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
+          : ""}
         <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
         <button type="button" data-host-action="close">Close Buzzers</button>
         <button type="button" data-host-action="reset">Reset Round</button>
@@ -1407,8 +1816,12 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
         <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        ${settings.scoringMode === "roulette" && round.roulette?.finalValue !== null && round.roulette?.finalValue !== undefined
+          ? `<span>Final roulette value: <strong>${round.roulette.finalValue}</strong></span>`
+          : ""}
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
+        ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Roulette is running.</span>" : ""}
         ${settingsLocked ? "<span>Settings are locked while buzzers are open.</span>" : ""}
       </div>
     </section>
@@ -1523,7 +1936,7 @@ function renderLog(log, settings) {
               }
             </span>
             <span>${formatSeconds(entry.timeLeftCs)}s</span>
-            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : `Jx${entry.jackMultiplier}`}</span>
+            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Roulette`}</span>
             <span>Base ${entry.basePoints}</span>
             <span>Score ${Number(entry.awardedDelta || 0)}</span>
           </div>
@@ -1573,7 +1986,7 @@ function render() {
     <main class="layout">
       <header class="hero">
         <div>
-          <h1>Playroom Buzzers</h1>
+          <h1>Instant Buzzers</h1>
           <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
         </div>
         <div class="hero-meta">
@@ -1592,7 +2005,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores)
-          : renderHiddenPanel("Scores", "Only the Host can view scores.")}
+          : renderHiddenPanel("Scores", "Only the Host can view scores right now, if you want to see them, ask the Host to enable.")}
       </section>
 
       ${renderLockedRuling(settings, pendingEntry)}
@@ -1620,6 +2033,12 @@ function bindEvents() {
       if (input) {
         input.value = "";
       }
+    });
+  });
+
+  app.querySelectorAll("[data-roulette-stop]").forEach((button) => {
+    button.addEventListener("click", () => {
+      submitRouletteStop();
     });
   });
 
@@ -1670,7 +2089,19 @@ function bindEvents() {
           return;
         }
         if (setting === "scoringMode") {
-          setHostSetting("scoringMode", input.value);
+          setHostSetting("scoringMode", input.value === "jack" ? "jack" : input.value === "roulette" ? "roulette" : "uniform");
+          return;
+        }
+        if (setting === "rouletteMode") {
+          setHostSetting("rouletteMode", input.value === "highest" ? "highest" : input.value === "single-player" ? "single-player" : "additive");
+          return;
+        }
+        if (setting === "rouletteTopAmount") {
+          setHostSetting("rouletteTopAmount", normalizeRouletteTopAmount(input.value));
+          return;
+        }
+        if (setting === "rouletteSinglePlayerTarget") {
+          setHostSetting("rouletteSinglePlayerTarget", input.value || "random");
           return;
         }
         if (setting === "uniformPoints") {
@@ -1693,6 +2124,12 @@ function bindEvents() {
         const action = button.dataset.hostAction;
         if (action === "open") {
           openBuzzers();
+        } else if (action === "start-roulette") {
+          const result = startRoulettePhase();
+          if (result?.message) {
+            setBuzzNotice(result.message);
+            render();
+          }
         } else if (action === "close") {
           closeBuzzers();
         } else if (action === "reset") {
@@ -1830,8 +2267,70 @@ function bindEvents() {
       }
     });
   });
+  if (!rouletteKeydownBound) {
+    document.addEventListener("keydown", handleRouletteKeydown);
+    rouletteKeydownBound = true;
+  }
 }
 
+
+function handleRouletteKeydown(event) {
+  if (event.code !== "Space" && event.key !== " ") {
+    return;
+  }
+  if (isEditingControl()) {
+    return;
+  }
+
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.ROULETTE || !round.roulette?.active) {
+    return;
+  }
+  if (!isRoulettePlayerAllowed(round.roulette, me().id)) {
+    return;
+  }
+
+  event.preventDefault();
+  submitRouletteStop();
+}
+
+function submitRouletteStop() {
+  if (isControllerPlayer()) {
+    return;
+  }
+
+  const round = getRound();
+  const roulette = round.roulette;
+  if (round.status !== ROUND_STATUSES.ROULETTE || !roulette?.active) {
+    return;
+  }
+  if (!isRoulettePlayerAllowed(roulette, me().id)) {
+    setBuzzNotice("You cannot stop this roulette.");
+    render();
+    return;
+  }
+  if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(me().id)) {
+    setBuzzNotice("You already locked in your roulette value.");
+    render();
+    return;
+  }
+
+  RPC.call("roulette-stop", {}, RPC.Mode.HOST)
+    .then((result) => {
+      if (result?.ok === false) {
+        setBuzzNotice(result.reason || "Roulette stop blocked.");
+      } else if (result?.message) {
+        setBuzzNotice(result.message);
+      } else {
+        setBuzzNotice("Roulette locked in.");
+      }
+      render();
+    })
+    .catch(() => {
+      setBuzzNotice("Could not send roulette stop. Check connection/room.");
+      render();
+    });
+}
 function isEditingControl() {
   const active = document.activeElement;
   if (!active) {
@@ -1881,8 +2380,6 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
             </label>
 
-            <p class="prejoin-note">You do not need a room code to host. A new room will be created automatically.</p>
-
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
 
             <div class="prejoin-actions">
@@ -1914,7 +2411,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
             <label>
               Room code
-              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="12" placeholder="XXXX" />
+              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="4" placeholder="XXXX" />
             </label>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
@@ -1932,7 +2429,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       <main class="prejoin-layout">
         <section class="card prejoin-landing">
           <div class="prejoin-hero">
-            <p class="prejoin-kicker">Playroom Buzzers</p>
+            <p class="prejoin-kicker">Instant Buzzers</p>
             <h1>Pick how you want to start</h1>
             <p class="muted">Host a new room or jump into an existing one with a code.</p>
           </div>
@@ -1946,7 +2443,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             </button>
             <button class="prejoin-choice" data-prejoin-open="join" type="button">
               <span class="prejoin-choice-label">Join game</span>
-              <span class="muted">Enter a room code and play as a contestant.</span>
+              <span class="muted">Enter a room code and play.</span>
             </button>
           </div>
         </section>
@@ -2012,12 +2509,21 @@ async function launchGame({ playerName, roomCode }) {
     return;
   }
 
+  // Clear any stale room code from the URL hash. PlayroomKit always prioritises
+  // the hash "r" parameter over the roomCode option, so a leftover hash from a
+  // previous session would make it attempt to join the old room instead of
+  // creating a new one (host flow) or joining the intended room (join flow).
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+
   try {
-    await insertCoin({
+    const insertCoinOptions = {
       skipLobby: true,
       maxPlayersPerRoom: 11,
-      roomCode,
-    });
+    };
+    if (roomCode) {
+      insertCoinOptions.roomCode = roomCode;
+    }
+    await insertCoin(insertCoinOptions);
   } catch {
     renderPrejoinScreen(prejoinMode, "Could not connect to Playroom. Try again.");
     return;
@@ -2032,6 +2538,60 @@ async function launchGame({ playerName, roomCode }) {
       return { ok: false, reason: "Not host" };
     }
     return hostHandleBuzz(senderPlayer, payload);
+  });
+
+  RPC.register("roulette-stop", async (_payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+
+    const round = getRound();
+    const roulette = round.roulette;
+    if (round.status !== ROUND_STATUSES.ROULETTE || !roulette?.active) {
+      return { ok: false, reason: "Roulette is not active." };
+    }
+    if (!isRoulettePlayerAllowed(roulette, senderPlayer.id)) {
+      return { ok: false, reason: "You cannot stop this roulette." };
+    }
+    if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(senderPlayer.id)) {
+      return { ok: false, reason: "You already locked in." };
+    }
+
+    const frame = getRouletteFrame(roulette);
+    const nextSelections = {
+      ...(roulette.selections || {}),
+      [senderPlayer.id]: {
+        playerId: senderPlayer.id,
+        playerName: getPlayerName(senderPlayer),
+        value: frame.value,
+        label: frame.label,
+        tick: frame.tick,
+        stoppedAt: now(),
+      },
+    };
+    const nextCompleted = Array.isArray(roulette.completedPlayerIds)
+      ? [...roulette.completedPlayerIds, senderPlayer.id]
+      : [senderPlayer.id];
+
+    setState(
+      "round",
+      {
+        ...round,
+        roulette: {
+          ...roulette,
+          selections: nextSelections,
+          completedPlayerIds: nextCompleted,
+        },
+      },
+      true,
+    );
+
+    if (maybeFinalizeRoulettePhase()) {
+      return { ok: true, message: `${getPlayerName(senderPlayer)} locked in ${frame.value}.` };
+    }
+
+    render();
+    return { ok: true, message: `${getPlayerName(senderPlayer)} locked in ${frame.value}.` };
   });
 
   RPC.register("screw", async (payload, senderPlayer) => {
@@ -2055,6 +2615,7 @@ async function launchGame({ playerName, roomCode }) {
 
   ensureHostInit();
   render();
+  startRouletteAnimationLoop();
 
   setInterval(() => {
     ensureHostInit();
