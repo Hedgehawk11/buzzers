@@ -2504,11 +2504,14 @@ async function launchGame({ playerName, roomCode }) {
   }
 
   try {
-    await insertCoin({
+    const insertCoinOptions = {
       skipLobby: true,
       maxPlayersPerRoom: 11,
-      roomCode,
-    });
+    };
+    if (roomCode) {
+      insertCoinOptions.roomCode = roomCode;
+    }
+    await insertCoin(insertCoinOptions);
   } catch {
     renderPrejoinScreen(prejoinMode, "Could not connect to Playroom. Try again.");
     return;
