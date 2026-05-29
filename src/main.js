@@ -1986,7 +1986,7 @@ function render() {
     <main class="layout">
       <header class="hero">
         <div>
-          <h1>Playroom Buzzers</h1>
+          <h1>Instant Buzzers</h1>
           <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
         </div>
         <div class="hero-meta">
@@ -2431,7 +2431,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       <main class="prejoin-layout">
         <section class="card prejoin-landing">
           <div class="prejoin-hero">
-            <p class="prejoin-kicker">Playroom Buzzers</p>
+            <p class="prejoin-kicker">Instant Buzzers</p>
             <h1>Pick how you want to start</h1>
             <p class="muted">Host a new room or jump into an existing one with a code.</p>
           </div>
