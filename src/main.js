@@ -2422,6 +2422,14 @@ function bindEvents() {
       }
     });
   });
+
+  app.querySelectorAll("[data-f-you-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      fYouEasterEggUnlocked = false;
+      render();
+    });
+  });
+
   if (!rouletteKeydownBound) {
     document.addEventListener("keydown", handleRouletteKeydown);
     rouletteKeydownBound = true;
@@ -2430,13 +2438,6 @@ function bindEvents() {
 
 
 function handleRouletteKeydown(event) {
-
-    app.querySelectorAll("[data-f-you-close]").forEach((button) => {
-      button.addEventListener("click", () => {
-        fYouEasterEggUnlocked = false;
-        render();
-      });
-    });
   if (event.code !== "Space" && event.key !== " ") {
     return;
   }
