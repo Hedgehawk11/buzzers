@@ -47,6 +47,9 @@ let lastUiSignature = "";
 let prejoinMode = "landing";
 let rouletteAnimationInterval = null;
 let rouletteKeydownBound = false;
+let fYouEasterEggUnlocked = false;
+
+const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
@@ -61,6 +64,21 @@ const escapeHtml = (value) =>
 function getSafeState(key, fallback) {
   const value = getState(key);
   return value === undefined || value === null ? fallback : value;
+}
+
+function normalizeAnswerForCompare(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function isFYouEasterEggAnswer(answerText) {
+  return normalizeAnswerForCompare(answerText) === "fuck you";
+}
+
+function isFYouCorrectAnswer(round) {
+  return normalizeAnswerForCompare(round?.correctAnswer) === "fuck you";
 }
 
 function setBuzzNotice(message) {
@@ -653,6 +671,85 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   render();
 }
 
+function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
+  if (!isHost()) {
+    return;
+  }
+
+  const log = getLog();
+  const entryIndex = log.findIndex((entry) => entry.id === logId);
+  if (entryIndex < 0) {
+    return;
+  }
+
+  const entry = log[entryIndex];
+  const round = getRound();
+  const oldAwarded = Number(entry.awardedDelta || 0);
+  const nextAwarded = Number(forcedDelta || 0);
+  const diff = nextAwarded - oldAwarded;
+
+  const scores = { ...getScores() };
+  scores[entry.playerId] = Number(scores[entry.playerId] || 0) + diff;
+
+  const updatedLog = [...log];
+  updatedLog[entryIndex] = {
+    ...entry,
+    awardedDelta: nextAwarded,
+    resolved: true,
+    updatedAt: now(),
+  };
+
+  setState("scores", scores, true);
+  setState("gameLog", updatedLog, true);
+
+  const pendingId = getSafeState("pendingLogId", null);
+  if (pendingId === logId) {
+    setState("pendingLogId", null, true);
+    if (round.status === ROUND_STATUSES.LOCKED) {
+      const settings = getSettings();
+      const shouldCloseOnPointsGiven =
+        Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
+      const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
+
+      if (shouldCloseOnPointsGiven || remainingCs <= 0) {
+        setState(
+          "round",
+          {
+            ...round,
+            status: ROUND_STATUSES.CLOSED,
+            winnerId: null,
+            winnerOption: null,
+            winnerName: null,
+          },
+          true,
+        );
+        closeScrewMode();
+        render();
+        return;
+      }
+
+      const reopenedAt = now();
+      setState(
+        "round",
+        {
+          ...round,
+          status: ROUND_STATUSES.OPEN,
+          opensAt: reopenedAt,
+          closesAt: reopenedAt + remainingCs * 10,
+          remainingCs,
+          winnerId: null,
+          winnerOption: null,
+          winnerAnswer: null,
+          winnerName: null,
+        },
+        true,
+      );
+    }
+  }
+
+  render();
+}
+
 function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeftCs) {
   const settings = getSettings();
   const points = computeBasePoints(settings, timeLeftCs);
@@ -718,6 +815,44 @@ function hostHandleBuzz(player, payload) {
   const buzzedPlayerIds = round.buzzedPlayerIds.includes(player.id)
     ? round.buzzedPlayerIds
     : [...round.buzzedPlayerIds, player.id];
+
+  if (usingTextEntry && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
+    if (shouldLockAfterBuzz) {
+      setState(
+        "round",
+        {
+          ...round,
+          status: ROUND_STATUSES.LOCKED,
+          winnerId: player.id,
+          winnerOption: validOption,
+          winnerAnswer: answerText,
+          winnerName: getPlayerName(player),
+          remainingCs: timeLeftCs,
+          buzzedPlayerIds,
+        },
+        true,
+      );
+      setState("pendingLogId", logEntry.id, true);
+    } else {
+      setState(
+        "round",
+        {
+          ...round,
+          buzzedPlayerIds,
+        },
+        true,
+      );
+    }
+
+    resolveLogEntryWithForcedDelta(logEntry.id, -(logEntry.basePoints * 2));
+    return {
+      ok: true,
+      message: F_YOU_EASTER_EGG_H2,
+      easterEgg: {
+        id: "f-you",
+      },
+    };
+  }
 
   if (shouldLockAfterBuzz) {
     setState(
@@ -792,6 +927,9 @@ async function submitResponse(payload) {
       setBuzzNotice(result.reason || "Buzz blocked.");
       render();
       return;
+    }
+    if (result?.easterEgg?.id === "f-you") {
+      fYouEasterEggUnlocked = true;
     }
     if (result?.message) {
       setBuzzNotice(result.message);
@@ -1450,6 +1588,23 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const usingTextEntry = settings.inputMode === "text";
 
   if (usingTextEntry) {
+    if (fYouEasterEggUnlocked) {
+      return `
+        <section class="card player-card easter-egg-card">
+          <h2>${escapeHtml(F_YOU_EASTER_EGG_H2)}</h2>
+          <p class="muted">
+            This F You easter egg comes about by the fact that in the series "You dont know know jack" which this buzzer system is designed to emulate, if you were to type "Fuck You" in a text field you would get scolded by the host (something like "F*** me? no F*** you") and lose some points the first time, the second time you would get told how unoriginal you are, and the third time the game would just end, I am here to emulate that, Your score has been decreased, and im sure your scolding will come in a moment or two, I guess you are either a fan of jack and just curious if I did something like this, a programmer who found this in the README, or most likely, a 30 year old degenerate living in the basement of your parents home (or your name is SomeNightYT, hi buddy) whichever way you found yourself here, welcome! Consider this your entry into a club you will want out of right away
+            <br /><br />-- Hedgehawk11
+            <br /><br />P.S. You might have noticed Im giving you the full stream treatment here, which means its time for the chicken:
+            <a href="https://www.youtube.com/watch?v=xEDIkKXPIHs" target="_blank" rel="noopener noreferrer">https://www.youtube.com/watch?v=xEDIkKXPIHs</a>
+          </p>
+          <div class="easter-egg-actions">
+            <button type="button" data-f-you-close>Close</button>
+          </div>
+        </section>
+      `;
+    }
+
     const disabledAttr = globalDisabled ? "disabled" : "";
     const textHelper = playerDisabled
       ? "Your answer input is disabled by the Host."
@@ -2267,6 +2422,14 @@ function bindEvents() {
       }
     });
   });
+
+  app.querySelectorAll("[data-f-you-close]").forEach((button) => {
+    button.addEventListener("click", () => {
+      fYouEasterEggUnlocked = false;
+      render();
+    });
+  });
+
   if (!rouletteKeydownBound) {
     document.addEventListener("keydown", handleRouletteKeydown);
     rouletteKeydownBound = true;
