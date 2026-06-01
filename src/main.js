@@ -77,6 +77,10 @@ function isFYouEasterEggAnswer(answerText) {
   return normalizeAnswerForCompare(answerText) === "fuck you";
 }
 
+function isFYouCorrectAnswer(round) {
+  return normalizeAnswerForCompare(round?.correctAnswer) === "fuck you";
+}
+
 function setBuzzNotice(message) {
   buzzNotice = String(message || "");
   buzzNoticeTs = now();
@@ -812,7 +816,7 @@ function hostHandleBuzz(player, payload) {
     ? round.buzzedPlayerIds
     : [...round.buzzedPlayerIds, player.id];
 
-  if (usingTextEntry && isFYouEasterEggAnswer(answerText)) {
+  if (usingTextEntry && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
       setState(
         "round",
@@ -1594,6 +1598,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
             <br /><br />P.S. You might have noticed Im giving you the full stream treatment here, which means its time for the chicken:
             <a href="https://www.youtube.com/watch?v=xEDIkKXPIHs" target="_blank" rel="noopener noreferrer">https://www.youtube.com/watch?v=xEDIkKXPIHs</a>
           </p>
+          <div class="easter-egg-actions">
+            <button type="button" data-f-you-close>Close</button>
+          </div>
         </section>
       `;
     }
@@ -2423,6 +2430,13 @@ function bindEvents() {
 
 
 function handleRouletteKeydown(event) {
+
+    app.querySelectorAll("[data-f-you-close]").forEach((button) => {
+      button.addEventListener("click", () => {
+        fYouEasterEggUnlocked = false;
+        render();
+      });
+    });
   if (event.code !== "Space" && event.key !== " ") {
     return;
   }
