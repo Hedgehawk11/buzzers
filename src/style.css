@@ -56,6 +56,10 @@ body {
   border-radius: 22px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(10px);
+
+  /* center contents inside the landing card */
+  place-items: center;
+  text-align: center;
 }
 
 .prejoin-panel {
@@ -85,7 +89,7 @@ body {
 
 .prejoin-header {
   display: flex;
-  align-items: start;
+  align-items: center;
   gap: 0.85rem;
 }
 
@@ -134,7 +138,7 @@ body {
   display: grid;
   align-content: start;
   gap: 0.5rem;
-  text-align: left;
+  text-align: center;
 }
 
 .prejoin-choice:hover:enabled {
@@ -601,4 +605,39 @@ button.red {
   .grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Fixed bottom footer bar */
+.site-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 17, 26, 0.85);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 0.9rem;
+  z-index: 60;
+}
+
+.site-footer a {
+  color: grey;
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  text-decoration: underline;
+}
+
+/* ensure main content isn't hidden behind the footer */
+body {
+  padding-bottom: 56px;
+}
+
+/* helper class to hide the footer when in-game */
+.site-footer.hidden {
+  display: none !important;
 }

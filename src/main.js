@@ -2522,6 +2522,10 @@ function getPrejoinNameDraft() {
 
 function renderPrejoinScreen(mode = "landing", error = "") {
   prejoinMode = mode;
+  // Ensure the site footer is visible while on the prejoin screens
+  try {
+    document.querySelector('.site-footer')?.classList.remove('hidden');
+  } catch (e) {}
   const savedName = getPrejoinNameDraft();
 
   if (mode === "host") {
@@ -2693,6 +2697,11 @@ async function launchGame({ playerName, roomCode }) {
   }
 
   gameLaunched = true;
+
+  // Hide the site footer once the game launches
+  try {
+    document.querySelector('.site-footer')?.classList.add('hidden');
+  } catch (e) {}
 
   me().setState("displayName", playerName, true);
 
