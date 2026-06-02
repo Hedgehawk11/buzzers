@@ -41,6 +41,7 @@ const ROULETTE_PATTERN = [
 const app = document.querySelector("#app");
 const NAME_KEY = "buzzer_player_name";
 let gameLaunched = false;
+let clientMode = "player";
 let buzzNotice = "";
 let buzzNoticeTs = 0;
 let lastUiSignature = "";
@@ -97,8 +98,15 @@ function getRecentBuzzNotice(maxAgeMs = 4000) {
 }
 
 function currentParticipants() {
-  const participants = Object.values(getParticipants() || {});
+  const participants = Object.values(getParticipants() || {}).filter((player) => {
+    const mode = player?.getState?.("clientMode");
+    return mode !== "display" && player?.getState?.("isAudienceDisplay") !== true;
+  });
   return participants.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function isAudienceDisplayClient() {
+  return clientMode === "display" || me()?.getState?.("clientMode") === "display";
 }
 
 function getPlayerName(player) {
@@ -1722,6 +1730,127 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   `;
 }
 
+function getBuzzedParticipants(round, players) {
+  const participantsById = new Map(players.map((player) => [player.id, player]));
+  return (round.buzzedPlayerIds || [])
+    .map((playerId) => participantsById.get(playerId))
+    .filter(Boolean);
+}
+
+function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
+  const buzzedPlayers = getBuzzedParticipants(round, players);
+  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId());
+  const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
+  const leader = round.winnerId
+    ? players.find((player) => player.id === round.winnerId) || buzzedPlayers[0] || null
+    : buzzedPlayers[0] || null;
+
+  const statusLabel = {
+    [ROUND_STATUSES.IDLE]: "Waiting for the round to start",
+    [ROUND_STATUSES.OPEN]: "Buzzers open",
+    [ROUND_STATUSES.ROULETTE]: "Roulette in progress",
+    [ROUND_STATUSES.LOCKED]: "Buzz locked",
+    [ROUND_STATUSES.CLOSED]: "Round closed",
+  }[round.status];
+
+  const buzzSection = useSingleLeader
+    ? `<div class="audience-leader">
+        <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
+        <strong>${leader ? escapeHtml(getPlayerName(leader)) : "Waiting for a buzz"}</strong>
+        <span class="muted">${leader ? `Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong>` : "No one has buzzed yet."}</span>
+      </div>`
+    : `<ul class="audience-buzz-list">
+        ${buzzedPlayers.length
+          ? buzzedPlayers
+              .map((player, index) => `<li><span>${index + 1}</span><strong>${escapeHtml(getPlayerName(player))}</strong></li>`)
+              .join("")
+          : `<li class="audience-empty">No buzzes yet.</li>`}
+      </ul>`;
+
+  return `
+    <section class="card audience-card">
+      <div class="audience-card-header">
+        <div>
+          <p class="prejoin-kicker">Audience display</p>
+          <h2>${statusLabel}</h2>
+        </div>
+        <div class="audience-meta muted">
+          <span>Room ${getRoomCode() || "..."}</span>
+          <span>Time left <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        </div>
+      </div>
+      ${buzzSection}
+    </section>
+  `;
+}
+
+function renderAudienceScrewPanel(round) {
+  const settings = getSettings();
+  if (!settings.allowScrewing) {
+    return "";
+  }
+
+  const screw = round.screw || {};
+  const timeText = screw.screwTimerMs !== null ? formatSeconds(Math.ceil(screw.screwTimerMs / 10)) : "pending";
+
+  if (!screw.active) {
+    return `
+      <section class="card audience-card audience-screw-card">
+        <p class="prejoin-kicker">Screws</p>
+        <h2>Enabled</h2>
+        <p class="muted">No screw is active right now.</p>
+      </section>
+    `;
+  }
+
+  if (!screw.screweeId) {
+    return `
+      <section class="card audience-card audience-screw-card">
+        <p class="prejoin-kicker">Screws</p>
+        <h2>Target being chosen</h2>
+        <p><strong>${escapeHtml(screw.screwerName || "A player")}</strong> is selecting who to screw.</p>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="card audience-card audience-screw-card">
+      <p class="prejoin-kicker">Screws</p>
+      <h2>Active screw</h2>
+      <p><strong>${escapeHtml(screw.screwerName || "A player")}</strong> is screwing over <strong>${escapeHtml(screw.screeeName || "another player")}</strong>.</p>
+      <p class="muted">Timer: <strong>${timeText}s</strong></p>
+    </section>
+  `;
+}
+
+function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
+  const showScores = Boolean(settings.showScoresToPlayers);
+  const showScrews = Boolean(settings.allowScrewing);
+  const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
+
+  return `
+    <main class="layout audience-layout">
+      <header class="hero audience-hero">
+        <div>
+          <p class="prejoin-kicker">Audience display</p>
+          <h1>Instant Buzzers</h1>
+          <p class="muted">Room <strong>${getRoomCode() || "..."}</strong></p>
+        </div>
+        <div class="hero-meta">
+          <span>Status: <strong>${escapeHtml(round.status || "unknown")}</strong></span>
+          <span>${pendingEntry ? `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>` : "Live buzz tracking"}</span>
+        </div>
+      </header>
+
+      <section class="${mainColumns}">
+        ${renderAudienceBuzzPanel(settings, round, players, timeLeftCs)}
+        ${showScores ? renderScores(players, scores) : ""}
+        ${showScrews ? renderAudienceScrewPanel(round) : ""}
+      </section>
+    </main>
+  `;
+}
+
 function renderBuzzerToggles(settings, settingDisabledAttr) {
   const options = Array.from({ length: settings.optionCount }, (_, index) => index + 1);
   const toggles = options
@@ -2136,6 +2265,13 @@ function render() {
   const controller = getController();
   const showAdminData = isControllerPlayer();
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
+
+  if (isAudienceDisplayClient()) {
+    app.innerHTML = renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry);
+    lastUiSignature = getUiSignature();
+    bindEvents();
+    return;
+  }
 
   app.innerHTML = `
     <main class="layout">
@@ -2591,6 +2727,35 @@ function renderPrejoinScreen(mode = "landing", error = "") {
         </section>
       </main>
     `;
+  } else if (mode === "display") {
+    app.innerHTML = `
+      <main class="prejoin-layout">
+        <section class="card prejoin-panel prejoin-panel-display">
+          <div class="prejoin-header">
+            <button class="prejoin-back" data-prejoin-back type="button">Back</button>
+            <div>
+              <p class="prejoin-kicker">Audience display</p>
+              <h1>Open the display screen</h1>
+              <p class="muted">Enter the room code for the show screen you want to project.</p>
+            </div>
+          </div>
+
+          <form class="prejoin-form" data-prejoin-form="display">
+            <label>
+              Room code
+              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="4" placeholder="XXXX" />
+            </label>
+
+            ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
+
+            <div class="prejoin-actions">
+              <button class="primary-action" type="submit">Open Display</button>
+              <button class="secondary-action" data-prejoin-switch="landing" type="button">Back</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
   } else {
     app.innerHTML = `
       <main class="prejoin-layout">
@@ -2611,6 +2776,10 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             <button class="prejoin-choice" data-prejoin-open="join" type="button">
               <span class="prejoin-choice-label">Join game</span>
               <span class="muted">Enter a room code and play.</span>
+            </button>
+            <button class="prejoin-choice" data-prejoin-open="display" type="button">
+              <span class="prejoin-choice-label">Audience display</span>
+              <span class="muted">Show the live buzzer board beside a slide deck.</span>
             </button>
           </div>
         </section>
@@ -2646,7 +2815,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       const chosenName = nameInput?.value?.trim() || "";
       const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
 
-      if (!chosenName) {
+      if (mode !== "display" && !chosenName) {
         renderPrejoinScreen(mode || "landing", "Please choose a player name.");
         return;
       }
@@ -2656,7 +2825,14 @@ function renderPrejoinScreen(mode = "landing", error = "") {
         return;
       }
 
-      localStorage.setItem(NAME_KEY, chosenName);
+      if (mode === "display" && !roomCode) {
+        renderPrejoinScreen("display", "Enter a room code for the display.");
+        return;
+      }
+
+      if (mode !== "display") {
+        localStorage.setItem(NAME_KEY, chosenName);
+      }
 
       const submitButton = form.querySelector("button[type='submit']");
       if (submitButton instanceof HTMLButtonElement) {
@@ -2664,17 +2840,20 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       }
 
       await launchGame({
-        playerName: chosenName,
-        roomCode: mode === "join" ? roomCode : undefined,
+        playerName: mode === "display" ? "Audience Display" : chosenName,
+        roomCode: mode === "join" || mode === "display" ? roomCode : undefined,
+        clientMode: mode === "display" ? "display" : "player",
       });
     });
   });
 }
 
-async function launchGame({ playerName, roomCode }) {
+async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "player" }) {
   if (gameLaunched) {
     return;
   }
+
+  clientMode = nextClientMode;
 
   // Clear any stale room code from the URL hash. PlayroomKit always prioritises
   // the hash "r" parameter over the roomCode option, so a leftover hash from a
@@ -2687,6 +2866,9 @@ async function launchGame({ playerName, roomCode }) {
       skipLobby: true,
       maxPlayersPerRoom: 31,
     };
+    if (clientMode === "display") {
+      insertCoinOptions.clientMode = "display";
+    }
     if (roomCode) {
       insertCoinOptions.roomCode = roomCode;
     }
@@ -2704,6 +2886,10 @@ async function launchGame({ playerName, roomCode }) {
   } catch (e) {}
 
   me().setState("displayName", playerName, true);
+  me().setState("clientMode", clientMode, true);
+  if (clientMode === "display") {
+    me().setState("isAudienceDisplay", true, true);
+  }
 
   RPC.register("buzz", async (payload, senderPlayer) => {
     if (!isHost()) {
