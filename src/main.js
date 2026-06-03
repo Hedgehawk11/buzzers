@@ -1784,6 +1784,58 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   `;
 }
 
+function renderAudienceRoulettePanel(settings, round, players) {
+  const roulette = round.roulette || {};
+  const currentFrame = getRouletteFrame(roulette);
+  const completedCount = Array.isArray(roulette.completedPlayerIds) ? roulette.completedPlayerIds.length : 0;
+  const expectedCount = getRouletteExpectedCount(roulette);
+  const modeLabel = {
+    additive: "Additive",
+    highest: "Highest value",
+    "single-player": "Single-player",
+  }[roulette.mode || settings.rouletteMode] || "Additive";
+  const targetLabel = roulette.mode === "single-player"
+    ? roulette.targetPlayerName
+      ? `Only ${roulette.targetPlayerName} can stop this round.`
+      : "Waiting to choose a player."
+    : "Everyone can stop when they want to lock in their number.";
+  const selectionCountLabel = expectedCount > 0 ? `${completedCount}/${expectedCount} players locked in.` : "Waiting for players.";
+  const playerSelections = Object.values(roulette.selections || {});
+  const selections = playerSelections.length
+    ? playerSelections
+        .slice()
+        .sort((a, b) => Number(a.stoppedAt || 0) - Number(b.stoppedAt || 0))
+        .map((selection) => `<li><span>${escapeHtml(selection.playerName || "Player")}</span><strong>${Number(selection.value || 0)}</strong></li>`)
+        .join("")
+    : `<li class="audience-empty">No one has locked in yet.</li>`;
+  const finalValue = round.roulette?.finalValue;
+
+  return `
+    <section class="card audience-card roulette-card audience-roulette-card">
+      <div class="audience-card-header">
+        <div>
+          <p class="prejoin-kicker">Roulette</p>
+          <h2>${modeLabel} mode</h2>
+        </div>
+        <div class="audience-meta muted">
+          <span>Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)}</span>
+          <span>Ceiling ${roulette.ceiling || 0}</span>
+        </div>
+      </div>
+
+      <div class="roulette-display audience-roulette-display" aria-live="polite">
+        <span class="roulette-value">${currentFrame.value}</span>
+        <span class="roulette-label">${currentFrame.label}</span>
+      </div>
+
+      <p class="muted">${targetLabel}</p>
+      <p class="muted">${selectionCountLabel}</p>
+      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">Final roulette value: <strong>${Number(finalValue)}</strong></p>` : ""}
+      <ul class="audience-roulette-list">${selections}</ul>
+    </section>
+  `;
+}
+
 function renderAudienceScrewPanel(round) {
   const settings = getSettings();
   if (!settings.allowScrewing) {
@@ -1827,6 +1879,9 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   const showScores = Boolean(settings.showScoresToPlayers);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
+  const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
+    ? renderAudienceRoulettePanel(settings, round, players)
+    : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
 
   return `
     <main class="layout audience-layout">
@@ -1834,7 +1889,8 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         <div>
           <p class="prejoin-kicker">Audience display</p>
           <h1>Instant Buzzers</h1>
-          <p class="muted">Room <strong>${getRoomCode() || "..."}</strong></p>
+          <p class="muted">Room code</p>
+          <div class="audience-room-code">${escapeHtml(getRoomCode() || "....")}</div>
         </div>
         <div class="hero-meta">
           <span>Status: <strong>${escapeHtml(round.status || "unknown")}</strong></span>
@@ -1843,7 +1899,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
       </header>
 
       <section class="${mainColumns}">
-        ${renderAudienceBuzzPanel(settings, round, players, timeLeftCs)}
+        ${primaryPanel}
         ${showScores ? renderScores(players, scores) : ""}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
