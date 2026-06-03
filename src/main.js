@@ -1801,6 +1801,7 @@ function renderAudienceRoulettePanel(settings, round, players) {
     : "Everyone can stop when they want to lock in their number.";
   const selectionCountLabel = expectedCount > 0 ? `${completedCount}/${expectedCount} players locked in.` : "Waiting for players.";
   const playerSelections = Object.values(roulette.selections || {});
+  const accumulatedValue = playerSelections.reduce((total, selection) => total + (Number(selection.value) || 0), 0);
   const selections = playerSelections.length
     ? playerSelections
         .slice()
@@ -1828,6 +1829,7 @@ function renderAudienceRoulettePanel(settings, round, players) {
         <span class="roulette-label">${currentFrame.label}</span>
       </div>
 
+      <p class="audience-roulette-total">Accumulated total: <strong>${accumulatedValue}</strong></p>
       <p class="muted">${targetLabel}</p>
       <p class="muted">${selectionCountLabel}</p>
       ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">Final roulette value: <strong>${Number(finalValue)}</strong></p>` : ""}

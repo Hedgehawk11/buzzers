@@ -456,6 +456,13 @@ button:disabled {
   min-height: 240px;
 }
 
+.audience-roulette-total {
+  margin: 1rem 0 0;
+  font-size: clamp(1rem, 2.6vw, 1.3rem);
+  font-weight: 800;
+  color: #fff4e7;
+}
+
 .audience-roulette-list {
   margin: 1rem 0 0;
   padding: 0;
