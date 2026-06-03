@@ -4,7 +4,7 @@ Now you do.
 
 This is mainly built for running live You Dont Know Jack games, and I do think you *could* do jeopardy, but there are *way* better options for that, again, this is built for multiple choice option quiz games with a slide deck showing the questions and options or just as john buzzer.
 
-But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, again, this is built for live YDKJ games, where there is more comedy then questions it does require an external slide deck for showing questions, and has no player group display (yet) but again, this is just buzzers, what more do you want.
+But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, again, this is built for live YDKJ games, where there is more comedy then questions it does require an external slide deck for showing questions, and now includes an audience display for the projector below the slide deck.
 
 ## FAQ
 ### Where is room code?
