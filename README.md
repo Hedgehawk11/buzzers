@@ -22,7 +22,7 @@ Music, Questions, eveything exept a scoreboard, who buzzed etc.
 ### The audience display and player controller sucks
 Thanks captain obvious, i was mainly on the configurablily of everything (seriously, go look at the options)
 
-### Whats coming
+### Whats coming?
 Better disordat support, bingo, roadkill, (Can you tell I like the Ride)
 
 ### How make work?
