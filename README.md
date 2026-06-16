@@ -19,7 +19,7 @@ I dont know how this could work with how I made this so yea, if you want to take
 ### Whats on said slide deck?
 Music, Questions, eveything exept a scoreboard, who buzzed etc.
 
-### The audience display and player controller sucks
+### The audience display and player controller sucks!
 Thanks captain obvious, i was mainly on the configurablily of everything (seriously, go look at the options)
 
 ### Whats coming?
