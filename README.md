@@ -10,14 +10,22 @@ But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow 
 ### Where is room code?
 Top Left, You can miss it
 
-### You said this is made for YDKJ games, Is there a "F*** You" easter egg with a handmade responce?
-Yes. yes there is, try it, I dare ya
+### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
+Yes. yes there is, handwritten responce too, try it, I dare ya
 
 ### Support for jack attack rounds? 
-I dont know how this could work with how I made this so yea, if you want to take a jack at it open a PR, i'd love to see it
+I dont know how this could work with how I made this so yea, if you want to take a jack at it, open a PR, i'd love to see it. although if you set it to 6-awncer mode, something like Full Stream might be possible
 
-## How make work?
+### Whats on said slide deck?
+Music, Questions, eveything exept a scoreboard, who buzzed etc.
 
+### The audience display and player controller sucks
+Thanks captain obvious, i was mainly on the configurablily of everything (seriously, go look at the options)
+
+### Whats coming
+Better disordat support, bingo, roadkill, (Can you tell I like the Ride)
+
+### How make work?
 Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
 
 USE NODE 20+
@@ -39,6 +47,6 @@ npm run build
 ```
 
 ## AI disclamer:
-I am currently trying to learn node.js, and this was a project I decided to make, this is mostly vibe-coded in its current state, this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, more secure backend etc. No promises tho as I am super lazy. Still adding new features using AI at this time.
+I am currently trying to learn node.js, and this was a project I decided to make, this is mostly vibe-coded in its current state, this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy. Still adding new features using AI at this time.
 
 Built on playroom kit and nodejs
