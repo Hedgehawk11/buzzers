@@ -10,7 +10,7 @@ But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow 
 ### Where is room code?
 Top Left, You can miss it
 
-### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
+### You said this is made for YDKJ games, Is there a "F*** You" easter egg with a handmade responce?
 Yes. yes there is, try it, I dare ya
 
 ### Support for jack attack rounds? 
