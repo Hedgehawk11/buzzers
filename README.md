@@ -23,7 +23,7 @@ Music, Questions, eveything exept a scoreboard, who buzzed etc.
 Thanks captain obvious, i was mainly on the configurablily of everything (seriously, go look at the options)
 
 ### Whats coming?
-Better disordat support, bingo, roadkill, (Can you tell I like the Ride)
+Better disordat support, bingo, roadkill, (Can you tell I like the Ride) team mode etc.
 
 ### How make work?
 Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
