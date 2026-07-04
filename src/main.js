@@ -19,7 +19,11 @@ const DEFAULT_SETTINGS = {
   rouletteMode: "additive",
   rouletteTopAmount: 1000,
   rouletteSinglePlayerTarget: "random",
+  teamModeEnabled: false,
+  teamScoringMode: "alliance",
 };
+
+const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "magenta"];
 
 const ROUND_STATUSES = {
   IDLE: "idle",
@@ -49,6 +53,7 @@ let prejoinMode = "landing";
 let rouletteAnimationInterval = null;
 let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
+let hostPrejoinTeamSetting = "off";
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -121,6 +126,63 @@ function getSettings() {
   return { ...DEFAULT_SETTINGS, ...getSafeState("settings", {}) };
 }
 
+function getTeamAssignments() {
+  return getSafeState("teamAssignments", {});
+}
+
+function normalizeTeamAssignments(assignments, players, controllerId) {
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId));
+  const normalized = {};
+  Object.entries(assignments || {}).forEach(([playerId, teamColor]) => {
+    if (validIds.has(playerId) && TEAM_COLORS.includes(String(teamColor))) {
+      normalized[playerId] = String(teamColor);
+    }
+  });
+  return normalized;
+}
+
+function getPlayerTeamColor(playerId, assignments = getTeamAssignments()) {
+  const teamColor = assignments?.[playerId];
+  return TEAM_COLORS.includes(teamColor) ? teamColor : null;
+}
+
+function getTeamScoreKey(teamColor) {
+  return `team:${teamColor}`;
+}
+
+function getScoreKeyForPlayer(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
+  if (!settings.teamModeEnabled || settings.teamScoringMode !== "shared") {
+    return playerId;
+  }
+  const teamColor = getPlayerTeamColor(playerId, assignments);
+  return teamColor ? getTeamScoreKey(teamColor) : playerId;
+}
+
+function getTeamMembers(teamColor, players = currentParticipants(), assignments = getTeamAssignments()) {
+  if (!teamColor) {
+    return [];
+  }
+  const controllerId = getControllerId();
+  return players.filter((player) => player.id !== controllerId && assignments[player.id] === teamColor);
+}
+
+function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
+  if (!settings.teamModeEnabled) {
+    return false;
+  }
+  const controllerId = getControllerId();
+  const activePlayers = players.filter((player) => player.id !== controllerId);
+  return activePlayers.some((player) => !getPlayerTeamColor(player.id, assignments));
+}
+
+function getAllBuzzedTeamMemberIds(playerId, players, assignments) {
+  const teamColor = getPlayerTeamColor(playerId, assignments);
+  if (!teamColor) {
+    return [playerId];
+  }
+  return getTeamMembers(teamColor, players, assignments).map((player) => player.id);
+}
+
 function normalizeDisabledOptions(options, optionCount) {
   const max = Number(optionCount) || 0;
   return [...new Set((options || []).map(Number).filter((opt) => Number.isInteger(opt) && opt >= 1 && opt <= max))];
@@ -152,6 +214,7 @@ function getRound() {
     closesAt: null,
     remainingCs: null,
     winnerId: null,
+    winnerTeam: null,
     winnerOption: null,
     winnerAnswer: null,
     winnerName: null,
@@ -206,7 +269,12 @@ function canBuzz(playerId, option) {
   const round = getRound();
   const controllerId = getControllerId();
   const settings = getSettings();
+  const participants = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, controllerId);
   if (playerId === controllerId) {
+    return false;
+  }
+  if (settings.teamModeEnabled && !getPlayerTeamColor(playerId, assignments)) {
     return false;
   }
   if (round.status !== ROUND_STATUSES.OPEN) {
@@ -225,6 +293,12 @@ function canBuzz(playerId, option) {
   
   if (!settings.rebuzzAllowed && round.buzzedPlayerIds.includes(playerId)) {
     return false;
+  }
+  if (!settings.rebuzzAllowed && settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    const teamMemberIds = getAllBuzzedTeamMemberIds(playerId, participants, assignments);
+    if (teamMemberIds.some((memberId) => round.buzzedPlayerIds.includes(memberId))) {
+      return false;
+    }
   }
   if (!isPlayerBuzzerEnabled(settings, playerId)) {
     return false;
@@ -278,6 +352,7 @@ function getUiSignature() {
       closesAt: round.closesAt,
       remainingCs: round.remainingCs,
       winnerId: round.winnerId,
+      winnerTeam: round.winnerTeam,
       winnerOption: round.winnerOption,
       winnerAnswer: round.winnerAnswer,
       winnerName: round.winnerName,
@@ -303,7 +378,10 @@ function getUiSignature() {
       rouletteMode: settings.rouletteMode,
       rouletteTopAmount: settings.rouletteTopAmount,
       rouletteSinglePlayerTarget: settings.rouletteSinglePlayerTarget,
+      teamModeEnabled: settings.teamModeEnabled,
+      teamScoringMode: settings.teamScoringMode,
     },
+    teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     pendingLogId,
     controllerId: getControllerId(),
     participantCount: currentParticipants().length,
@@ -348,6 +426,13 @@ function getRoulettePlayers() {
 function isRoulettePlayerAllowed(roulette, playerId) {
   if (!roulette?.active) {
     return false;
+  }
+  const settings = getSettings();
+  if (settings.teamModeEnabled) {
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    if (!getPlayerTeamColor(playerId, assignments)) {
+      return false;
+    }
   }
   if (roulette.mode === "single-player") {
     return playerId === roulette.targetPlayerId;
@@ -438,6 +523,7 @@ function maybeFinalizeRoulettePhase() {
       closesAt: null,
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
+      winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
@@ -461,6 +547,11 @@ function startRoulettePhase() {
 
   const settings = getSettings();
   const round = getRound();
+  const participants = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, getControllerId());
+  if (hasUnassignedTeamPlayers(settings, participants, assignments)) {
+    return { ok: false, reason: "Assign every player to a team before starting roulette." };
+  }
   const players = getRoulettePlayers();
   const topAmount = normalizeRouletteTopAmount(settings.rouletteTopAmount);
   const ceiling = settings.rouletteMode === "additive"
@@ -478,6 +569,7 @@ function startRoulettePhase() {
         closesAt: now() + settings.timeOpen * 1000,
         remainingCs: settings.timeOpen * 100,
         winnerId: null,
+        winnerTeam: null,
         winnerOption: null,
         winnerAnswer: null,
         winnerName: null,
@@ -512,6 +604,7 @@ function startRoulettePhase() {
       closesAt: null,
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
+      winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
@@ -600,6 +693,9 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 
   const entry = log[entryIndex];
   const round = getRound();
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const entryScoreKey = entry.scoreKey || getScoreKeyForPlayer(entry.playerId, settings, assignments);
   const oldAwarded = Number(entry.awardedDelta || 0);
   let nextAwarded = Number(newAwardedDelta || 0);
   
@@ -611,12 +707,13 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const diff = nextAwarded - oldAwarded;
 
   const scores = { ...getScores() };
-  scores[entry.playerId] = Number(scores[entry.playerId] || 0) + diff;
+  scores[entryScoreKey] = Number(scores[entryScoreKey] || 0) + diff;
   
   // If screw is active, also update the screwer's score (opposite)
   if (round.screw.active && round.screw.screwerId) {
+    const screwerScoreKey = getScoreKeyForPlayer(round.screw.screwerId, settings, assignments);
     const screwReverseDiff = -diff;
-    scores[round.screw.screwerId] = Number(scores[round.screw.screwerId] || 0) + screwReverseDiff;
+    scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwReverseDiff;
   }
 
   const updatedLog = [...log];
@@ -634,7 +731,6 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
     if (round.status === ROUND_STATUSES.LOCKED) {
-      const settings = getSettings();
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
@@ -646,6 +742,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
             ...round,
             status: ROUND_STATUSES.CLOSED,
             winnerId: null,
+            winnerTeam: null,
             winnerOption: null,
             winnerName: null,
           },
@@ -667,6 +764,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           closesAt: reopenedAt + remainingCs * 10,
           remainingCs,
           winnerId: null,
+          winnerTeam: null,
           winnerOption: null,
           winnerAnswer: null,
           winnerName: null,
@@ -692,12 +790,15 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
 
   const entry = log[entryIndex];
   const round = getRound();
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const entryScoreKey = entry.scoreKey || getScoreKeyForPlayer(entry.playerId, settings, assignments);
   const oldAwarded = Number(entry.awardedDelta || 0);
   const nextAwarded = Number(forcedDelta || 0);
   const diff = nextAwarded - oldAwarded;
 
   const scores = { ...getScores() };
-  scores[entry.playerId] = Number(scores[entry.playerId] || 0) + diff;
+  scores[entryScoreKey] = Number(scores[entryScoreKey] || 0) + diff;
 
   const updatedLog = [...log];
   updatedLog[entryIndex] = {
@@ -714,7 +815,6 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
     if (round.status === ROUND_STATUSES.LOCKED) {
-      const settings = getSettings();
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
@@ -726,6 +826,7 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
             ...round,
             status: ROUND_STATUSES.CLOSED,
             winnerId: null,
+            winnerTeam: null,
             winnerOption: null,
             winnerName: null,
           },
@@ -746,6 +847,7 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
           closesAt: reopenedAt + remainingCs * 10,
           remainingCs,
           winnerId: null,
+          winnerTeam: null,
           winnerOption: null,
           winnerAnswer: null,
           winnerName: null,
@@ -760,6 +862,9 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
 
 function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeftCs) {
   const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const teamColor = getPlayerTeamColor(player.id, assignments);
+  const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
   const points = computeBasePoints(settings, timeLeftCs);
   const entry = {
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -767,6 +872,9 @@ function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeft
     ts: now(),
     playerId: player.id,
     playerName: getPlayerName(player),
+    teamColor,
+    scoreKey,
+    scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
     option,
     answerText,
     timeLeftCs,
@@ -786,6 +894,9 @@ function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeft
 function hostHandleBuzz(player, payload) {
   const settings = getSettings();
   const round = getRound();
+  const players = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  const playerTeamColor = getPlayerTeamColor(player.id, assignments);
   const shouldLockAfterBuzz = settings.lockAfterBuzz && !settings.rebuzzAllowed;
   const usingTextEntry = settings.inputMode === "text";
 
@@ -807,6 +918,10 @@ function hostHandleBuzz(player, payload) {
     }
   }
 
+  if (settings.teamModeEnabled && !playerTeamColor) {
+    return { ok: false, reason: "Host has not assigned you to a team yet." };
+  }
+
   if (!canBuzz(player.id, validOption === null ? undefined : validOption)) {
     return { ok: false, reason: "Buzzers are not open, disabled, or you already buzzed." };
   }
@@ -820,9 +935,10 @@ function hostHandleBuzz(player, payload) {
     },
     timeLeftCs,
   );
-  const buzzedPlayerIds = round.buzzedPlayerIds.includes(player.id)
-    ? round.buzzedPlayerIds
-    : [...round.buzzedPlayerIds, player.id];
+  const newlyBuzzedIds = settings.teamModeEnabled && settings.teamScoringMode === "shared"
+    ? getAllBuzzedTeamMemberIds(player.id, players, assignments)
+    : [player.id];
+  const buzzedPlayerIds = [...new Set([...(round.buzzedPlayerIds || []), ...newlyBuzzedIds])];
 
   if (usingTextEntry && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
@@ -832,6 +948,7 @@ function hostHandleBuzz(player, payload) {
           ...round,
           status: ROUND_STATUSES.LOCKED,
           winnerId: player.id,
+          winnerTeam: playerTeamColor,
           winnerOption: validOption,
           winnerAnswer: answerText,
           winnerName: getPlayerName(player),
@@ -846,6 +963,7 @@ function hostHandleBuzz(player, payload) {
         "round",
         {
           ...round,
+          winnerTeam: null,
           buzzedPlayerIds,
         },
         true,
@@ -869,6 +987,7 @@ function hostHandleBuzz(player, payload) {
         ...round,
         status: ROUND_STATUSES.LOCKED,
         winnerId: player.id,
+        winnerTeam: playerTeamColor,
         winnerOption: validOption,
         winnerAnswer: answerText,
         winnerName: getPlayerName(player),
@@ -905,6 +1024,7 @@ function hostHandleBuzz(player, payload) {
       "round",
       {
         ...round,
+          winnerTeam: null,
         buzzedPlayerIds,
       },
       true,
@@ -958,6 +1078,13 @@ function openBuzzers() {
   console.log("openBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
+  const players = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  if (hasUnassignedTeamPlayers(settings, players, assignments)) {
+    setBuzzNotice("Assign every player to a team before opening buzzers.");
+    render();
+    return;
+  }
   if (settings.valueSelectionMethod === "roulette" && (round.roulette?.finalValue === null || round.roulette?.finalValue === undefined)) {
     setBuzzNotice("Start roulette first to set the round value.");
     render();
@@ -974,6 +1101,7 @@ function openBuzzers() {
       closesAt,
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
+      winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
@@ -1019,6 +1147,7 @@ function closeBuzzers() {
       status: ROUND_STATUSES.CLOSED,
       remainingCs: getTimeLeftCs(round, settings),
       winnerId: null,
+      winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
@@ -1055,6 +1184,7 @@ function resetRound() {
       closesAt: null,
       remainingCs: settings.timeOpen * 100,
       winnerId: null,
+      winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
@@ -1156,6 +1286,16 @@ function selectScrewee(screweeId) {
   }
   if (screwee.id === round.screw.screwerId) {
     return { ok: false, reason: "Cannot screw yourself." };
+  }
+
+  const settings = getSettings();
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    const screwerTeam = getPlayerTeamColor(round.screw.screwerId, assignments);
+    const screweeTeam = getPlayerTeamColor(screweeId, assignments);
+    if (screwerTeam && screwerTeam === screweeTeam) {
+      return { ok: false, reason: "Cannot screw your own team in shared team mode." };
+    }
   }
   
   setState(
@@ -1289,6 +1429,10 @@ function hostTick() {
         const screweePlayer = currentParticipants().find((p) => p.id === round.screw.screweeId);
         if (screweePlayer) {
           const settings = getSettings();
+          const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+          const screweeTeamColor = getPlayerTeamColor(round.screw.screweeId, assignments);
+          const screweeScoreKey = getScoreKeyForPlayer(round.screw.screweeId, settings, assignments);
+          const screwerScoreKey = getScoreKeyForPlayer(round.screw.screwerId, settings, assignments);
           const basePoints = computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
           const entry = {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1296,6 +1440,9 @@ function hostTick() {
             ts: now(),
             playerId: round.screw.screweeId,
             playerName: round.screw.screeeName,
+            teamColor: screweeTeamColor,
+            scoreKey: screweeScoreKey,
+            scoreTarget: screweeScoreKey.startsWith("team:") ? `Team ${screweeTeamColor}` : round.screw.screeeName,
             option: null,
             answerText: "[No answer - Screw timeout]",
             timeLeftCs: round.remainingCs || settings.timeOpen * 100,
@@ -1315,8 +1462,8 @@ function hostTick() {
           
           // Auto-award points (screwee loses, screwer gains)
           const scores = { ...getScores() };
-          scores[round.screw.screweeId] = Number(scores[round.screw.screweeId] || 0) - basePoints;
-          scores[round.screw.screwerId] = Number(scores[round.screw.screwerId] || 0) + basePoints;
+          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints;
+          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + basePoints;
           setState("scores", scores, true);
         }
       }
@@ -1343,6 +1490,7 @@ function hostTick() {
         status: ROUND_STATUSES.CLOSED,
         remainingCs: 0,
         winnerId: null,
+        winnerTeam: null,
         winnerOption: null,
         winnerAnswer: null,
         winnerName: null,
@@ -1380,6 +1528,12 @@ function setHostSetting(key, value) {
   }
   if (key === "rouletteTopAmount") {
     next.rouletteTopAmount = normalizeRouletteTopAmount(value);
+  }
+  if (key === "teamModeEnabled" && !value) {
+    next.teamScoringMode = "alliance";
+  }
+  if (key === "teamScoringMode") {
+    next.teamScoringMode = value === "shared" ? "shared" : "alliance";
   }
   setState("settings", next, true);
   render();
@@ -1447,6 +1601,31 @@ function togglePlayerBuzzer(playerId) {
   render();
 }
 
+function setPlayerTeam(playerId, teamColor) {
+  if (!isHost()) {
+    return;
+  }
+
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((player) => player.id === playerId) || playerId === controllerId) {
+    return;
+  }
+
+  const nextAssignments = {
+    ...normalizeTeamAssignments(getTeamAssignments(), players, controllerId),
+  };
+
+  if (!teamColor || !TEAM_COLORS.includes(teamColor)) {
+    delete nextAssignments[playerId];
+  } else {
+    nextAssignments[playerId] = teamColor;
+  }
+
+  setState("teamAssignments", nextAssignments, true);
+  render();
+}
+
 function assignControllerIfNeeded() {
   if (!isHost()) {
     return;
@@ -1463,7 +1642,17 @@ function ensureHostInit() {
     return;
   }
   if (!getState("settings")) {
-    setState("settings", DEFAULT_SETTINGS, true);
+    const teamModeEnabled = hostPrejoinTeamSetting !== "off";
+    const teamScoringMode = hostPrejoinTeamSetting === "shared" ? "shared" : "alliance";
+    setState(
+      "settings",
+      {
+        ...DEFAULT_SETTINGS,
+        teamModeEnabled,
+        teamScoringMode,
+      },
+      true,
+    );
   }
   if (!getState("round")) {
     resetRound();
@@ -1478,6 +1667,13 @@ function ensureHostInit() {
     setState("pendingLogId", null, true);
   }
   assignControllerIfNeeded();
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  const normalizedAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const currentAssignments = getTeamAssignments();
+  if (JSON.stringify(normalizedAssignments) !== JSON.stringify(currentAssignments)) {
+    setState("teamAssignments", normalizedAssignments, true);
+  }
 }
 
 function optionButtonLabel(option) {
@@ -1497,6 +1693,17 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card controller-card">
         <h2>Host Control Screen</h2>
         <p>You are the Host and do not have a buzzer input.</p>
+      </section>
+    `;
+  }
+
+  const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, teamAssignments);
+  if (settings.teamModeEnabled && !myTeamColor) {
+    return `
+      <section class="card player-card">
+        <h2>Waiting For Team Assignment</h2>
+        <p class="muted">The Host must assign you to a team before your buzzer appears.</p>
       </section>
     `;
   }
@@ -1579,13 +1786,18 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const disabled = round.status !== ROUND_STATUSES.OPEN;
   const alreadyBuzzed = round.buzzedPlayerIds.includes(mePlayer.id);
   const rebuzzAllowed = Boolean(settings.rebuzzAllowed);
+  const teamAlreadyBuzzed = settings.teamModeEnabled && settings.teamScoringMode === "shared" && !rebuzzAllowed
+    ? getAllBuzzedTeamMemberIds(mePlayer.id, currentParticipants(), teamAssignments).some((id) => round.buzzedPlayerIds.includes(id))
+    : false;
   const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
   const screwInProgress = round.screw.active;
-  const globalDisabled = disabled || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled || screwInProgress;
+  const globalDisabled = disabled || (!rebuzzAllowed && (alreadyBuzzed || teamAlreadyBuzzed)) || playerDisabled || screwInProgress;
   const helperText = playerDisabled
     ? "Your buzzer is disabled by the Host."
     : disabled
     ? "Buzzers are currently closed."
+    : teamAlreadyBuzzed
+      ? "Your team already buzzed this round."
     : !rebuzzAllowed && alreadyBuzzed
       ? "You already buzzed this round."
       : screwInProgress
@@ -1618,6 +1830,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       ? "Your answer input is disabled by the Host."
       : disabled
       ? "Answers are currently closed."
+      : teamAlreadyBuzzed
+        ? "Your team already answered this round."
       : !rebuzzAllowed && alreadyBuzzed
         ? "You already submitted an answer this round."
         : screwInProgress
@@ -1953,6 +2167,49 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
   `;
 }
 
+function renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr) {
+  if (!settings.teamModeEnabled) {
+    return "";
+  }
+
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  if (nonControllerPlayers.length === 0) {
+    return `
+      <div class="toggle-group team-setup-group">
+        <span class="muted">Team assignments</span>
+        <p class="muted">No non-Host participants connected yet.</p>
+      </div>
+    `;
+  }
+
+  const rows = nonControllerPlayers
+    .map((player) => {
+      const selected = assignments[player.id] || "";
+      const teamPill = selected
+        ? `<span class="team-pill team-${selected}">${selected}</span>`
+        : `<span class="team-pill team-none">unassigned</span>`;
+      return `
+        <div class="team-assignment-row">
+          <strong>${escapeHtml(getPlayerName(player))}</strong>
+          ${teamPill}
+          <select data-team-player="${player.id}" ${settingDisabledAttr}>
+            <option value="">Unassigned</option>
+            ${TEAM_COLORS.map((color) => `<option value="${color}" ${selected === color ? "selected" : ""}>${color}</option>`).join("")}
+          </select>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <div class="toggle-group team-setup-group">
+      <span class="muted">Team assignments</span>
+      <div class="team-assignment-list">${rows}</div>
+    </div>
+  `;
+}
+
 function renderHostSettings(settings, round, timeLeftCs, players, controllerId) {
   if (!isControllerPlayer()) {
     return "";
@@ -1961,6 +2218,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
   const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const missingTeamAssignments = hasUnassignedTeamPlayers(settings, players, teamAssignments);
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
 
@@ -2111,6 +2370,24 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <option value="false" ${!settings.allowScrewing ? "selected" : ""}>Off</option>
           </select>
         </label>
+
+        <label>
+          Teams
+          <select data-setting="teamModeEnabled" ${settingDisabledAttr}>
+            <option value="false" ${!settings.teamModeEnabled ? "selected" : ""}>Off</option>
+            <option value="true" ${settings.teamModeEnabled ? "selected" : ""}>On</option>
+          </select>
+        </label>
+
+        ${settings.teamModeEnabled
+          ? `<label>
+              Team scoring
+              <select data-setting="teamScoringMode" ${settingDisabledAttr}>
+                <option value="alliance" ${settings.teamScoringMode === "alliance" ? "selected" : ""}>Alliance (individual scores + team totals)</option>
+                <option value="shared" ${settings.teamScoringMode === "shared" ? "selected" : ""}>Team mode (shared buzzer + shared score)</option>
+              </select>
+            </label>`
+          : ""}
       </div>
 
       <!-- Pre-set correct answer UI -->
@@ -2144,12 +2421,13 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
 
       ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
       ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
+      ${renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr)}
 
       <div class="host-actions">
         ${settings.scoringMode === "roulette"
           ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
           : ""}
-        <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN ? "disabled" : ""}>Open Buzzers</button>
+        <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
         <button type="button" data-host-action="close">Close Buzzers</button>
         <button type="button" data-host-action="reset">Reset Round</button>
         ${settings.allowScrewing && round.screwsUsed >= 1 ? `<button type="button" data-host-action="reset-screws">Reset Screws</button>` : ""}
@@ -2164,6 +2442,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
         ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Roulette is running.</span>" : ""}
+        ${settings.teamModeEnabled && missingTeamAssignments
+          ? "<span>Assign every player to a team before opening buzzers.</span>"
+          : ""}
         ${settingsLocked ? "<span>Settings are locked while buzzers are open.</span>" : ""}
       </div>
     </section>
@@ -2235,18 +2516,61 @@ function renderLockedRuling(settings, pendingEntry) {
 }
 
 function renderScores(players, scores) {
+  const settings = getSettings();
   const controllerId = getControllerId();
   const visiblePlayers = players.filter((player) => player.id !== controllerId);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    const teamItems = TEAM_COLORS
+      .map((teamColor) => {
+        const members = getTeamMembers(teamColor, players, assignments);
+        if (members.length === 0) {
+          return "";
+        }
+        const teamScore = Number(scores[getTeamScoreKey(teamColor)] || 0);
+        const memberNames = members.map((player) => escapeHtml(getPlayerName(player))).join(", ");
+        return `<li class="team-score-row team-${teamColor}"><span><strong>${teamColor}</strong> <small>${memberNames}</small></span><strong>${teamScore}</strong></li>`;
+      })
+      .filter(Boolean)
+      .join("");
+
+    return `
+      <section class="card score-card">
+        <h2>Team Scores</h2>
+        <ul>${teamItems || "<li>No teams assigned yet.</li>"}</ul>
+      </section>
+    `;
+  }
+
   const items = visiblePlayers
     .map((player) => {
       const value = Number(scores[player.id] || 0);
-      return `<li><span>${getPlayerName(player)}</span><strong>${value}</strong></li>`;
+      const teamColor = getPlayerTeamColor(player.id, assignments);
+      const teamPill = teamColor ? `<span class="team-pill team-${teamColor}">${teamColor}</span>` : "";
+      return `<li><span>${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong>${value}</strong></li>`;
     })
     .join("");
+
+  const teamTotals = settings.teamModeEnabled
+    ? TEAM_COLORS
+        .map((teamColor) => {
+          const members = getTeamMembers(teamColor, players, assignments);
+          if (members.length === 0) {
+            return "";
+          }
+          const total = members.reduce((sum, member) => sum + Number(scores[member.id] || 0), 0);
+          return `<li class="team-score-row team-${teamColor}"><span><strong>${teamColor}</strong></span><strong>${total}</strong></li>`;
+        })
+        .filter(Boolean)
+        .join("")
+    : "";
+
   return `
     <section class="card score-card">
-      <h2>Scores</h2>
+      <h2>${settings.teamModeEnabled ? "Player Scores" : "Scores"}</h2>
       <ul>${items || "<li>No players yet.</li>"}</ul>
+      ${teamTotals ? `<h3>Alliance totals</h3><ul>${teamTotals}</ul>` : ""}
     </section>
   `;
 }
@@ -2270,6 +2594,7 @@ function renderLog(log, settings) {
         <li>
           <div class="log-main">
             <span class="log-player">${entry.playerName}</span>
+            <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
             <span>
               ${
                 entry.answerText
@@ -2321,6 +2646,8 @@ function render() {
   const pendingLogId = getSafeState("pendingLogId", null);
   const pendingEntry = gameLog.find((entry) => entry.id === pendingLogId) || null;
   const controller = getController();
+  const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controller?.id || null);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, teamAssignments);
   const showAdminData = isControllerPlayer();
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
 
@@ -2340,6 +2667,7 @@ function render() {
         </div>
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
+          ${settings.teamModeEnabled && !isControllerPlayer() ? `<span>Team: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
           <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
           <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
           <span style="font-size:0.8rem;margin-left:1rem;color:#999" data-debug-ids>me:${escapeHtml(mePlayer?.id||"?")} controller:${escapeHtml(getControllerId()||"?")} participants:${currentParticipants().length}</span>
@@ -2465,6 +2793,20 @@ function bindEvents() {
           setHostSetting("allowScrewing", input.value === "true");
           return;
         }
+        if (setting === "teamModeEnabled") {
+          setHostSetting("teamModeEnabled", input.value === "true");
+          return;
+        }
+        if (setting === "teamScoringMode") {
+          setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance");
+          return;
+        }
+      });
+    });
+
+    app.querySelectorAll("[data-team-player]").forEach((input) => {
+      input.addEventListener("change", () => {
+        setPlayerTeam(input.dataset.teamPlayer, String(input.value || ""));
       });
     });
 
@@ -2475,7 +2817,10 @@ function bindEvents() {
           openBuzzers();
         } else if (action === "start-roulette") {
           const result = startRoulettePhase();
-          if (result?.message) {
+          if (result?.ok === false) {
+            setBuzzNotice(result.reason || "Could not start roulette.");
+            render();
+          } else if (result?.message) {
             setBuzzNotice(result.message);
             render();
           }
@@ -2723,6 +3068,8 @@ function renderPrejoinScreen(mode = "landing", error = "") {
   const savedName = getPrejoinNameDraft();
 
   if (mode === "host") {
+    const isAlliance = hostPrejoinTeamSetting === "alliance";
+    const isShared = hostPrejoinTeamSetting === "shared";
     app.innerHTML = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-host">
@@ -2739,6 +3086,15 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             <label>
               Host name
               <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
+            </label>
+
+            <label>
+              Team setup
+              <select data-prejoin-input id="prejoin-team-mode">
+                <option value="off" ${!isAlliance && !isShared ? "selected" : ""}>Off (free-for-all)</option>
+                <option value="alliance" ${isAlliance ? "selected" : ""}>Alliance mode (individual buzzers + summed team score)</option>
+                <option value="shared" ${isShared ? "selected" : ""}>Team mode (shared team buzzer + team score)</option>
+              </select>
             </label>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
@@ -2869,6 +3225,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       const mode = form.dataset.prejoinForm;
       const nameInput = app.querySelector("#prejoin-name");
       const roomInput = app.querySelector("#prejoin-room-code");
+      const teamModeInput = app.querySelector("#prejoin-team-mode");
 
       const chosenName = nameInput?.value?.trim() || "";
       const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
@@ -2890,6 +3247,11 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
       if (mode !== "display") {
         localStorage.setItem(NAME_KEY, chosenName);
+      }
+
+      if (mode === "host") {
+        const selectedTeamSetting = String(teamModeInput?.value || "off");
+        hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
       }
 
       const submitButton = form.querySelector("button[type='submit']");
