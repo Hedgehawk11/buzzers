@@ -43,12 +43,12 @@ const ROUND_STATUSES = {
 };
 
 const ROULETTE_PATTERN = [
-  { label: "Low", min: 0.16, max: 0.34 },
-  { label: "Low", min: 0.14, max: 0.32 },
-  { label: "Medium", min: 0.38, max: 0.62 },
-  { label: "Low", min: 0.15, max: 0.33 },
-  { label: "Really Low", min: 0.04, max: 0.14 },
-  { label: "High", min: 0.68, max: 1 },
+  { label: "", min: 0.16, max: 0.34 },
+  { label: "", min: 0.14, max: 0.32 },
+  { label: "", min: 0.38, max: 0.62 },
+  { label: "", min: 0.15, max: 0.33 },
+  { label: "", min: 0.04, max: 0.14 },
+  { label: "", min: 0.68, max: 1 },
 ];
 
 const app = document.querySelector("#app");
