@@ -19,6 +19,8 @@ const DEFAULT_SETTINGS = {
   rouletteMode: "additive",
   rouletteTopAmount: 1000,
   rouletteSinglePlayerTarget: "random",
+  gameMode: "normal",
+  teamMode: "alliance",
 };
 
 const ROUND_STATUSES = {
@@ -198,6 +200,24 @@ function getController() {
   return currentParticipants().find((p) => p.id === id) || null;
 }
 
+
+// Team Mode Helpers
+const TEAM_COLORS = {"red":"#eb3d30","blue":"#22a6f2","green":"#1db954","purple":"#9b59b6","gray":"#7f8c8d","orange":"#e67e22","magenta":"#e84393"};
+const TEAM_NAMES = Object.keys(TEAM_COLORS);
+function getGameMode() { return getState("gameMode") || "normal"; }
+function getTeamsState() { const t=getState("teams"); return t&&typeof t==="object"?t:{}; }
+function getPlayerTeam(pid) { for(const[n,t] of Object.entries(getTeamsState())){if(t&&Array.isArray(t.players)&&t.players.includes(pid))return n;}return null;}
+function hasPlayerBeenAssigned(pid) { return getPlayerTeam(pid)!==null; }
+function isAnyTeamUnassigned() { const players=currentParticipants(); for(const p of players){if(!hasPlayerBeenAssigned(p.id))return true;}return false; }
+function getTeamColor(name) { return TEAM_COLORS[name]||"#888"; }
+function setPlayerTeam(pid, teamName) {
+  const teams=getTeamsState();
+  for(const t of Object.values(teams)){if(Array.isArray(t.players))t.players=t.players.filter(id=>id!==pid);}
+  if(!teams[teamName])teams[teamName]={name:teamName,color:getTeamColor(teamName),players:[]};
+  teams[teamName].players=[...(teams[teamName].players||[]),pid];
+  setState("teams",teams,true);render();
+}
+function getTeamsMode() { const t=getTeamsState(); return (t&&t._mode)?t._mode:"alliance"; }
 function isControllerPlayer() {
   return me().id === getControllerId();
 }
@@ -206,6 +226,8 @@ function canBuzz(playerId, option) {
   const round = getRound();
   const controllerId = getControllerId();
   const settings = getSettings();
+  // Team mode: must be assigned first
+  if (getGameMode() === "teams") { if (!hasPlayerBeenAssigned(playerId)) return false; }
   if (playerId === controllerId) {
     return false;
   }
@@ -272,6 +294,7 @@ function getUiSignature() {
   const settings = getSettings();
   const pendingLogId = getSafeState("pendingLogId", null);
   return JSON.stringify({
+    gameMode: getGameMode(),
     round: {
       status: round.status,
       opensAt: round.opensAt,
@@ -1358,6 +1381,8 @@ function setHostSetting(key, value) {
   if (!isHost()) {
     return;
   }
+  if (key === "gameMode") { setState("gameMode", value, true); render(); return; }
+  if (key === "teamMode") { const s={...getSettings(),[key]:value}; setState("settings",s,true); render(); return; }
   const settings = getSettings();
   const next = { ...settings, [key]: value };
   if (key === "scoringMode" && value === "uniform") {
@@ -1977,6 +2002,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       <h2>Host Controls</h2>
       <div class="control-grid">
         <label>
+          Game Mode
+          <select data-setting="gameMode">
+            <option value="normal" selected>Normal</option>
+            <option value="teams">Teams</option>
+          </select>
+        </label>
+
+        <label>
           Time open
           <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} />
         </label>
@@ -2038,6 +2071,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 </select>
               </label>`
         }
+
+        <label>
+          Team Mode
+          <select data-setting="teamMode">
+            <option value="alliance">Alliance</option>
+            <option value="shared">Shared</option>
+          </select>
+        </label>
 
         <label>
           Scoring
@@ -2170,6 +2211,24 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   `;
 }
 
+function renderTeamUI() {
+  if (!isControllerPlayer() || getGameMode() !== "teams") return "";
+  const teams=getTeamsState();
+  var unassigned=currentParticipants().filter(function(p){return p.id!==getControllerId()&&!hasPlayerBeenAssigned(p.id);});
+  if(unassigned.length===0){
+    var items="";
+    for(var keys=Object.keys(teams),k=0;k<keys.length;k++){var n=keys[k];var tm=teams[n];if(!n.startsWith("_")&&tm.players&&tm.players.length>0){var c=getTeamColor(n);var m=tm.players.map(function(pid){return getPlayerName(currentParticipants().find(function(p){return p.id===pid;}));}).filter(Boolean).join(", ");items+="<div class=\"team-row\" style=\"border-left:4px solid "+c+";\"><span class=\"tname\""+">"+n.toUpperCase()+"</span><strong>"+m+"</strong></div>";}}
+    var ml=(getTeamsMode()==="shared")?"Team Mode (shared buzzer+score)":"Alliance Mode (separate buzzers+summed score)";
+    return "<section class=\"card team-ui-card\"><h3>Teams</h3><p class=\"muted\""+">"+ml+"</p>"+items+"</section>";
+  }
+  var html="";
+  for(var i=0;i<unassigned.length;i++){var player=unassigned[i];var nm=getPlayerName(player);var btns="";
+    for(var j=0;j<TEAM_NAMES.length;j++){var cn=TEAM_NAMES[j];if(!teams[cn])teams[cn]={name:cn,color:getTeamColor(cn),players:[]};var ct=teams[cn].players.length;var mx=(getTeamsMode()==="shared")?6:4;
+      if(ct<mx)btns+="<button type=\"button\" class=\"team-btn\" data-assign-team=\"""+cn+"\" style=\"--tc:"+getTeamColor(cn)+";\">"+cn.charAt(0).toUpperCase()+cn.slice(1)+" ("+ct+")</button>";}
+    html+="<div class=\"tp\"><strong>"+escapeHtml(nm)+"</strong><div>"+btns+"</div></div>";
+  }
+  return "<section class=\"card team-ui-card\"><h3>Assign Teams</h3><p class=\"muted\""+">Assign each player to a color before opening buzzers.</p>"+html+"</section>";
+}
 function renderScrewNotice(round) {
   if (!isControllerPlayer() || !round.screw.active) {
     return "";
@@ -2234,22 +2293,7 @@ function renderLockedRuling(settings, pendingEntry) {
   `;
 }
 
-function renderScores(players, scores) {
-  const controllerId = getControllerId();
-  const visiblePlayers = players.filter((player) => player.id !== controllerId);
-  const items = visiblePlayers
-    .map((player) => {
-      const value = Number(scores[player.id] || 0);
-      return `<li><span>${getPlayerName(player)}</span><strong>${value}</strong></li>`;
-    })
-    .join("");
-  return `
-    <section class="card score-card">
-      <h2>Scores</h2>
-      <ul>${items || "<li>No players yet.</li>"}</ul>
-    </section>
-  `;
-}
+function renderTeamScores(scores) {,  const teams=getTeamsState(); if(!teams||Object.keys(teams).length===0)return"";,  const items=Object.entries(teams).sort((a,b)=>TEAM_NAMES.indexOf(a[0])-TEAM_NAMES.indexOf(b[0])).map(function([tn,tm]){,    var color=getTeamColor(tn); var score=Number(scores[tn]||0); var count=Array.isArray(tm.players)?tm.players.length:0;,    return "<li style=\"border-left:4px solid "+color+";\"><span>"+tn.charAt(0).toUpperCase()+tn.slice(1)+" ("+count+")</span><strong style=\"color:"+color+";\">"+score+"</strong></li>";,  }).join("");,  return "<section class=\"card score-card\"><h2>Team Scores</h2><ul>"+(items||"<li>No teams yet.</li>")+"</ul></section>";,},,function renderScores(players, scores) {,  if (getGameMode() === "teams") { return renderTeamScores(scores); }
 
 function renderLog(log, settings) {
   const rows = [...log]
