@@ -4,7 +4,7 @@ Now you do.
 
 This is mainly built for running live You Dont Know Jack games, and I do think you *could* do jeopardy, but there are *way* better options for that, again, this is built for multiple choice option quiz games with a slide deck showing the questions and options or just as john buzzer.
 
-But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, again, this is built for live YDKJ games, where there is more comedy then questions it does require an external slide deck for showing questions, but now includes a score sheet/general display for the side of your slideshow.
+But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, again, this is built for live YDKJ games, where there is more comedy then questions, it also does require an external slide deck for showing questions, but now includes a score sheet/general display for the side of your slideshow.
 
 ## FAQ
 ### Where is room code?
@@ -23,7 +23,7 @@ Music, Questions, eveything exept a scoreboard, who buzzed etc.
 Thanks captain obvious, i was mainly on the configurablily of everything (seriously, go look at the options)
 
 ### Whats coming?
-Better disordat support, bingo, roadkill, (Can you tell I like the Ride) team mode etc.
+Better disordat support, bingo, roadkill, (Can you tell I like the Ride) etc.
 
 ### How make work?
 Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
