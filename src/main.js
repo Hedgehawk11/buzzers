@@ -1699,11 +1699,18 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
 
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const myTeamColor = getPlayerTeamColor(mePlayer.id, teamAssignments);
+  const teamButtonClass = myTeamColor ? `team-buzzer team-${myTeamColor}` : "";
+  const appendTeamButtonClass = (baseClass = "") => {
+    if (!teamButtonClass) {
+      return baseClass;
+    }
+    return baseClass ? `${baseClass} ${teamButtonClass}` : teamButtonClass;
+  };
   if (settings.teamModeEnabled && !myTeamColor) {
     return `
       <section class="card player-card">
         <h2>Waiting For Team Assignment</h2>
-        <p class="muted">The Host must assign you to a team before your buzzer appears.</p>
+        <p class="muted">The Host must assign you to an alliance before your buzzer appears.</p>
       </section>
     `;
   }
@@ -1758,14 +1765,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <h2>You're Being Screwed!</h2>
           <p class="muted">Screw timer: <strong>${timeText}s</strong></p>
           <p class="muted">Answer quickly!</p>
-          <button type="button" class="big-red" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>BUZZ</button>
+          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>BUZZ</button>
         </section>
       `;
     }
     
     if (settings.optionCount === 4) {
       const button = (opt, cls) => {
-        return `<button type="button" class="${cls}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
+        return `<button type="button" class="${appendTeamButtonClass(cls)}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
       };
       return `
         <section class="card player-card">
@@ -1846,7 +1853,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="Type your answer" ${disabledAttr} />
-          <button data-answer-submit ${disabledAttr}>Submit Answer</button>
+          <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>Submit Answer</button>
         </div>
       </section>
     `;
@@ -1865,7 +1872,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <p class="muted">${optionDisabled ? "This buzzer is disabled by the Host." : helperText}</p>
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
-        <button type="button" class="big-red" data-buzz="1" ${disabledAttr}>BUZZ</button>
+        <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>BUZZ</button>
         ${screwBtn}
       </section>
     `;
@@ -1875,7 +1882,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const buttons = [1, 2, 3, 4, 5, 6]
       .map((opt) => {
         const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-        return `<button type="button" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
+        return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
       })
       .join("");
     const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
@@ -1897,7 +1904,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (settings.optionCount === 4) {
     const button = (opt, cls) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-      return `<button type="button" class="${cls}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      return `<button type="button" class="${appendTeamButtonClass(cls)}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
     const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
@@ -1925,7 +1932,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     .filter((opt) => opt <= max)
     .map((opt) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-      return `<button type="button" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     })
     .join("");
   const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
@@ -2673,7 +2680,7 @@ function render() {
       </header>
 
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${settings.teamModeEnabled ? renderTeamAssignmentControls(settings, players, controller?.id || null, round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : "") : ""}
+      ${settings.teamModeEnabled && isControllerPlayer() ? renderTeamAssignmentControls(settings, players, controller?.id || null, round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : "") : ""}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
