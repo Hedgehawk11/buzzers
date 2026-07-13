@@ -2167,6 +2167,7 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
   `;
 }
 
+function renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr) {
   if (!settings.teamModeEnabled) {
     return "";
   }
