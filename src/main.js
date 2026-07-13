@@ -2167,7 +2167,6 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
   `;
 }
 
-function renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr) {
   if (!settings.teamModeEnabled) {
     return "";
   }
@@ -2421,9 +2420,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
 
       ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
       ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
-      ${renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr)}
 
-      <div class="host-actions">
         ${settings.scoringMode === "roulette"
           ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
           : ""}
@@ -2667,7 +2664,7 @@ function render() {
         </div>
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
-          ${settings.teamModeEnabled && !isControllerPlayer() ? `<span>Team: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
+          ${settings.teamModeEnabled && !isControllerPlayer() ? `<span>Alliance: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
           <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
           <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
           <span style="font-size:0.8rem;margin-left:1rem;color:#999" data-debug-ids>me:${escapeHtml(mePlayer?.id||"?")} controller:${escapeHtml(getControllerId()||"?")} participants:${currentParticipants().length}</span>
@@ -2675,9 +2672,7 @@ function render() {
       </header>
 
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-
-      ${renderScrewNotice(round)}
-
+      ${settings.teamModeEnabled ? renderTeamAssignmentControls(settings, players, controller?.id || null, round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : "") : ""}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
