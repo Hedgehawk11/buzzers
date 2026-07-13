@@ -1774,8 +1774,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <p class="muted">Answer quickly!</p>
           <div class="abxy-diamond">
             ${button(4, "pos-y")}
-            ${button(2, "pos-b")}
             ${button(3, "pos-x")}
+            ${button(2, "pos-b")}
             ${button(1, "pos-a")}
           </div>
         </section>
