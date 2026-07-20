@@ -1,3 +1,5 @@
+//Why this is here, I dont know --Hedgehawk11
+
 export function setupCounter(element) {
   let counter = 0
   const setCounter = (count) => {

@@ -1863,7 +1863,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const optionDisabled = !isOptionEnabled(settings, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
     const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
-      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+      ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
       : "";
     
     return `
@@ -1886,7 +1886,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       })
       .join("");
     const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
-      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+      ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
       : "";
     
     return `
@@ -2367,7 +2367,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   </label>`
                 : ""}
               <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</div>`
-            : ""
+            : ""}
         }
 
         <label>
