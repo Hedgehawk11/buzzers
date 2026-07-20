@@ -404,6 +404,12 @@ function normalizeRouletteTopAmount(value) {
   return allowed.includes(numeric) ? numeric : 1000;
 }
 
+function normalizeUniformPoints(value) {
+  const allowed = [500, 1000, 1500, 2000, 2500, 3000];
+  const numeric = Number(value);
+  return allowed.includes(numeric) ? numeric : 1000;
+}
+
 function seededFraction(seed) {
   const raw = Math.sin(seed * 12.9898) * 43758.5453;
   return raw - Math.floor(raw);
@@ -2319,8 +2325,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             ? `<label>
                 Uniform points
                   <select data-setting="uniformPoints" ${settingDisabledAttr}>
+                  <option value="500" ${settings.uniformPoints === 500 ? "selected" : ""}>500</option>
                   <option value="1000" ${settings.uniformPoints === 1000 ? "selected" : ""}>1000</option>
+                  <option value="1500" ${settings.uniformPoints === 1500 ? "selected" : ""}>1500</option>
                   <option value="2000" ${settings.uniformPoints === 2000 ? "selected" : ""}>2000</option>
+                  <option value="2500" ${settings.uniformPoints === 2500 ? "selected" : ""}>2500</option>
                   <option value="3000" ${settings.uniformPoints === 3000 ? "selected" : ""}>3000</option>
                 </select>
               </label>`
@@ -2367,7 +2376,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   </label>`
                 : ""}
               <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</div>`
-            : ""}
+            : ""
         }
 
         <label>
@@ -2785,7 +2794,7 @@ function bindEvents() {
           return;
         }
         if (setting === "uniformPoints") {
-          setHostSetting("uniformPoints", Number(input.value));
+          setHostSetting("uniformPoints", normalizeUniformPoints(input.value));
           return;
         }
         if (setting === "jackMultiplier") {
