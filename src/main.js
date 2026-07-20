@@ -42,6 +42,17 @@ const ROULETTE_PATTERN = [
   { label: "", min: 0.68, max: 1 },
 ];
 
+const GAME_MODES = {
+  STANDARD: "standard",
+  BINGO: "bingo",
+  WEND: "wend",
+};
+
+const LETTER_GAME_POINTS = 500;
+const LETTER_GAME_SPIN_MS = 150;
+const BINGO_WORDS = ["APPLE", "BRAVE", "CRANE", "DRIFT", "GHOST", "MANGO", "PIVOT", "SHEEP", "TRACE", "WHALE"];
+const WEND_WORDS = ["BEFORE", "NEVER", "AFTER"];
+
 const app = document.querySelector("#app");
 const NAME_KEY = "buzzer_player_name";
 let gameLaunched = false;
@@ -51,6 +62,7 @@ let buzzNoticeTs = 0;
 let lastUiSignature = "";
 let prejoinMode = "landing";
 let rouletteAnimationInterval = null;
+let letterGameAnimationInterval = null;
 let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
@@ -232,6 +244,7 @@ function getRound() {
       finalValue: null,
       finishedAt: null,
     },
+    bingo: getDefaultLetterGameState(),
     screw: {
       active: false,
       screwerId: null,
@@ -242,6 +255,123 @@ function getRound() {
     },
     screwsUsed: 0,
   });
+}
+
+function normalizeGameMode(value) {
+  const normalized = String(value || GAME_MODES.STANDARD).trim().toLowerCase();
+  if (normalized === GAME_MODES.BINGO || normalized === GAME_MODES.WEND) {
+    return normalized;
+  }
+  return GAME_MODES.STANDARD;
+}
+
+function getLetterGameMode(settings = getSettings()) {
+  return normalizeGameMode(settings.gameMode);
+}
+
+function isLetterGameMode(settings = getSettings()) {
+  return getLetterGameMode(settings) !== GAME_MODES.STANDARD;
+}
+
+function getLetterGameWords(mode = getLetterGameMode()) {
+  return mode === GAME_MODES.WEND ? WEND_WORDS : BINGO_WORDS;
+}
+
+function normalizeLetterGameWord(mode, value) {
+  const words = getLetterGameWords(mode);
+  const normalized = String(value || "").trim().toUpperCase();
+  return words.includes(normalized) ? normalized : words[0];
+}
+
+function getDefaultLetterGameState(settings = getSettings()) {
+  const mode = getLetterGameMode(settings);
+  const defaultWord = normalizeLetterGameWord(mode, getLetterGameWords(mode)[0]);
+  return {
+    active: false,
+    mode,
+    word: defaultWord,
+    targetIndex: 0,
+    litIndex: null,
+    spinStartedAt: null,
+    spinSeed: 0,
+    collectedByPlayer: {},
+    winnerPlayerId: null,
+    winnerPlayerName: null,
+  };
+}
+
+function getLetterGameState(round = getRound()) {
+  return round?.bingo || getDefaultLetterGameState();
+}
+
+function getLetterGameWord(round = getRound(), settings = getSettings()) {
+  const letterGame = getLetterGameState(round);
+  const mode = letterGame.mode || getLetterGameMode(settings);
+  return normalizeLetterGameWord(mode, letterGame.word);
+}
+
+function getLetterGameLitIndex(letterGame = getLetterGameState()) {
+  if (!letterGame?.active) {
+    return null;
+  }
+  const word = String(letterGame.word || "");
+  if (!word.length) {
+    return null;
+  }
+  const startedAt = Number(letterGame.spinStartedAt || now());
+  const frame = Math.floor(Math.max(0, now() - startedAt) / LETTER_GAME_SPIN_MS);
+  const seed = Number(letterGame.spinSeed || 0);
+  return Math.floor(seededFraction(frame + seed) * word.length) % word.length;
+}
+
+function getLetterGameCollectedIndices(letterGame = getLetterGameState(), playerId) {
+  const collected = letterGame?.collectedByPlayer?.[playerId];
+  return Array.isArray(collected) ? collected.map(Number).filter((index) => Number.isInteger(index)) : [];
+}
+
+function getLetterGameCollectableCount(letterGame = getLetterGameState()) {
+  return String(letterGame?.word || "").length;
+}
+
+function normalizeLetterGameCollectedByPlayer(collectedByPlayer, wordLength) {
+  const normalized = {};
+  Object.entries(collectedByPlayer || {}).forEach(([playerId, collected]) => {
+    const unique = [...new Set((Array.isArray(collected) ? collected : []).map(Number).filter((index) => Number.isInteger(index) && index >= 0 && index < wordLength))];
+    normalized[playerId] = unique.sort((a, b) => a - b);
+  });
+  return normalized;
+}
+
+function createLetterGameLogEntry(player, letterGame, targetIndex, timeLeftCs) {
+  const word = String(letterGame.word || "");
+  const targetLetter = word[targetIndex] || "";
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const teamColor = getPlayerTeamColor(player.id, assignments);
+  const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  const entry = {
+    id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: "letter-game",
+    ts: now(),
+    playerId: player.id,
+    playerName: getPlayerName(player),
+    teamColor,
+    scoreKey,
+    scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
+    option: targetIndex + 1,
+    answerText: targetLetter,
+    timeLeftCs,
+    scoringMode: "fixed",
+    jackMultiplier: 1,
+    uniformPoints: LETTER_GAME_POINTS,
+    basePoints: LETTER_GAME_POINTS,
+    awardedDelta: LETTER_GAME_POINTS,
+    resolved: true,
+  };
+
+  const log = getLog();
+  setState("gameLog", [...log, entry], true);
+  return entry;
 }
 
 function getScores() {
@@ -274,6 +404,14 @@ function canBuzz(playerId, option) {
   if (playerId === controllerId) {
     return false;
   }
+
+  if (isLetterGameMode(settings)) {
+    if (round.status !== ROUND_STATUSES.OPEN || !round.bingo?.active) {
+      return false;
+    }
+    return isPlayerBuzzerEnabled(settings, playerId);
+  }
+
   if (settings.teamModeEnabled && !getPlayerTeamColor(playerId, assignments)) {
     return false;
   }
@@ -360,8 +498,10 @@ function getUiSignature() {
       roulette: round.roulette,
       screw: round.screw,
       screwsUsed: round.screwsUsed,
+      bingo: round.bingo,
     },
     settings: {
+      gameMode: settings.gameMode,
       inputMode: settings.inputMode,
       optionCount: settings.optionCount,
       rebuzzAllowed: settings.rebuzzAllowed,
@@ -480,6 +620,19 @@ function startRouletteAnimationLoop() {
       render();
     }
   }, 500);
+}
+
+function startLetterGameAnimationLoop() {
+  if (letterGameAnimationInterval) {
+    return;
+  }
+  letterGameAnimationInterval = setInterval(() => {
+    const round = getRound();
+    const settings = getSettings();
+    if (isLetterGameMode(settings) && round.status === ROUND_STATUSES.OPEN && round.bingo?.active) {
+      render();
+    }
+  }, LETTER_GAME_SPIN_MS);
 }
 
 function getSelectedRouletteTarget(settings, players) {
@@ -903,6 +1056,80 @@ function hostHandleBuzz(player, payload) {
   const players = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
   const playerTeamColor = getPlayerTeamColor(player.id, assignments);
+
+  if (isLetterGameMode(settings)) {
+    const letterGame = getLetterGameState(round);
+    const word = getLetterGameWord(round, settings);
+    const targetIndex = Number(letterGame.targetIndex);
+    const litIndex = getLetterGameLitIndex({ ...letterGame, word });
+    const timeLeftCs = getTimeLeftCs(round, settings);
+
+    if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= word.length) {
+      return { ok: false, reason: "Pick a letter first." };
+    }
+    if (litIndex === null) {
+      return { ok: false, reason: "Start the bingo spin first." };
+    }
+    if (litIndex !== targetIndex) {
+      return { ok: false, reason: "Not that letter yet." };
+    }
+
+    const collectedByPlayer = normalizeLetterGameCollectedByPlayer(
+      {
+        ...(letterGame.collectedByPlayer || {}),
+        [player.id]: [...new Set([...(getLetterGameCollectedIndices(letterGame, player.id) || []), targetIndex])],
+      },
+      word.length,
+    );
+    const collectedCount = collectedByPlayer[player.id]?.length || 0;
+    const completed = collectedCount >= word.length;
+    const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+    const scores = { ...getScores() };
+    scores[scoreKey] = Number(scores[scoreKey] || 0) + LETTER_GAME_POINTS;
+
+    createLetterGameLogEntry(player, { ...letterGame, word }, targetIndex, timeLeftCs);
+    setState("scores", scores, true);
+    setState(
+      "round",
+      {
+        ...round,
+        status: completed ? ROUND_STATUSES.CLOSED : ROUND_STATUSES.OPEN,
+        opensAt: null,
+        closesAt: null,
+        remainingCs: timeLeftCs,
+        winnerId: completed ? player.id : null,
+        winnerTeam: playerTeamColor,
+        winnerOption: targetIndex + 1,
+        winnerAnswer: word[targetIndex] || null,
+        winnerName: completed ? getPlayerName(player) : null,
+        buzzedPlayerIds: [...new Set([...(round.buzzedPlayerIds || []), player.id])],
+        bingo: {
+          ...letterGame,
+          mode: getLetterGameMode(settings),
+          word,
+          active: false,
+          litIndex: targetIndex,
+          spinStartedAt: null,
+          collectedByPlayer,
+          winnerPlayerId: completed ? player.id : null,
+          winnerPlayerName: completed ? getPlayerName(player) : null,
+        },
+      },
+      true,
+    );
+
+    if (completed) {
+      setBuzzNotice(`${getPlayerName(player)} completed ${word}.`);
+    }
+    render();
+    return {
+      ok: true,
+      message: completed
+        ? `${getPlayerName(player)} completed ${word}.`
+        : `${getPlayerName(player)} collected ${word[targetIndex] || "a letter"}.`,
+    };
+  }
+
   const shouldLockAfterBuzz = settings.lockAfterBuzz && !settings.rebuzzAllowed;
   const usingTextEntry = settings.inputMode === "text";
 
@@ -1077,15 +1304,109 @@ async function submitResponse(payload) {
   }
 }
 
+function startLetterGameRound() {
+  if (!isHost()) {
+    return { ok: false, reason: "Only host can start bingo." };
+  }
+
+  const settings = getSettings();
+  const round = getRound();
+  const letterGame = getLetterGameState(round);
+  const word = getLetterGameWord(round, settings);
+  const targetIndex = Number(letterGame.targetIndex);
+
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= word.length) {
+    return { ok: false, reason: "Pick a target letter before starting." };
+  }
+
+  const spinSeed = Math.floor(Math.random() * 1000000);
+  const startedAt = now();
+  setState(
+    "round",
+    {
+      ...round,
+      status: ROUND_STATUSES.OPEN,
+      opensAt: null,
+      closesAt: null,
+      remainingCs: null,
+      winnerId: null,
+      winnerTeam: null,
+      winnerOption: null,
+      winnerAnswer: null,
+      winnerName: null,
+      buzzedPlayerIds: [],
+      bingo: {
+        ...letterGame,
+        mode: getLetterGameMode(settings),
+        word,
+        active: true,
+        litIndex: null,
+        spinStartedAt: startedAt,
+        spinSeed,
+        collectedByPlayer: normalizeLetterGameCollectedByPlayer(letterGame.collectedByPlayer, word.length),
+        winnerPlayerId: null,
+        winnerPlayerName: null,
+      },
+    },
+    true,
+  );
+  setState("pendingLogId", null, true);
+  render();
+  return { ok: true, message: `${getLetterGameMode(settings) === GAME_MODES.WEND ? "Wen Dit Hapn" : "Bingo"} started.` };
+}
+
+function stopLetterGameRound() {
+  if (!isHost()) {
+    return { ok: false, reason: "Only host can stop bingo." };
+  }
+
+  const round = getRound();
+  const letterGame = getLetterGameState(round);
+  setState(
+    "round",
+    {
+      ...round,
+      status: ROUND_STATUSES.CLOSED,
+      opensAt: null,
+      closesAt: null,
+      remainingCs: null,
+      winnerId: round.winnerId,
+      winnerTeam: round.winnerTeam,
+      winnerOption: round.winnerOption,
+      winnerAnswer: round.winnerAnswer,
+      winnerName: round.winnerName,
+      bingo: {
+        ...letterGame,
+        active: false,
+        spinStartedAt: null,
+      },
+    },
+    true,
+  );
+  render();
+  return { ok: true, message: "Bingo stopped." };
+}
+
 function openBuzzers() {
   if (!isHost()) {
     return;
   }
-  console.log("openBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
   const players = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  if (isLetterGameMode(settings)) {
+    const result = startLetterGameRound();
+    if (result?.ok === false) {
+      setBuzzNotice(result.reason || "Could not start bingo.");
+      render();
+    } else if (result?.message) {
+      setBuzzNotice(result.message);
+      render();
+    }
+    return;
+  }
+
   if (hasUnassignedTeamPlayers(settings, players, assignments)) {
     setBuzzNotice("Assign every player to a team before opening buzzers.");
     render();
@@ -1143,9 +1464,20 @@ function openBuzzers() {
 
 function closeBuzzers() {
   if (!isHost()) return;
-  console.log("closeBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
+  if (isLetterGameMode(settings)) {
+    const result = stopLetterGameRound();
+    if (result?.ok === false) {
+      setBuzzNotice(result.reason || "Could not stop bingo.");
+      render();
+    } else if (result?.message) {
+      setBuzzNotice(result.message);
+      render();
+    }
+    return;
+  }
+
   setState(
     "round",
     {
@@ -1207,6 +1539,11 @@ function resetRound() {
         completedPlayerIds: [],
         finalValue: currentRound.roulette?.finalValue ?? null,
         finishedAt: null,
+      },
+      bingo: {
+        ...getDefaultLetterGameState(settings),
+        mode: getLetterGameMode(settings),
+        word: normalizeLetterGameWord(getLetterGameMode(settings), getLetterGameWords(getLetterGameMode(settings))[0]),
       },
       screw: {
         active: false,
@@ -1401,11 +1738,18 @@ function hostTick() {
     return;
   }
   const round = getRound();
+  const settings = getSettings();
   if (round.status === ROUND_STATUSES.ROULETTE) {
     if (maybeFinalizeRoulettePhase()) {
       return;
     }
     render();
+    return;
+  }
+  if (isLetterGameMode(settings)) {
+    if (round.status === ROUND_STATUSES.OPEN && round.bingo?.active) {
+      render();
+    }
     return;
   }
   if (round.status !== ROUND_STATUSES.OPEN) {
@@ -1486,7 +1830,6 @@ function hostTick() {
   }
   
   // Normal timer tick
-  const settings = getSettings();
   const timeLeftCs = getTimeLeftCs(round, settings);
   if (timeLeftCs <= 0) {
     setState(
@@ -1508,12 +1851,108 @@ function hostTick() {
   }
 }
 
+function renderLetterGameSlots(word, collectedIndices, litIndex, targetIndex) {
+  const collectedSet = new Set((collectedIndices || []).map(Number));
+  return word
+    .split("")
+    .map((letter, index) => {
+      const classes = ["letter-slot"];
+      if (collectedSet.has(index)) {
+        classes.push("is-collected");
+      }
+      if (index === targetIndex) {
+        classes.push("is-target");
+      }
+      if (index === litIndex) {
+        classes.push("is-lit");
+      }
+      return `<span class="${classes.join(" ")}">${escapeHtml(letter)}</span>`;
+    })
+    .join("");
+}
+
+function renderLetterGamePanel(settings, round, mePlayer) {
+  const letterGame = getLetterGameState(round);
+  const word = getLetterGameWord(round, settings);
+  const litIndex = getLetterGameLitIndex({ ...letterGame, word });
+  const targetIndex = Number(letterGame.targetIndex);
+  const collectedIndices = getLetterGameCollectedIndices(letterGame, mePlayer.id);
+  const targetLetter = Number.isInteger(targetIndex) && targetIndex >= 0 ? word[targetIndex] : "";
+  const litLetter = Number.isInteger(litIndex) && litIndex >= 0 ? word[litIndex] : "";
+  const completeCount = collectedIndices.length;
+  const totalCount = word.length;
+  const readyToBuzz = round.status === ROUND_STATUSES.OPEN && Boolean(letterGame.active) && Number.isInteger(targetIndex) && targetIndex >= 0 && targetIndex < word.length && litIndex !== null;
+
+  return `
+    <section class="card player-card letter-game-card">
+      <h2>${settings.gameMode === GAME_MODES.WEND ? "Wen Dit Hapn" : "Bingo"}</h2>
+      <p class="muted">Collect all of the letters in the selected word. Buzz when the spinning letter matches the selected slot.</p>
+      <div class="letter-word" aria-live="polite">
+        ${renderLetterGameSlots(word, collectedIndices, litIndex, targetIndex)}
+      </div>
+      <div class="letter-game-meta">
+        <span>Target slot: <strong>${Number.isInteger(targetIndex) && targetIndex >= 0 ? targetIndex + 1 : "?"}</strong> ${targetLetter ? `(${escapeHtml(targetLetter)})` : ""}</span>
+        <span>Spinning: <strong>${litLetter ? escapeHtml(litLetter) : "stopped"}</strong></span>
+        <span>Progress: <strong>${completeCount}/${totalCount}</strong></span>
+      </div>
+      <button type="button" class="big-red" data-bingo-buzz ${readyToBuzz ? "" : "disabled"}>BUZZ</button>
+      <p class="muted">${readyToBuzz ? "Buzz now." : letterGame.active ? "Waiting for the next spin." : "The Host will start the spin when ready."}</p>
+    </section>
+  `;
+}
+
+function renderAudienceLetterGamePanel(settings, round, players) {
+  const letterGame = getLetterGameState(round);
+  const word = getLetterGameWord(round, settings);
+  const litIndex = getLetterGameLitIndex({ ...letterGame, word });
+  const targetIndex = Number(letterGame.targetIndex);
+  const targetLetter = Number.isInteger(targetIndex) && targetIndex >= 0 ? word[targetIndex] : "";
+  const litLetter = Number.isInteger(litIndex) && litIndex >= 0 ? word[litIndex] : "";
+  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId());
+  const rows = nonControllerPlayers
+    .map((player) => {
+      const collected = getLetterGameCollectedIndices(letterGame, player.id);
+      const progress = `${collected.length}/${word.length}`;
+      const collectedLetters = collected.map((index) => word[index]).filter(Boolean).join("");
+      return `<li><span>${escapeHtml(getPlayerName(player))}</span><strong>${escapeHtml(progress)}${collectedLetters ? ` · ${escapeHtml(collectedLetters)}` : ""}</strong></li>`;
+    })
+    .join("");
+  const statusLabel = round.status === ROUND_STATUSES.CLOSED && letterGame.winnerPlayerName
+    ? `${escapeHtml(letterGame.winnerPlayerName)} completed the word`
+    : letterGame.active
+      ? "Letter hunt in progress"
+      : "Waiting for the next spin";
+
+  return `
+    <section class="card audience-card letter-game-card audience-letter-card">
+      <div class="audience-card-header">
+        <div>
+          <p class="prejoin-kicker">${settings.gameMode === GAME_MODES.WEND ? "Wen Dit Hapn" : "Bingo"}</p>
+          <h2>${statusLabel}</h2>
+        </div>
+        <div class="audience-meta muted">
+          <span>Target ${Number.isInteger(targetIndex) && targetIndex >= 0 ? targetIndex + 1 : "?"}${targetLetter ? ` · ${escapeHtml(targetLetter)}` : ""}</span>
+          <span>Spin ${litLetter ? escapeHtml(litLetter) : "stopped"}</span>
+        </div>
+      </div>
+      <div class="letter-word" aria-live="polite">
+        ${renderLetterGameSlots(word, [], litIndex, targetIndex)}
+      </div>
+      <p class="muted">First to finish: <strong>${letterGame.winnerPlayerName ? escapeHtml(letterGame.winnerPlayerName) : "None yet"}</strong></p>
+      <ul class="audience-roulette-list">${rows || "<li class='audience-empty'>No players yet.</li>"}</ul>
+    </section>
+  `;
+}
+
 function setHostSetting(key, value) {
   if (!isHost()) {
     return;
   }
   const settings = getSettings();
   const next = { ...settings, [key]: value };
+  if (key === "gameMode") {
+    next.gameMode = normalizeGameMode(value);
+  }
   if (key === "scoringMode" && value === "uniform") {
     next.uniformPoints = settings.uniformPoints || 1000;
     next.valueSelectionMethod = "standard";
@@ -1542,6 +1981,21 @@ function setHostSetting(key, value) {
     next.teamScoringMode = value === "shared" ? "shared" : "alliance";
   }
   setState("settings", next, true);
+
+  if (key === "gameMode") {
+    const round = getRound();
+    if (round.status !== ROUND_STATUSES.OPEN) {
+      setState(
+        "round",
+        {
+          ...round,
+          bingo: getDefaultLetterGameState(next),
+        },
+        true,
+      );
+    }
+  }
+
   render();
 }
 
@@ -1693,7 +2147,6 @@ function optionButtonLabel(option) {
 }
 
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
-  console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   if (isControllerPlayer()) {
     return `
       <section class="card player-card controller-card">
@@ -1712,6 +2165,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     }
     return baseClass ? `${baseClass} ${teamButtonClass}` : teamButtonClass;
   };
+  if (isLetterGameMode(settings)) {
+    return renderLetterGamePanel(settings, round, mePlayer);
+  }
   if (settings.teamModeEnabled && !myTeamColor) {
     return `
       <section class="card player-card">
@@ -2110,7 +2566,9 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
     ? renderAudienceRoulettePanel(settings, round, players)
-    : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
+    : isLetterGameMode(settings)
+      ? renderAudienceLetterGamePanel(settings, round, players)
+      : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
 
   return `
     <main class="layout audience-layout">
@@ -2235,6 +2693,13 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   const missingTeamAssignments = hasUnassignedTeamPlayers(settings, players, teamAssignments);
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
+  const letterGame = getLetterGameState(round);
+  const letterGameMode = getLetterGameMode(settings);
+  const letterGameWord = getLetterGameWord(round, settings);
+  const letterGameTargetIndex = Number(letterGame.targetIndex);
+  const letterGameTargetReady = Number.isInteger(letterGameTargetIndex) && letterGameTargetIndex >= 0 && letterGameTargetIndex < letterGameWord.length;
+  const letterGameSetupDisabledAttr = letterGame.active ? "disabled" : "";
+  const letterGameWords = getLetterGameWords(letterGameMode);
 
   const statusText = {
     [ROUND_STATUSES.IDLE]: "Idle",
@@ -2285,6 +2750,15 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           </select>
         </label>
 
+        <label>
+          Game mode
+          <select data-setting="gameMode" ${settingDisabledAttr}>
+            <option value="standard" ${settings.gameMode !== GAME_MODES.BINGO && settings.gameMode !== GAME_MODES.WEND ? "selected" : ""}>Standard buzzer</option>
+            <option value="bingo" ${settings.gameMode === GAME_MODES.BINGO ? "selected" : ""}>Bingo</option>
+            <option value="wend" ${settings.gameMode === GAME_MODES.WEND ? "selected" : ""}>Wen Dit Hapn</option>
+          </select>
+        </label>
+
         ${
           settings.lockAfterBuzz
             ? `<label>
@@ -2323,6 +2797,26 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${
           settings.scoringMode === "uniform"
             ? `<label>
+        ${isLetterGameMode(settings)
+          ? `<div class="letter-game-host card-inner">
+              <h3>${letterGameMode === GAME_MODES.WEND ? "Wen Dit Hapn" : "Bingo"} Setup</h3>
+              <p class="muted">Pick a word, then pick the slot the players need to hit when it spins.</p>
+              <label>
+                Word
+                <select data-bingo-word ${letterGameSetupDisabledAttr}>
+                  ${letterGameWords.map((word) => `<option value="${word}" ${letterGameWord === word ? "selected" : ""}>${word}</option>`).join("")}
+                </select>
+              </label>
+              <div class="letter-word host-letter-word">
+                ${letterGameWord
+                  .split("")
+                  .map((letter, index) => `<button type="button" class="letter-target-chip ${letterGameTargetIndex === index ? "is-on" : "is-off"}" data-bingo-target-index="${index}" ${letterGameSetupDisabledAttr}>${index + 1}. ${escapeHtml(letter)}</button>`)
+                  .join("")}
+              </div>
+              <p class="muted">Current target: <strong>${letterGameTargetReady ? `${letterGameTargetIndex + 1}. ${escapeHtml(letterGameWord[letterGameTargetIndex])}` : "Pick a slot"}</strong></p>
+            </div>`
+          : ""}
+
                 Uniform points
                   <select data-setting="uniformPoints" ${settingDisabledAttr}>
                   <option value="500" ${settings.uniformPoints === 500 ? "selected" : ""}>500</option>
@@ -2441,15 +2935,23 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${settings.scoringMode === "roulette"
           ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
           : ""}
-        <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
-        <button type="button" data-host-action="close">Close Buzzers</button>
-        <button type="button" data-host-action="reset">Reset Round</button>
+        ${isLetterGameMode(settings)
+          ? `<button type="button" data-host-action="open" ${letterGameTargetReady ? "" : "disabled"}>${letterGame.active ? "Spin Again" : "Start Bingo"}</button>
+             <button type="button" data-host-action="close">Stop Bingo</button>
+             <button type="button" data-host-action="reset">Reset Round</button>`
+          : `<button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
+             <button type="button" data-host-action="close">Close Buzzers</button>
+             <button type="button" data-host-action="reset">Reset Round</button>`}
         ${settings.allowScrewing && round.screwsUsed >= 1 ? `<button type="button" data-host-action="reset-screws">Reset Screws</button>` : ""}
       </div>
 
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
         <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        ${isLetterGameMode(settings)
+          ? `<span>${letterGameMode === GAME_MODES.WEND ? "Wen Dit Hapn" : "Bingo"}: <strong>${letterGameWord}</strong></span>
+             <span>Target slot: <strong>${letterGameTargetReady ? `${letterGameTargetIndex + 1}. ${escapeHtml(letterGameWord[letterGameTargetIndex])}` : "Pick a slot"}</strong></span>`
+          : ""}
         ${settings.scoringMode === "roulette" && round.roulette?.finalValue !== null && round.roulette?.finalValue !== undefined
           ? `<span>Final roulette value: <strong>${round.roulette.finalValue}</strong></span>`
           : ""}
