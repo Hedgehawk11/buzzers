@@ -33,6 +33,12 @@ const ROUND_STATUSES = {
   CLOSED: "closed",
 };
 
+const BINGO_ITEM_CHANGE_INTERVAL_MS = 750;
+const BINGO_RENDER_INTERVAL_MS = 50;
+const BINGO_CORRECT_POINTS = 500;
+const BINGO_INCORRECT_POINTS = -500;
+const WEN_DIT_HAPN_ITEMS = ["Before", "Never", "After"];
+
 const ROULETTE_PATTERN = [
   { label: "", min: 0.16, max: 0.34 },
   { label: "", min: 0.14, max: 0.32 },
@@ -54,6 +60,7 @@ let rouletteAnimationInterval = null;
 let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
+let bingoCycleInterval = null;
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -246,6 +253,31 @@ function getRound() {
 
 function getScores() {
   return getSafeState("scores", {});
+}
+
+function isBingoMode() {
+  const mode = getSettings().inputMode;
+  return mode === "bingo" || mode === "wendithapn";
+}
+
+function isWenDitHapnMode() {
+  return getSettings().inputMode === "wendithapn";
+}
+
+function getBingo() {
+  return getSafeState("bingo", {
+    active: false,
+    word: "",
+    items: [],
+    itemStates: [],
+    targetIndex: -1,
+    cycling: false,
+    currentLitIndex: -1,
+    currentLitTs: 0,
+    collectedCounts: {},
+    winner: null,
+    playerItems: {},
+  });
 }
 
 function getLog() {
@@ -1176,6 +1208,153 @@ function closeBuzzers() {
   render();
 }
 
+function startBingo() {
+  if (!isHost()) return;
+  const isWen = isWenDitHapnMode();
+  let items, word;
+  if (isWen) {
+    items = [...WEN_DIT_HAPN_ITEMS];
+    word = "";
+  } else {
+    const draftWord = String(document.querySelector("#bingo-word")?.value || "").trim().toUpperCase();
+    if (draftWord.length !== 5 || !/^[A-Z]{5}$/.test(draftWord)) {
+      setBuzzNotice("Enter a 5-letter word.");
+      render();
+      return;
+    }
+    word = draftWord;
+    items = word.split("");
+  }
+  const itemStates = items.map(() => ({ collectedBy: null }));
+  setState("bingo", {
+    active: true,
+    word,
+    items,
+    itemStates,
+    targetIndex: -1,
+    cycling: false,
+    currentLitIndex: -1,
+    currentLitTs: 0,
+    collectedCounts: {},
+    winner: null,
+    playerItems: {},
+  }, true);
+  setBuzzNotice(`${isWen ? "Wen Dit Happn" : "Bingo"} started!`);
+  render();
+}
+
+function endBingo() {
+  if (!isHost()) return;
+  if (bingoCycleInterval) {
+    clearInterval(bingoCycleInterval);
+    bingoCycleInterval = null;
+  }
+  setState("bingo", { ...getBingo(), active: false, cycling: false, currentLitIndex: -1 }, true);
+  setBuzzNotice(`${isWenDitHapnMode() ? "Wen Dit Happn" : "Bingo"} stopped.`);
+  render();
+}
+
+function setBingoTarget(index) {
+  if (!isHost()) return;
+  const bingo = getBingo();
+  if (index < 0 || index >= bingo.items.length) return;
+  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1 }, true);
+  render();
+}
+
+function startBingoCycling() {
+  if (!isHost()) return;
+  const bingo = getBingo();
+  if (bingo.targetIndex < 0) {
+    setBuzzNotice("Select a target first.");
+    render();
+    return;
+  }
+  setState("bingo", {
+    ...bingo,
+    cycling: true,
+    currentLitIndex: Math.floor(Math.random() * bingo.items.length),
+    currentLitTs: now(),
+  }, true);
+  if (bingoCycleInterval) clearInterval(bingoCycleInterval);
+  bingoCycleInterval = setInterval(() => {
+    if (!isHost()) return;
+    const cur = getBingo();
+    if (!cur.active || !cur.cycling) return;
+    const nextIdx = Math.floor(Math.random() * cur.items.length);
+    setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitTs: now() }, true);
+  }, BINGO_ITEM_CHANGE_INTERVAL_MS);
+  render();
+}
+
+function stopBingoCycling() {
+  if (!isHost()) return;
+  if (bingoCycleInterval) {
+    clearInterval(bingoCycleInterval);
+    bingoCycleInterval = null;
+  }
+  const bingo = getBingo();
+  setState("bingo", { ...bingo, cycling: false, currentLitIndex: -1, currentLitTs: 0 }, true);
+  render();
+}
+
+function handleBingoBuzz(player, payload) {
+  const bingo = getBingo();
+  if (!bingo.active || !bingo.cycling) {
+    return { ok: false, reason: "Not active." };
+  }
+  const observedIndex = payload?.litIndex;
+  if (observedIndex === undefined || observedIndex < 0) {
+    return { ok: false, reason: "Invalid." };
+  }
+  const targetIndex = bingo.targetIndex;
+  const playerItems = bingo.playerItems || {};
+  const collected = playerItems[player.id] || [];
+  if (collected.includes(targetIndex)) {
+    return { ok: false, reason: "Already collected." };
+  }
+  if (observedIndex === targetIndex) {
+    const newPlayerItems = { ...playerItems };
+    newPlayerItems[player.id] = [...collected, targetIndex];
+    const collectedCounts = { ...bingo.collectedCounts };
+    collectedCounts[player.id] = (collectedCounts[player.id] || 0) + 1;
+    let winner = null;
+    if (!isWenDitHapnMode() && collectedCounts[player.id] >= bingo.items.length) {
+      winner = player.id;
+    }
+    const scores = { ...getScores() };
+    scores[player.id] = (scores[player.id] || 0) + BINGO_CORRECT_POINTS;
+    setState("scores", scores, true);
+    const log = getLog();
+    setState("gameLog", [...log, {
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "bingo", ts: now(), playerId: player.id,
+      playerName: getPlayerName(player), item: bingo.items[targetIndex],
+      result: "correct", points: BINGO_CORRECT_POINTS,
+    }], true);
+    if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+    setState("bingo", {
+      ...bingo, playerItems: newPlayerItems,
+      collectedCounts, winner, cycling: false, currentLitIndex: -1,
+    }, true);
+    render();
+    return { ok: true, message: "Correct! +500" };
+  } else {
+    const scores = { ...getScores() };
+    scores[player.id] = (scores[player.id] || 0) + BINGO_INCORRECT_POINTS;
+    setState("scores", scores, true);
+    const log = getLog();
+    setState("gameLog", [...log, {
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "bingo", ts: now(), playerId: player.id,
+      playerName: getPlayerName(player), item: bingo.items[observedIndex],
+      result: "incorrect", points: BINGO_INCORRECT_POINTS,
+    }], true);
+    render();
+    return { ok: true, message: "Incorrect! -500" };
+  }
+}
+
 function resetRound() {
   if (!isHost()) {
     return;
@@ -1400,6 +1579,7 @@ function hostTick() {
   if (!isHost()) {
     return;
   }
+  if (isBingoMode()) return;
   const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) {
     if (maybeFinalizeRoulettePhase()) {
@@ -1528,9 +1708,27 @@ function setHostSetting(key, value) {
   if (key === "optionCount") {
     next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
   }
-  if (key === "inputMode" && value === "text") {
-    next.optionCount = settings.optionCount || 4;
-    next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
+  if (key === "inputMode") {
+    if (value !== "bingo" && value !== "wendithapn") {
+      if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+      setState("bingo", getBingo(), true);
+    }
+    if (value === "text") {
+      next.optionCount = settings.optionCount || 4;
+      next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
+    }
+    if (value === "bingo" || value === "wendithapn") {
+      const idleRound = {
+        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
+        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null,
+        buzzedPlayerIds: [],
+        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null },
+      };
+      setState("round", idleRound, true);
+      setState("pendingLogId", null, true);
+    }
   }
   if (key === "rouletteTopAmount") {
     next.rouletteTopAmount = normalizeRouletteTopAmount(value);
@@ -1672,6 +1870,9 @@ function ensureHostInit() {
   if (getState("pendingLogId") === undefined) {
     setState("pendingLogId", null, true);
   }
+  if (!getState("bingo")) {
+    setState("bingo", getBingo(), true);
+  }
   assignControllerIfNeeded();
   const players = currentParticipants();
   const controllerId = getControllerId();
@@ -1692,7 +1893,131 @@ function optionButtonLabel(option) {
   return labels[option] || String(option);
 }
 
+function renderBingoHostPanel(settings, players) {
+  if (!isControllerPlayer()) return "";
+  const bingo = getBingo();
+  const isWen = isWenDitHapnMode();
+  const controllerId = getControllerId();
+  const nonController = players.filter(p => p.id !== controllerId);
+  if (!bingo.active) {
+    const wordInput = isWen ? "" : `
+      <label>
+        5-letter word
+        <input type="text" id="bingo-word" maxlength="5" value="${bingo.word || "HOUSE"}" style="text-transform:uppercase;font-weight:800;letter-spacing:0.3em;font-size:1.2rem" />
+      </label>`;
+    return `
+      <section class="card host-panel bingo-host-panel">
+        <h2>${isWen ? "Wen Dit Happn" : "Bingo Mode"}</h2>
+        <p class="muted">${isWen ? "Players see Before, Never, After. Select the correct answer and cycle." : "Enter a 5-letter word. Select a target letter and cycle through letters."}</p>
+        ${wordInput}
+        <div class="host-actions"><button type="button" class="primary-action" data-bingo-init>Start ${isWen ? "Wen Dit Happn" : "Bingo"}</button><button type="button" data-bingo-exit>Return to buzzer mode</button></div>
+      </section>`;
+  }
+  const items = bingo.items;
+  const targetOptions = items.map((item, i) =>
+    `<option value="${i}" ${i === bingo.targetIndex ? "selected" : ""}>${item}</option>`
+  ).join("");
+  const progressHtml = nonController.map(p => {
+    const collected = (bingo.playerItems?.[p.id] || []).map(i => items[i]).join(", ");
+    const count = (bingo.collectedCounts?.[p.id] || 0);
+    return `<div><strong>${getPlayerName(p)}</strong>: ${collected || "none"} (${count}/${items.length})</div>`;
+  }).join("");
+  const winner = bingo.winner ? players.find(p => p.id === bingo.winner) : null;
+  return `
+    <section class="card host-panel bingo-host-panel">
+      <h2>${isWen ? "Wen Dit Happn" : "Bingo"} — Active</h2>
+      <div class="${isWen ? "bingo-tile-grid bingo-three" : "bingo-word-display"}">${items.map((item, i) => {
+        const taken = bingo.itemStates[i]?.collectedBy;
+        const isTarget = i === bingo.targetIndex;
+        return `<span class="bingo-tile ${isTarget ? "is-target" : ""} ${taken ? "is-collected" : ""}">${item}</span>`;
+      }).join("")}</div>
+      <label>${isWen ? "Correct answer" : "Target letter"}
+        <select data-bingo-target>${targetOptions}</select>
+      </label>
+      <div class="host-actions">
+        <button type="button" data-bingo-cycle ${bingo.cycling ? "disabled" : ""}>${bingo.cycling ? "Cycling..." : "Start Cycling"}</button>
+        <button type="button" data-bingo-stop-cycle ${bingo.cycling ? "" : "disabled"}>Stop Cycling</button>
+      </div>
+      ${winner ? `<div class="bingo-winner"><h3>Winner: ${getPlayerName(winner)}!</h3></div>` : ""}
+      <div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>
+      <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
+      <button type="button" data-bingo-exit>Return to buzzer mode</button>
+    </section>`;
+}
+
+function renderBingoPlayerPanel(settings, mePlayer) {
+  const bingo = getBingo();
+  const isWen = isWenDitHapnMode();
+  if (!bingo.active) {
+    return `<section class="card player-card"><h2>${isWen ? "Wen Dit Happn" : "Bingo"}</h2><p class="muted">Waiting for the host to start...</p></section>`;
+  }
+  const items = bingo.items;
+  const collected = (bingo.playerItems?.[mePlayer.id] || []);
+  const tilesHtml = items.map((item, i) => {
+    const isLit = bingo.cycling && i === bingo.currentLitIndex;
+    const isMine = collected.includes(i);
+    let cls = "bingo-tile";
+    if (isLit) cls += " is-lit";
+    if (isMine) cls += " is-mine";
+    return `<span class="${cls}">${item}</span>`;
+  }).join("");
+  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer();
+  const scores = getScores();
+  const myScore = scores[mePlayer.id] || 0;
+  const winner = bingo.winner ? currentParticipants().find(p => p.id === bingo.winner) : null;
+  return `
+    <section class="card player-card bingo-player-card">
+      <h2>${isWen ? "Wen Dit Happn" : "Bingo"}</h2>
+      ${isWen ? "" : `<p class="muted">Collected: ${collected.length}/${items.length}</p>`}
+      <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
+      <div class="bingo-buzz-area">
+        <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
+      </div>
+      <p class="muted">Score: <strong>${myScore}</strong></p>
+      ${winner ? `<p class="bingo-winner-msg">${getPlayerName(winner)} wins!</p>` : ""}
+    </section>`;
+}
+
+function renderBingoAudienceDisplay(settings, players) {
+  const bingo = getBingo();
+  const isWen = isWenDitHapnMode();
+  const scores = getScores();
+  if (!bingo.active) {
+    return `
+      <main class="layout audience-layout">
+        <header class="hero audience-hero">
+          <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Waiting for the game to start...</p></div>
+        </header>
+      </main>`;
+  }
+  const items = bingo.items;
+  const tilesHtml = items.map((item, i) => {
+    const isLit = bingo.cycling && i === bingo.currentLitIndex;
+    let cls = "bingo-tile bingo-tile-lg";
+    if (isLit) cls += " is-lit";
+    return `<span class="${cls}">${item}</span>`;
+  }).join("");
+  const sorted = players.filter(p => !isAudienceDisplayClient() && p.id !== getControllerId())
+    .sort((a, b) => (bingo.collectedCounts?.[b.id] || 0) - (bingo.collectedCounts?.[a.id] || 0));
+  const standings = sorted.map(p => {
+    const c = (bingo.collectedCounts?.[p.id] || 0);
+    const s = scores[p.id] || 0;
+    return `<li><strong>${getPlayerName(p)}</strong> ${isWen ? `Score: ${s}` : `${c}/${items.length} letters — ${s}pts`}</li>`;
+  }).join("");
+  const winner = bingo.winner ? players.find(p => p.id === bingo.winner) : null;
+  return `
+    <main class="layout audience-layout">
+      <header class="hero audience-hero">
+        <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
+      </header>
+      <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
+      ${winner ? `<div class="bingo-winner-banner">${getPlayerName(winner)} WINS!</div>` : ""}
+      <section class="card"><h2>Standings</h2><ul class="bingo-standings">${standings || "<li class='muted'>No players yet.</li>"}</ul></section>
+    </main>`;
+}
+
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
+  if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   if (isControllerPlayer()) {
     return `
@@ -2105,6 +2430,7 @@ function renderAudienceScrewPanel(round) {
 }
 
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
+  if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToPlayers);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
@@ -2228,6 +2554,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     return "";
   }
 
+  if (isBingoMode()) return renderBingoHostPanel(settings, players);
+
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
   const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
@@ -2280,8 +2608,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         <label>
           Answer mode
           <select data-setting="inputMode" ${settingDisabledAttr}>
-            <option value="buttons" ${settings.inputMode !== "text" ? "selected" : ""}>Button buzzer</option>
+            <option value="buttons" ${settings.inputMode !== "text" && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" ? "selected" : ""}>Button buzzer</option>
             <option value="text" ${settings.inputMode === "text" ? "selected" : ""}>Text entry</option>
+            <option value="bingo" ${settings.inputMode === "bingo" ? "selected" : ""}>Bingo</option>
+            <option value="wendithapn" ${settings.inputMode === "wendithapn" ? "selected" : ""}>Wen dit hapn</option>
           </select>
         </label>
 
@@ -2672,6 +3002,38 @@ function render() {
     return;
   }
 
+  if (isBingoMode()) {
+    const isWen = isWenDitHapnMode();
+    const bingoBody = showAdminData ? `
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      <section class="grid">
+        ${renderScores(players, scores)}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores right now.")}
+      </section>` ;
+    app.innerHTML = `
+      <main class="layout">
+        <header class="hero">
+          <div>
+            <h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1>
+            <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
+          </div>
+          <div class="hero-meta">
+            <span>You: ${getPlayerName(mePlayer)}</span>
+            <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
+          </div>
+        </header>
+        ${bingoBody}
+      </main>
+    `;
+    lastUiSignature = getUiSignature();
+    bindEvents();
+    return;
+  }
+
   app.innerHTML = `
     <main class="layout">
       <header class="hero">
@@ -2770,7 +3132,7 @@ function bindEvents() {
           return;
         }
         if (setting === "inputMode") {
-          setHostSetting("inputMode", input.value === "text" ? "text" : "buttons");
+          setHostSetting("inputMode", input.value);
           return;
         }
         if (setting === "optionCount") {
@@ -2974,12 +3336,54 @@ function bindEvents() {
     });
   });
 
-  app.querySelectorAll("[data-f-you-close]").forEach((button) => {
-    button.addEventListener("click", () => {
-      fYouEasterEggUnlocked = false;
-      render();
+    // Bingo host handlers
+    app.querySelectorAll("[data-bingo-init]").forEach(btn => {
+      btn.addEventListener("click", () => startBingo());
     });
-  });
+    app.querySelectorAll("[data-bingo-end]").forEach(btn => {
+      btn.addEventListener("click", () => endBingo());
+    });
+    app.querySelectorAll("[data-bingo-target]").forEach(sel => {
+      sel.addEventListener("change", () => setBingoTarget(Number(sel.value)));
+    });
+    app.querySelectorAll("[data-bingo-cycle]").forEach(btn => {
+      btn.addEventListener("click", () => startBingoCycling());
+    });
+    app.querySelectorAll("[data-bingo-stop-cycle]").forEach(btn => {
+      btn.addEventListener("click", () => stopBingoCycling());
+    });
+    app.querySelectorAll("[data-bingo-exit]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        endBingo();
+        setHostSetting("inputMode", "buttons");
+      });
+    });
+
+    // Bingo player buzz
+    app.querySelectorAll("[data-bingo-buzz]").forEach(btn => {
+      btn.addEventListener("pointerdown", async (event) => {
+        event.preventDefault();
+        if (isControllerPlayer()) return;
+        const bState = getBingo();
+        const payload = { litIndex: bState.currentLitIndex };
+        try {
+          const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
+          if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+          else if (result?.message) setBuzzNotice(result.message);
+          render();
+        } catch {
+          setBuzzNotice("Could not send buzz.");
+          render();
+        }
+      });
+    });
+
+    app.querySelectorAll("[data-f-you-close]").forEach((button) => {
+      button.addEventListener("click", () => {
+        fYouEasterEggUnlocked = false;
+        render();
+      });
+    });
 
   if (!rouletteKeydownBound) {
     document.addEventListener("keydown", handleRouletteKeydown);
@@ -3384,6 +3788,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return { ok: true, message: `${getPlayerName(senderPlayer)} locked in ${frame.value}.` };
   });
 
+  RPC.register("bingo-buzz", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleBingoBuzz(senderPlayer, payload);
+  });
+
   RPC.register("screw", async (payload, senderPlayer) => {
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
@@ -3417,6 +3826,13 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     }
     updateTimerDisplays();
   }, 1000);
+
+  // Fast re-render interval for bingo mode cycling animation
+  setInterval(() => {
+    if (!isBingoMode()) return;
+    const b = getBingo();
+    if (b.active && b.cycling) render();
+  }, BINGO_RENDER_INTERVAL_MS);
 }
 
 function boot() {
