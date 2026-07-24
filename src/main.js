@@ -1,6 +1,13 @@
+// =============================================================================
+// Instant Buzzers — a multiplayer buzzer system built on PlayroomKit
+// =============================================================================
+
 import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 
+// =============================================================================
+// Default game configuration — merged with live PlayroomKit state
+// =============================================================================
 const DEFAULT_SETTINGS = {
   timeOpen: 20,
   lockAfterBuzz: true,
@@ -25,6 +32,9 @@ const DEFAULT_SETTINGS = {
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "magenta"];
 
+// =============================================================================
+// Round state machine: IDLE -> OPEN -> LOCKED/ROULETTE -> CLOSED -> IDLE
+// =============================================================================
 const ROUND_STATUSES = {
   IDLE: "idle",
   OPEN: "open",
@@ -64,6 +74,9 @@ let bingoCycleInterval = null;
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
+// =============================================================================
+// Utility helpers
+// =============================================================================
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const now = () => Date.now();
 const escapeHtml = (value) =>
@@ -74,11 +87,17 @@ const escapeHtml = (value) =>
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 
+// =============================================================================
+// Safe state accessors — return a fallback when PlayroomKit state is null
+// =============================================================================
 function getSafeState(key, fallback) {
   const value = getState(key);
   return value === undefined || value === null ? fallback : value;
 }
 
+// =============================================================================
+// Answer normalization for case-insensitive comparison
+// =============================================================================
 function normalizeAnswerForCompare(value) {
   return String(value || "")
     .trim()
@@ -109,6 +128,9 @@ function getRecentBuzzNotice(maxAgeMs = 4000) {
   return buzzNotice;
 }
 
+// =============================================================================
+// Returns all non-display participants, sorted by ID
+// =============================================================================
 function currentParticipants() {
   const participants = Object.values(getParticipants() || {}).filter((player) => {
     const mode = player?.getState?.("clientMode");
@@ -117,10 +139,16 @@ function currentParticipants() {
   return participants.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+// =============================================================================
+// True when the local client is an audience/projection display
+// =============================================================================
 function isAudienceDisplayClient() {
   return clientMode === "display" || me()?.getState?.("clientMode") === "display";
 }
 
+// =============================================================================
+// Read a player's display name (custom override or profile name)
+// =============================================================================
 function getPlayerName(player) {
   const custom = player?.getState?.("displayName");
   if (typeof custom === "string" && custom.trim()) {
@@ -129,6 +157,9 @@ function getPlayerName(player) {
   return player?.getProfile?.()?.name || "Player";
 }
 
+// =============================================================================
+// Game state accessors — merge defaults with live PlayroomKit state
+// =============================================================================
 function getSettings() {
   return { ...DEFAULT_SETTINGS, ...getSafeState("settings", {}) };
 }
@@ -137,6 +168,7 @@ function getTeamAssignments() {
   return getSafeState("teamAssignments", {});
 }
 
+// Prune stale/deleted players from team assignment map
 function normalizeTeamAssignments(assignments, players, controllerId) {
   const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId));
   const normalized = {};
@@ -214,6 +246,9 @@ function isPlayerBuzzerEnabled(settings, playerId) {
   return !disabledPlayerIds.includes(playerId);
 }
 
+// =============================================================================
+// Returns the full round state with defaults for every sub-field
+// =============================================================================
 function getRound() {
   return getSafeState("round", {
     status: ROUND_STATUSES.IDLE,
@@ -251,6 +286,9 @@ function getRound() {
   });
 }
 
+// =============================================================================
+// Score / Bingo / Log / Controller accessors
+// =============================================================================
 function getScores() {
   return getSafeState("scores", {});
 }
@@ -297,6 +335,9 @@ function isControllerPlayer() {
   return me().id === getControllerId();
 }
 
+// =============================================================================
+// Authorization — check if a given player can buzz for a given option
+// =============================================================================
 function canBuzz(playerId, option) {
   const round = getRound();
   const controllerId = getControllerId();
@@ -420,6 +461,9 @@ function getUiSignature() {
   });
 }
 
+// =============================================================================
+// Scoring: roulette final value, uniform points, or JACK multiplier
+// =============================================================================
 function computeBasePoints(settings, timeLeftCs, round = getRound()) {
   if (round?.roulette?.finalValue !== null && round?.roulette?.finalValue !== undefined) {
     return Math.max(0, Number(round.roulette.finalValue) || 0);
@@ -442,6 +486,9 @@ function normalizeUniformPoints(value) {
   return allowed.includes(numeric) ? numeric : 1000;
 }
 
+// =============================================================================
+// Roulette helpers — deterministic pseudo-random fraction, frame calculation
+// =============================================================================
 function seededFraction(seed) {
   const raw = Math.sin(seed * 12.9898) * 43758.5453;
   return raw - Math.floor(raw);
@@ -503,6 +550,9 @@ function getRouletteFinalValue(roulette) {
   return values.reduce((total, value) => total + value, 0);
 }
 
+// =============================================================================
+// Roulette animation — re-renders every 500 ms while roulette is active
+// =============================================================================
 function startRouletteAnimationLoop() {
   if (rouletteAnimationInterval) {
     return;
@@ -531,6 +581,7 @@ function getSelectedRouletteTarget(settings, players) {
   return players[randomIndex] || null;
 }
 
+// When all expected players have locked in, compute final value and close
 function maybeFinalizeRoulettePhase() {
   if (!isHost()) {
     return false;
@@ -578,6 +629,7 @@ function maybeFinalizeRoulettePhase() {
   return true;
 }
 
+// Host-only: transition from IDLE to ROULETTE (or directly to OPEN if no players)
 function startRoulettePhase() {
   if (!isHost()) {
     return { ok: false, reason: "Only host can start roulette." };
@@ -681,6 +733,9 @@ function startRoulettePhase() {
   };
 }
 
+// =============================================================================
+// Render functions — each returns an HTML string for a UI region
+// =============================================================================
 function renderRoulettePanel(settings, round, mePlayer) {
   const roulette = round.roulette || {};
   const currentFrame = getRouletteFrame(roulette);
@@ -719,6 +774,9 @@ function renderRoulettePanel(settings, round, mePlayer) {
   `;
 }
 
+// =============================================================================
+// Host applies/edits a scoring ruling for a log entry, handles screw reversal
+// =============================================================================
 function updateScoresForLogEntry(logId, newAwardedDelta) {
   if (!isHost()) {
     return;
@@ -815,6 +873,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   render();
 }
 
+// Force-set a delta (used by the F-You easter egg penalty)
 function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   if (!isHost()) {
     return;
@@ -898,6 +957,9 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   render();
 }
 
+// =============================================================================
+// Record a buzz event into the game log
+// =============================================================================
 function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeftCs) {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -929,6 +991,10 @@ function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeft
   return entry;
 }
 
+// =============================================================================
+// Host RPC handler — validate and record a player's buzz, auto-evaluate if
+// the host pre-set a correct answer
+// =============================================================================
 function hostHandleBuzz(player, payload) {
   const settings = getSettings();
   const round = getRound();
@@ -1083,6 +1149,9 @@ function hostHandleBuzz(player, payload) {
   };
 }
 
+// =============================================================================
+// Player calls this to send their buzz to the host via RPC
+// =============================================================================
 async function submitResponse(payload) {
   if (isControllerPlayer()) {
     return;
@@ -1109,6 +1178,9 @@ async function submitResponse(payload) {
   }
 }
 
+// =============================================================================
+// Host actions — open, close, reset round, start bingo, etc.
+// =============================================================================
 function openBuzzers() {
   if (!isHost()) {
     return;
@@ -1173,6 +1245,7 @@ function openBuzzers() {
   render();
 }
 
+// Immediately close buzzers mid-round
 function closeBuzzers() {
   if (!isHost()) return;
   console.log("closeBuzzers: host triggered");
@@ -1208,6 +1281,9 @@ function closeBuzzers() {
   render();
 }
 
+// =============================================================================
+// Bingo / "Wen Dit Happn" mode — host starts, sets target, cycles items
+// =============================================================================
 function startBingo() {
   if (!isHost()) return;
   const isWen = isWenDitHapnMode();
@@ -1243,6 +1319,7 @@ function startBingo() {
   render();
 }
 
+// Stop bingo mode and clear cycling interval
 function endBingo() {
   if (!isHost()) return;
   if (bingoCycleInterval) {
@@ -1254,6 +1331,7 @@ function endBingo() {
   render();
 }
 
+// Host picks which item is the correct target
 function setBingoTarget(index) {
   if (!isHost()) return;
   const bingo = getBingo();
@@ -1262,6 +1340,7 @@ function setBingoTarget(index) {
   render();
 }
 
+// Begin rapidly cycling through items so players must buzz at the right moment
 function startBingoCycling() {
   if (!isHost()) return;
   const bingo = getBingo();
@@ -1287,6 +1366,7 @@ function startBingoCycling() {
   render();
 }
 
+// Stop cycling animation without resolving the target
 function stopBingoCycling() {
   if (!isHost()) return;
   if (bingoCycleInterval) {
@@ -1298,6 +1378,7 @@ function stopBingoCycling() {
   render();
 }
 
+// Host RPC handler for bingo buzzes — compares observed litIndex to target
 function handleBingoBuzz(player, payload) {
   const bingo = getBingo();
   if (!bingo.active || !bingo.cycling) {
@@ -1355,6 +1436,9 @@ function handleBingoBuzz(player, payload) {
   }
 }
 
+// =============================================================================
+// Return round to IDLE, preserving roulette final value and settings
+// =============================================================================
 function resetRound() {
   if (!isHost()) {
     return;
@@ -1402,6 +1486,10 @@ function resetRound() {
   render();
 }
 
+// =============================================================================
+// Screw mechanic — a player can force another to answer under time pressure
+// Points are reversed (screwer gains what screwee loses)
+// =============================================================================
 function initiateScrew(screwerId) {
   if (!isHost()) {
     return { ok: false, reason: "Only host can initiate screw." };
@@ -1449,6 +1537,7 @@ function initiateScrew(screwerId) {
   return { ok: true, message: `${getPlayerName(screwer)} initiated a screw.` };
 }
 
+// Host selects the target player being screwed
 function selectScrewee(screweeId) {
   if (!isHost()) {
     return { ok: false, reason: "Only host can select screwee." };
@@ -1501,6 +1590,7 @@ function selectScrewee(screweeId) {
   return { ok: true, message: `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.` };
 }
 
+// Start the 5-second screw countdown — only screwee can buzz during this window
 function startScrewTimer() {
   if (!isHost()) {
     return { ok: false, reason: "Only host can start screw timer." };
@@ -1527,6 +1617,7 @@ function startScrewTimer() {
   return { ok: true, message: "Screw timer started." };
 }
 
+// End the screw and increment the screw-use counter
 function closeScrewMode() {
   if (!isHost()) {
     return;
@@ -1551,6 +1642,7 @@ function closeScrewMode() {
   render();
 }
 
+// Reset the screw counter (e.g. between games)
 function resetScrews() {
   if (!isHost()) {
     return;
@@ -1575,6 +1667,9 @@ function resetScrews() {
   render();
 }
 
+// =============================================================================
+// Called every ~1 s by the host — manages timers, screw countdowns, roulette
+// =============================================================================
 function hostTick() {
   if (!isHost()) {
     return;
@@ -1688,6 +1783,9 @@ function hostTick() {
   }
 }
 
+// =============================================================================
+// Host applies a settings change — validates and syncs dependent fields
+// =============================================================================
 function setHostSetting(key, value) {
   if (!isHost()) {
     return;
@@ -1743,6 +1841,9 @@ function setHostSetting(key, value) {
   render();
 }
 
+// =============================================================================
+// Host toggles individual answer options on/off, ensures at least one stays on
+// =============================================================================
 function toggleBuzzerOption(option) {
   if (!isHost()) {
     return;
@@ -1776,6 +1877,7 @@ function toggleBuzzerOption(option) {
   render();
 }
 
+// Host enables/disables a specific player's ability to buzz
 function togglePlayerBuzzer(playerId) {
   if (!isHost()) {
     return;
@@ -1805,6 +1907,9 @@ function togglePlayerBuzzer(playerId) {
   render();
 }
 
+// =============================================================================
+// Team management — assign a player to a color team
+// =============================================================================
 function setPlayerTeam(playerId, teamColor) {
   if (!isHost()) {
     return;
@@ -1830,6 +1935,9 @@ function setPlayerTeam(playerId, teamColor) {
   render();
 }
 
+// =============================================================================
+// Initialisation helpers — run on host only to set up initial state
+// =============================================================================
 function assignControllerIfNeeded() {
   if (!isHost()) {
     return;
@@ -1841,6 +1949,7 @@ function assignControllerIfNeeded() {
   setState("controllerId", me().id, true);
 }
 
+// Ensure all shared state keys exist and are consistent
 function ensureHostInit() {
   if (!isHost()) {
     return;
@@ -1883,6 +1992,9 @@ function ensureHostInit() {
   }
 }
 
+// =============================================================================
+// Maps numeric option to controller-style label (A/B/X/Y)
+// =============================================================================
 function optionButtonLabel(option) {
   const labels = {
     1: "A",
@@ -1893,6 +2005,9 @@ function optionButtonLabel(option) {
   return labels[option] || String(option);
 }
 
+// =============================================================================
+// Bingo host panel — word entry, target selection, cycling controls
+// =============================================================================
 function renderBingoHostPanel(settings, players) {
   if (!isControllerPlayer()) return "";
   const bingo = getBingo();
@@ -2016,6 +2131,10 @@ function renderBingoAudienceDisplay(settings, players) {
     </main>`;
 }
 
+// =============================================================================
+// Player buzzer panel — shows appropriate UI depending on game state
+// (roulette, screw, buttons, text entry, etc.)
+// =============================================================================
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
@@ -2289,6 +2408,9 @@ function getBuzzedParticipants(round, players) {
     .filter(Boolean);
 }
 
+// =============================================================================
+// Audience/projection display — shows round status, buzz leaderboard
+// =============================================================================
 function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   const buzzedPlayers = getBuzzedParticipants(round, players);
   const nonControllerPlayers = players.filter((player) => player.id !== getControllerId());
@@ -2429,6 +2551,9 @@ function renderAudienceScrewPanel(round) {
   `;
 }
 
+// =============================================================================
+// Full audience display layout — combos primary panel + scores + screw card
+// =============================================================================
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToPlayers);
@@ -2549,6 +2674,9 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
   `;
 }
 
+// =============================================================================
+// Host settings panel — controls for timing, scoring, input mode, teams, etc.
+// =============================================================================
 function renderHostSettings(settings, round, timeLeftCs, players, controllerId) {
   if (!isControllerPlayer()) {
     return "";
@@ -2832,6 +2960,9 @@ function renderScrewNotice(round) {
   `;
 }
 
+// =============================================================================
+// When lockAfterBuzz is on, show the host a Correct / Incorrect ruling prompt
+// =============================================================================
 function renderLockedRuling(settings, pendingEntry) {
   if (!isControllerPlayer() || !settings.lockAfterBuzz || !pendingEntry) {
     return "";
@@ -2859,6 +2990,9 @@ function renderLockedRuling(settings, pendingEntry) {
   `;
 }
 
+// =============================================================================
+// Scoreboard — supports individual, team-shared, and alliance modes
+// =============================================================================
 function renderScores(players, scores) {
   const settings = getSettings();
   const controllerId = getControllerId();
@@ -2919,6 +3053,9 @@ function renderScores(players, scores) {
   `;
 }
 
+// =============================================================================
+// Game log — reverse-chronological list of every buzz, editable by host
+// =============================================================================
 function renderLog(log, settings) {
   const rows = [...log]
     .reverse()
@@ -2970,6 +3107,7 @@ function renderLog(log, settings) {
   `;
 }
 
+// Placeholder card for content hidden from non-host players
 function renderHiddenPanel(title, helper) {
   return `
     <section class="card muted-card">
@@ -2979,6 +3117,9 @@ function renderHiddenPanel(title, helper) {
   `;
 }
 
+// =============================================================================
+// Top-level render — assembles the entire page HTML and calls bindEvents
+// =============================================================================
 function render() {
   const mePlayer = me();
   const players = currentParticipants();
@@ -3068,6 +3209,9 @@ function render() {
   bindEvents();
 }
 
+// =============================================================================
+// Event binding — attaches listeners to every data-* attribute in the DOM
+// =============================================================================
 function bindEvents() {
   app.querySelectorAll("[data-buzz]").forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
@@ -3392,6 +3536,9 @@ function bindEvents() {
 }
 
 
+// =============================================================================
+// Space bar stops the roulette for players who are allowed to stop it
+// =============================================================================
 function handleRouletteKeydown(event) {
   if (event.code !== "Space" && event.key !== " ") {
     return;
@@ -3412,6 +3559,7 @@ function handleRouletteKeydown(event) {
   submitRouletteStop();
 }
 
+// Player submits their roulette stop (locks in current value)
 function submitRouletteStop() {
   if (isControllerPlayer()) {
     return;
@@ -3449,6 +3597,9 @@ function submitRouletteStop() {
       render();
     });
 }
+// =============================================================================
+// Returns true when the user is focused on an input (to ignore space key)
+// =============================================================================
 function isEditingControl() {
   const active = document.activeElement;
   if (!active) {
@@ -3466,6 +3617,9 @@ function isEditingControl() {
   );
 }
 
+// =============================================================================
+// Pre-join / landing screen — three flows: host, join, or audience display
+// =============================================================================
 function getSavedPlayerName() {
   return localStorage.getItem(NAME_KEY) || "";
 }
@@ -3475,6 +3629,7 @@ function getPrejoinNameDraft() {
   return draft || getSavedPlayerName();
 }
 
+// Render the correct pre-join form (landing / host / join / display)
 function renderPrejoinScreen(mode = "landing", error = "") {
   prejoinMode = mode;
   // Ensure the site footer is visible while on the prejoin screens
@@ -3684,6 +3839,9 @@ function renderPrejoinScreen(mode = "landing", error = "") {
   });
 }
 
+// =============================================================================
+// Game launch — insert coin into PlayroomKit, register RPC handlers, start loops
+// =============================================================================
 async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "player" }) {
   if (gameLaunched) {
     return;
@@ -3835,6 +3993,9 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   }, BINGO_RENDER_INTERVAL_MS);
 }
 
+// =============================================================================
+// Entry point — show the landing screen
+// =============================================================================
 function boot() {
   renderPrejoinScreen();
 }
