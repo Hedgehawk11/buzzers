@@ -2602,7 +2602,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
           <p class="prejoin-kicker">Audience display</p>
           <h1>Instant Buzzers</h1>
           <p class="muted">Room code</p>
-          <div class="audience-room-code">${escapeHtml(getRoomCode() || "....")}</div>
+          <div class="room-code-badge">${escapeHtml(getRoomCode() || "....")}</div>
         </div>
         <div class="hero-meta">
           <span>Status: <strong>${escapeHtml(round.status || "unknown")}</strong></span>
@@ -3262,7 +3262,8 @@ function render() {
         <header class="hero">
           <div>
             <h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1>
-            <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
+            <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
           </div>
           <div class="hero-meta">
             <span>You: ${getPlayerName(mePlayer)}</span>
@@ -3282,14 +3283,14 @@ function render() {
       <header class="hero">
         <div>
           <h1>Instant Buzzers</h1>
-          <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
+          <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+          <div class="room-code-badge">${getRoomCode() || "..."}</div>
         </div>
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
           ${settings.teamModeEnabled && !isControllerPlayer() ? `<span>Alliance: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
           <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
           <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
-          <span style="font-size:0.8rem;margin-left:1rem;color:#999" data-debug-ids>me:${escapeHtml(mePlayer?.id||"?")} controller:${escapeHtml(getControllerId()||"?")} participants:${currentParticipants().length}</span>
         </div>
       </header>
 

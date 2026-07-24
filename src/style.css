@@ -377,18 +377,17 @@ button:disabled {
   text-align: right;
 }
 
-.audience-room-code {
+.room-code-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 10ch;
-  margin-top: 0.35rem;
-  padding: 0.55rem 0.85rem;
-  border-radius: 14px;
+  min-width: 8ch;
+  padding: 0.4rem 0.75rem;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(0, 0, 0, 0.24);
   color: #fff4e7;
-  font-size: clamp(1.35rem, 4vw, 2.2rem);
+  font-size: clamp(1.1rem, 3vw, 1.6rem);
   font-weight: 900;
   letter-spacing: 0.2em;
 }
