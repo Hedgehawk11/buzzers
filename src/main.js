@@ -10,7 +10,7 @@ import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, se
 // =============================================================================
 const DEFAULT_SETTINGS = {
   timeOpen: 20,
-  lockAfterBuzz: true,
+  lockAfterBuzz: false,
   rebuzzAllowed: false,
   closeBuzzersOnPointsGiven: false,
   showScoresToPlayers: false,
