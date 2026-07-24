@@ -1,4 +1,4 @@
-# Logs
+# Stuff you dont need to see (just host it if you want to see)
 logs
 *.log
 npm-debug.log*
@@ -7,12 +7,13 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Who cares
 node_modules
 dist
 dist-ssr
 *.local
 
-# Editor directories and files
+# Stuff I REALLY dont care about
 .vscode/*
 !.vscode/extensions.json
 .idea
