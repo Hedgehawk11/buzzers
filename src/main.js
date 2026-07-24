@@ -2261,6 +2261,12 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
         return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
       };
+      const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
+      const roundLabel = showValue
+        ? settings.scoringMode === "jack"
+          ? `<span class="diamond-value">${settings.jackMultiplier}x</span>`
+          : `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
+        : "";
       return `
         <section class="card player-card">
           <h2>You're Being Screwed!</h2>
@@ -2271,6 +2277,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
             ${button(3, "pos-x")}
             ${button(2, "pos-b")}
             ${button(1, "pos-a")}
+            ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
           </div>
         </section>
       `;
@@ -2400,6 +2407,13 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
       : "";
 
+    const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
+    const roundLabel = showValue
+      ? settings.scoringMode === "jack"
+        ? `<span class="diamond-value">${settings.jackMultiplier}x</span>`
+        : `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
+      : "";
+
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
@@ -2411,6 +2425,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           ${button(2, "pos-b")}
           ${button(3, "pos-x")}
           ${button(1, "pos-a")}
+          ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
         </div>
         ${screwBtn}
       </section>
