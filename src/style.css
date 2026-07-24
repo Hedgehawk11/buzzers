@@ -377,6 +377,21 @@ button:disabled {
   text-align: right;
 }
 
+.audience-timer {
+  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #fff4e7;
+  line-height: 1;
+}
+
+.audience-points {
+  font-size: clamp(1.1rem, 2.6vw, 1.6rem);
+  font-weight: 800;
+  color: var(--amber);
+  letter-spacing: 0.06em;
+}
+
 .room-code-badge {
   display: inline-flex;
   align-items: center;

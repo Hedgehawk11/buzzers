@@ -2461,6 +2461,14 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     [ROUND_STATUSES.CLOSED]: "Round closed",
   }[round.status];
 
+  const pointsUpForGrabs = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED
+    ? computeBasePoints(settings, timeLeftCs)
+    : null;
+
+  const pointsLabel = settings.scoringMode === "jack"
+    ? `${settings.jackMultiplier}x multiplier`
+    : `${pointsUpForGrabs} pts`;
+
   const buzzSection = useSingleLeader
     ? `<div class="audience-leader">
         <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
@@ -2482,9 +2490,9 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
           <p class="prejoin-kicker">Audience display</p>
           <h2>${statusLabel}</h2>
         </div>
-        <div class="audience-meta muted">
-          <span>Room ${getRoomCode() || "..."}</span>
-          <span>Time left <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        <div class="audience-meta">
+          <span class="audience-timer" data-live-time-left>${formatSeconds(timeLeftCs)}s</span>
+          ${pointsUpForGrabs !== null ? `<span class="audience-points">${pointsLabel}</span>` : ""}
         </div>
       </div>
       ${buzzSection}
@@ -2879,7 +2887,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                       JACK multiplier
                       <select data-setting="jackMultiplier" ${settingDisabledAttr}>
                         <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
+                        <option value="1.5" ${settings.jackMultiplier === 1.5 ? "selected" : ""}>1.5x</option>
                         <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
+                        <option value="2.5" ${settings.jackMultiplier === 2.5 ? "selected" : ""}>2.5x</option>
                         <option value="3" ${settings.jackMultiplier === 3 ? "selected" : ""}>3x</option>
                       </select>
                       <p class="setting-helper">Points = time left × multiplier (faster buzz = more points).</p>
@@ -4091,6 +4101,12 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     }
     updateTimerDisplays();
   }, 1000);
+
+  // Fast re-render interval for audience display (no interaction, shows live timer)
+  setInterval(() => {
+    if (!isAudienceDisplayClient()) return;
+    render();
+  }, 25);
 
   // Fast re-render interval for bingo mode cycling animation
   setInterval(() => {
