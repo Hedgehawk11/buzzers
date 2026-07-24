@@ -3246,7 +3246,6 @@ function render() {
       </header>
 
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      <section class="grid ${showAdminData ? "" : "grid-single"}">S.ROULETTE ? "disabled" : "") : ""}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
