@@ -53,6 +53,6 @@ npm run build
 ```
 
 ## AI disclamer:
-I am currently trying to learn node.js, and this was a project I decided to make, as I saw a possibility of this being useful, then added more and more then decided to release it. this is mostly vibe-coded in its current state (github copilot and opencode), this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy. Still adding new features using AI at this time.
+I am currently trying to learn node.js, and this was a project I decided to make, as I saw a possibility of this being useful, then added more and more then decided to release it. this is mostly vibe-coded in its current state (github copilot and opencode), this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy. Still adding new features using AI at this time, and dont worry, I dont YOLO ai code instantly, I test it out, make sure it works, then fix it myself if I have to
 
 Built on playroom kit and nodejs
