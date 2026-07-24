@@ -2919,6 +2919,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   </label>`
                 : ""}
             </div>
+            ${settings.teamModeEnabled ? renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr) : ""}
           </div>
         </details>
       </div>
@@ -3245,7 +3246,7 @@ function render() {
       </header>
 
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${settings.teamModeEnabled && isControllerPlayer() ? renderTeamAssignmentControls(settings, players, controller?.id || null, round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : "") : ""}
+      <section class="grid ${showAdminData ? "" : "grid-single"}">S.ROULETTE ? "disabled" : "") : ""}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)

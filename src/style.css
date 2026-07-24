@@ -901,6 +901,7 @@ button.red {
 /* Toggle switch — segmented On/Off button pair */
 .toggle-switch {
   display: inline-flex;
+  width: fit-content;
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid var(--panel-border);
