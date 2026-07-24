@@ -29,7 +29,7 @@ no. at least not now, I do see the idea of one in the distant future, but thats 
 honestly, probably not, in the end it doesn't show much that the players dont see
 
 ### Whats coming?
-Better disordat support, roadkill, (Can you tell I like the Ride), and more round types.
+Better disordat support, roadkill, and more round types.
 
 ### How make work?
 Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
