@@ -784,6 +784,10 @@ button.red {
   margin-top: 0.4rem;
 }
 
+.team-setup-group button {
+  margin-top: 0.4rem;
+}
+
 .team-assignment-list {
   display: grid;
   gap: 0.55rem;

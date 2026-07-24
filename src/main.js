@@ -1935,6 +1935,38 @@ function setPlayerTeam(playerId, teamColor) {
   render();
 }
 
+function randomizeTeams() {
+  if (!isHost()) {
+    return;
+  }
+
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+
+  if (nonControllerPlayers.length === 0) {
+    return;
+  }
+
+  const usedColors = [...new Set(Object.values(assignments))].filter((c) => TEAM_COLORS.includes(c));
+  const teamColors = usedColors.length >= 2 ? usedColors : TEAM_COLORS.slice(0, Math.min(2, TEAM_COLORS.length));
+
+  const shuffled = [...nonControllerPlayers];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  const nextAssignments = {};
+  shuffled.forEach((player, index) => {
+    nextAssignments[player.id] = teamColors[index % teamColors.length];
+  });
+
+  setState("teamAssignments", nextAssignments, true);
+  render();
+}
+
 // =============================================================================
 // Initialisation helpers — run on host only to set up initial state
 // =============================================================================
@@ -2670,6 +2702,7 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
     <div class="toggle-group team-setup-group">
       <span class="muted">Team assignments</span>
       <div class="team-assignment-list">${rows}</div>
+      <button type="button" data-host-action="randomize-teams" ${nonControllerPlayers.length < 2 ? "disabled" : ""}>Randomize Teams</button>
     </div>
   `;
 }
@@ -2760,8 +2793,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <select data-setting="inputMode" ${settingDisabledAttr}>
                   <option value="buttons" ${settings.inputMode !== "text" && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" ? "selected" : ""}>Button buzzer</option>
                   <option value="text" ${settings.inputMode === "text" ? "selected" : ""}>Text entry</option>
-                  <option value="bingo" ${settings.inputMode === "bingo" ? "selected" : ""}>Bingo</option>
-                  <option value="wendithapn" ${settings.inputMode === "wendithapn" ? "selected" : ""}>Wen dit hapn</option>
                 </select>
                 <p class="setting-helper">How players give their answers.</p>
               </label>
@@ -2942,6 +2973,23 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
+          </div>
+        </details>
+      </div>
+
+      <!-- Section: Special Questions -->
+      <div class="settings-section">
+        <details>
+          <summary>Special Questions</summary>
+          <div class="section-body">
+            <p class="muted" style="font-size:0.82rem">Alternative question formats that replace the normal buzzer round.</p>
+            <div class="host-actions" style="margin-top:0.5rem">
+              <button type="button" data-set-mode="bingo" ${settingDisabledAttr} ${settings.inputMode === "bingo" ? "disabled" : ""}>Bingo</button>
+              <button type="button" data-set-mode="wendithapn" ${settingDisabledAttr} ${settings.inputMode === "wendithapn" ? "disabled" : ""}>Wen Dit Happn</button>
+            </div>
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn"
+              ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the Bingo panel below to control the round.</p>`
+              : ""}
           </div>
         </details>
       </div>
@@ -3374,7 +3422,9 @@ function bindEvents() {
     app.querySelectorAll("[data-host-action]").forEach((button) => {
       button.addEventListener("click", () => {
         const action = button.dataset.hostAction;
-        if (action === "open") {
+        if (action === "randomize-teams") {
+          randomizeTeams();
+        } else if (action === "open") {
           openBuzzers();
         } else if (action === "start-roulette") {
           const result = startRoulettePhase();
@@ -3392,6 +3442,12 @@ function bindEvents() {
         } else if (action === "reset-screws") {
           resetScrews();
         }
+      });
+    });
+
+    app.querySelectorAll("[data-set-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setHostSetting("inputMode", button.dataset.setMode);
       });
     });
 
