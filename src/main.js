@@ -294,6 +294,25 @@ function getScores() {
   return getSafeState("scores", {});
 }
 
+function getPlayerRank(playerId, settings, scores, players) {
+  const controllerId = getControllerId();
+  const scored = players
+    .filter((p) => p.id !== controllerId)
+    .map((p) => ({
+      id: p.id,
+      score: Number(scores[getScoreKeyForPlayer(p.id, settings)] || 0),
+    }))
+    .sort((a, b) => b.score - a.score);
+  const idx = scored.findIndex((p) => p.id === playerId);
+  return idx === -1 ? scored.length + 1 : idx + 1;
+}
+
+function getOrdinal(n) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
 function isBingoMode() {
   const mode = getSettings().inputMode;
   return mode === "bingo" || mode === "wendithapn";
@@ -2190,6 +2209,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     }
     return baseClass ? `${baseClass} ${teamButtonClass}` : teamButtonClass;
   };
+  const myScore = Number(getScores()[getScoreKeyForPlayer(mePlayer.id, settings, teamAssignments)] || 0);
+  const myScoreLine = `<p class="muted">Score: <strong>${myScore}</strong></p>`;
   if (settings.teamModeEnabled && !myTeamColor) {
     return `
       <section class="card player-card">
@@ -2343,6 +2364,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Answer</h2>
         <p class="muted">${textHelper}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
@@ -2364,6 +2386,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${optionDisabled ? "This buzzer is disabled by the Host." : helperText}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>BUZZ</button>
@@ -2387,6 +2410,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
@@ -2418,6 +2442,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="abxy-diamond">
@@ -2447,6 +2472,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   return `
     <section class="card player-card">
       <h2>Your Buzzer</h2>
+        ${myScoreLine}
       <p class="muted">${helperText}</p>
       <p class="muted">${timeText}</p>
       ${notice ? `<p class="muted">${notice}</p>` : ""}
