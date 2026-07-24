@@ -700,6 +700,38 @@ button.team-buzzer.team-gray:hover:enabled {
   background: linear-gradient(160deg, rgba(172, 184, 199, 0.98), rgba(98, 112, 133, 0.98));
 }
 
+button.buzzer-a {
+  background: linear-gradient(160deg, rgba(29, 185, 84, 0.95), rgba(20, 123, 61, 0.96));
+}
+
+button.buzzer-a:hover:enabled {
+  background: linear-gradient(160deg, rgba(53, 201, 108, 0.98), rgba(25, 140, 70, 0.98));
+}
+
+button.buzzer-b {
+  background: linear-gradient(160deg, rgba(235, 61, 48, 0.95), rgba(166, 29, 21, 0.96));
+}
+
+button.buzzer-b:hover:enabled {
+  background: linear-gradient(160deg, rgba(245, 89, 77, 0.98), rgba(181, 34, 24, 0.98));
+}
+
+button.buzzer-x {
+  background: linear-gradient(160deg, rgba(34, 166, 242, 0.95), rgba(15, 107, 177, 0.96));
+}
+
+button.buzzer-x:hover:enabled {
+  background: linear-gradient(160deg, rgba(68, 180, 247, 0.98), rgba(21, 121, 193, 0.98));
+}
+
+button.buzzer-y {
+  background: linear-gradient(160deg, rgba(240, 192, 64, 0.95), rgba(200, 155, 30, 0.96));
+}
+
+button.buzzer-y:hover:enabled {
+  background: linear-gradient(160deg, rgba(245, 205, 85, 0.98), rgba(215, 170, 40, 0.98));
+}
+
 .text-entry {
   margin-top: 1rem;
   display: grid;

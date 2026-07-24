@@ -2255,8 +2255,11 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     }
     
     if (settings.optionCount === 4) {
+      const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
       const button = (opt, cls) => {
-        return `<button type="button" class="${appendTeamButtonClass(cls)}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
+        const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
+        const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
+        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
       };
       return `
         <section class="card player-card">
@@ -2386,9 +2389,12 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   }
 
   if (settings.optionCount === 4) {
+    const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
     const button = (opt, cls) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-      return `<button type="button" class="${appendTeamButtonClass(cls)}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
+      const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
+      return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
     const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
