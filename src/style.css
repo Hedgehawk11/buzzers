@@ -854,6 +854,94 @@ button.red {
   color: var(--muted);
 }
 
+/* =============================================================================
+   Collapsible settings sections
+   ============================================================================= */
+.settings-section details {
+  margin-top: 0;
+}
+.settings-section details + details {
+  margin-top: 0.25rem;
+}
+.settings-section summary {
+  cursor: pointer;
+  padding: 0.5rem 0.6rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--amber);
+  background: rgba(255, 139, 36, 0.06);
+  border: 1px solid transparent;
+  transition: background 120ms, border-color 120ms;
+  user-select: none;
+  list-style: none;
+}
+.settings-section summary::-webkit-details-marker {
+  display: none;
+}
+.settings-section summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 160ms;
+  font-size: 0.7rem;
+}
+.settings-section details[open] summary::before {
+  transform: rotate(90deg);
+}
+.settings-section summary:hover {
+  background: rgba(255, 139, 36, 0.12);
+  border-color: rgba(255, 139, 36, 0.2);
+}
+.settings-section .section-body {
+  padding: 0.75rem 0.6rem 0.3rem;
+}
+
+/* Toggle switch — segmented On/Off button pair */
+.toggle-switch {
+  display: inline-flex;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.2);
+}
+.toggle-switch-btn {
+  padding: 0.35rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+  letter-spacing: 0.04em;
+}
+.toggle-switch-btn:hover:enabled {
+  background: rgba(255, 255, 255, 0.08);
+}
+.toggle-switch-btn.is-active {
+  background: rgba(29, 185, 84, 0.3);
+  color: var(--text);
+}
+.toggle-switch-btn.is-active.is-off-val {
+  background: rgba(235, 61, 48, 0.3);
+  color: var(--text);
+}
+.toggle-switch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Helper text under settings */
+.setting-helper {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 @media (max-width: 900px) {
   .hero {
     flex-direction: column;
