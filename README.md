@@ -7,8 +7,6 @@ This is mainly built for running live You Dont Know Jack games, and I do think y
 But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, again, this is built for live YDKJ games, where there is more comedy then questions, it also does require an external slide deck for showing questions, but now includes a score sheet/general display for the side of your slideshow.
 
 ## FAQ
-### Where is room code?
-Top Left, You can miss it
 
 ### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
 Yes. yes there is, handwritten responce too, try it, I dare ya
