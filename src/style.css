@@ -261,6 +261,11 @@ select {
   padding: 0.55rem 0.65rem;
 }
 
+select option {
+  background: #0d2437;
+  color: #e6f1ff;
+}
+
 button {
   cursor: pointer;
   color: var(--text);
