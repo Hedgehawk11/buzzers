@@ -42,7 +42,6 @@ CI: `npm ci && npm run build` (no tests/lint). No typecheck, formatter, or pre-c
 - **F-You easter egg**: Typing "fuck you" in text-entry mode applies -2× base points penalty.
 - **Bingo/Wen Dit Happn**: Separate input modes that replace the normal buzzer UI. 5-letter word for bingo, 3-option "Before/Never/After" for Wen Dit Happn.
 - Host tick runs every ~1s via `setInterval` in the `insertCoin` callback — manages timers, screw countdowns, roulette finalization.
-- `src/counter.js` is dead code — do not use or import.
 
 ## Conventions
 - All DOM event binding via `data-*` attributes, re-bound on every `render()` call.
