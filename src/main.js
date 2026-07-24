@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   rebuzzAllowed: false,
   closeBuzzersOnPointsGiven: false,
   showScoresToPlayers: false,
+  showScoresToAudience: true,
   inputMode: "buttons",
   optionCount: 4,
   disabledOptions: [],
@@ -440,7 +441,8 @@ function getUiSignature() {
       rebuzzAllowed: settings.rebuzzAllowed,
       lockAfterBuzz: settings.lockAfterBuzz,
       closeBuzzersOnPointsGiven: settings.closeBuzzersOnPointsGiven,
-      showScoresToPlayers: settings.showScoresToPlayers,
+showScoresToPlayers: settings.showScoresToPlayers,
+      showScoresToAudience: settings.showScoresToAudience,
       disabledOptions: settings.disabledOptions,
       disabledPlayerIds: settings.disabledPlayerIds,
       scoringMode: settings.scoringMode,
@@ -2588,7 +2590,7 @@ function renderAudienceScrewPanel(round) {
 // =============================================================================
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
-  const showScores = Boolean(settings.showScoresToPlayers);
+  const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
@@ -2970,6 +2972,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 Show scores to all
                 ${toggleSwitch("showScoresToPlayers", settings.showScoresToPlayers)}
                 <p class="setting-helper">Let non-host players see the scoreboard.</p>
+              </label>
+              <label>
+                Show scores on audience display
+                ${toggleSwitch("showScoresToAudience", settings.showScoresToAudience)}
+                <p class="setting-helper">Show scores on the audience/projection screen.</p>
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
