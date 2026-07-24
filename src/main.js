@@ -10,10 +10,11 @@ import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, se
 // =============================================================================
 const DEFAULT_SETTINGS = {
   timeOpen: 20,
-  lockAfterBuzz: true,
+  lockAfterBuzz: false,
   rebuzzAllowed: false,
   closeBuzzersOnPointsGiven: false,
   showScoresToPlayers: false,
+  showScoresToAudience: true,
   inputMode: "buttons",
   optionCount: 4,
   disabledOptions: [],
@@ -293,6 +294,25 @@ function getScores() {
   return getSafeState("scores", {});
 }
 
+function getPlayerRank(playerId, settings, scores, players) {
+  const controllerId = getControllerId();
+  const scored = players
+    .filter((p) => p.id !== controllerId)
+    .map((p) => ({
+      id: p.id,
+      score: Number(scores[getScoreKeyForPlayer(p.id, settings)] || 0),
+    }))
+    .sort((a, b) => b.score - a.score);
+  const idx = scored.findIndex((p) => p.id === playerId);
+  return idx === -1 ? scored.length + 1 : idx + 1;
+}
+
+function getOrdinal(n) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
 function isBingoMode() {
   const mode = getSettings().inputMode;
   return mode === "bingo" || mode === "wendithapn";
@@ -440,7 +460,8 @@ function getUiSignature() {
       rebuzzAllowed: settings.rebuzzAllowed,
       lockAfterBuzz: settings.lockAfterBuzz,
       closeBuzzersOnPointsGiven: settings.closeBuzzersOnPointsGiven,
-      showScoresToPlayers: settings.showScoresToPlayers,
+showScoresToPlayers: settings.showScoresToPlayers,
+      showScoresToAudience: settings.showScoresToAudience,
       disabledOptions: settings.disabledOptions,
       disabledPlayerIds: settings.disabledPlayerIds,
       scoringMode: settings.scoringMode,
@@ -1935,6 +1956,38 @@ function setPlayerTeam(playerId, teamColor) {
   render();
 }
 
+function randomizeTeams() {
+  if (!isHost()) {
+    return;
+  }
+
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+
+  if (nonControllerPlayers.length === 0) {
+    return;
+  }
+
+  const usedColors = [...new Set(Object.values(assignments))].filter((c) => TEAM_COLORS.includes(c));
+  const teamColors = usedColors.length >= 2 ? usedColors : TEAM_COLORS.slice(0, Math.min(2, TEAM_COLORS.length));
+
+  const shuffled = [...nonControllerPlayers];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  const nextAssignments = {};
+  shuffled.forEach((player, index) => {
+    nextAssignments[player.id] = teamColors[index % teamColors.length];
+  });
+
+  setState("teamAssignments", nextAssignments, true);
+  render();
+}
+
 // =============================================================================
 // Initialisation helpers — run on host only to set up initial state
 // =============================================================================
@@ -2156,6 +2209,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     }
     return baseClass ? `${baseClass} ${teamButtonClass}` : teamButtonClass;
   };
+  const myScore = Number(getScores()[getScoreKeyForPlayer(mePlayer.id, settings, teamAssignments)] || 0);
+  const myScoreLine = `<p class="muted">Score: <strong>${myScore}</strong></p>`;
   if (settings.teamModeEnabled && !myTeamColor) {
     return `
       <section class="card player-card">
@@ -2221,9 +2276,18 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     }
     
     if (settings.optionCount === 4) {
+      const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
       const button = (opt, cls) => {
-        return `<button type="button" class="${appendTeamButtonClass(cls)}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
+        const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
+        const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
+        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
       };
+      const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
+      const roundLabel = showValue
+        ? settings.scoringMode === "jack"
+          ? `<span class="diamond-value">${settings.jackMultiplier}x</span>`
+          : `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
+        : "";
       return `
         <section class="card player-card">
           <h2>You're Being Screwed!</h2>
@@ -2234,6 +2298,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
             ${button(3, "pos-x")}
             ${button(2, "pos-b")}
             ${button(1, "pos-a")}
+            ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
           </div>
         </section>
       `;
@@ -2299,6 +2364,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Answer</h2>
         <p class="muted">${textHelper}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
@@ -2320,6 +2386,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${optionDisabled ? "This buzzer is disabled by the Host." : helperText}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>BUZZ</button>
@@ -2343,6 +2410,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
@@ -2352,18 +2420,29 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   }
 
   if (settings.optionCount === 4) {
+    const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
     const button = (opt, cls) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
-      return `<button type="button" class="${appendTeamButtonClass(cls)}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
+      const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
+      return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
     const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+      : "";
+
+    const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
+    const roundLabel = showValue
+      ? settings.scoringMode === "jack"
+        ? `<span class="diamond-value">${settings.jackMultiplier}x</span>`
+        : `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
       : "";
 
     return `
       <section class="card player-card">
         <h2>Your Buzzer</h2>
         <p class="muted">${helperText}</p>
+        ${myScoreLine}
         <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="abxy-diamond">
@@ -2371,6 +2450,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           ${button(2, "pos-b")}
           ${button(3, "pos-x")}
           ${button(1, "pos-a")}
+          ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
         </div>
         ${screwBtn}
       </section>
@@ -2392,6 +2472,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   return `
     <section class="card player-card">
       <h2>Your Buzzer</h2>
+        ${myScoreLine}
       <p class="muted">${helperText}</p>
       <p class="muted">${timeText}</p>
       ${notice ? `<p class="muted">${notice}</p>` : ""}
@@ -2427,6 +2508,14 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     [ROUND_STATUSES.CLOSED]: "Round closed",
   }[round.status];
 
+  const pointsUpForGrabs = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED
+    ? computeBasePoints(settings, timeLeftCs)
+    : null;
+
+  const pointsLabel = settings.scoringMode === "jack"
+    ? `${settings.jackMultiplier}x multiplier`
+    : `${pointsUpForGrabs} pts`;
+
   const buzzSection = useSingleLeader
     ? `<div class="audience-leader">
         <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
@@ -2448,9 +2537,9 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
           <p class="prejoin-kicker">Audience display</p>
           <h2>${statusLabel}</h2>
         </div>
-        <div class="audience-meta muted">
-          <span>Room ${getRoomCode() || "..."}</span>
-          <span>Time left <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        <div class="audience-meta">
+          <span class="audience-timer" data-live-time-left>${formatSeconds(timeLeftCs)}s</span>
+          ${pointsUpForGrabs !== null ? `<span class="audience-points">${pointsLabel}</span>` : ""}
         </div>
       </div>
       ${buzzSection}
@@ -2556,7 +2645,7 @@ function renderAudienceScrewPanel(round) {
 // =============================================================================
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
-  const showScores = Boolean(settings.showScoresToPlayers);
+  const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
@@ -2570,7 +2659,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
           <p class="prejoin-kicker">Audience display</p>
           <h1>Instant Buzzers</h1>
           <p class="muted">Room code</p>
-          <div class="audience-room-code">${escapeHtml(getRoomCode() || "....")}</div>
+          <div class="room-code-badge">${escapeHtml(getRoomCode() || "....")}</div>
         </div>
         <div class="hero-meta">
           <span>Status: <strong>${escapeHtml(round.status || "unknown")}</strong></span>
@@ -2670,6 +2759,7 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
     <div class="toggle-group team-setup-group">
       <span class="muted">Team assignments</span>
       <div class="team-assignment-list">${rows}</div>
+      <button type="button" data-host-action="randomize-teams" ${nonControllerPlayers.length < 2 ? "disabled" : ""}>Randomize Teams</button>
     </div>
   `;
 }
@@ -2700,209 +2790,285 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     [ROUND_STATUSES.CLOSED]: "Closed",
   }[round.status];
 
+  const toggleSwitch = (setting, value, labelOn = "On", labelOff = "Off") => {
+    const isOn = value === true;
+    const onCls = isOn ? "is-active" : "";
+    const offCls = !isOn ? "is-active is-off-val" : "";
+    return `<div class="toggle-switch">
+      <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="${setting}" data-value="true" ${settingDisabledAttr}>${labelOn}</button>
+      <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="${setting}" data-value="false" ${settingDisabledAttr}>${labelOff}</button>
+    </div>`;
+  };
+
   return `
     <section class="card host-panel">
       <h2>Host Controls</h2>
-      <div class="control-grid">
-        <label>
-          Time open
-          <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} />
-        </label>
 
-        <label>
-          Lock buzzers after buzz
-          <select data-setting="lockAfterBuzz" ${settingDisabledAttr}>
-            <option value="true" ${settings.lockAfterBuzz ? "selected" : ""}>On</option>
-            <option value="false" ${!settings.lockAfterBuzz ? "selected" : ""}>Off</option>
-          </select>
-        </label>
-
-        <label>
-          Re-Buzz allowed
-          <select data-setting="rebuzzAllowed" ${settingDisabledAttr}>
-            <option value="true" ${settings.rebuzzAllowed ? "selected" : ""}>On</option>
-            <option value="false" ${!settings.rebuzzAllowed ? "selected" : ""}>Off</option>
-          </select>
-        </label>
-
-        <label>
-          Show scores to players
-          <select data-setting="showScoresToPlayers" ${settingDisabledAttr}>
-            <option value="true" ${settings.showScoresToPlayers ? "selected" : ""}>On</option>
-            <option value="false" ${!settings.showScoresToPlayers ? "selected" : ""}>Off</option>
-          </select>
-        </label>
-
-        <label>
-          Answer mode
-          <select data-setting="inputMode" ${settingDisabledAttr}>
-            <option value="buttons" ${settings.inputMode !== "text" && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" ? "selected" : ""}>Button buzzer</option>
-            <option value="text" ${settings.inputMode === "text" ? "selected" : ""}>Text entry</option>
-            <option value="bingo" ${settings.inputMode === "bingo" ? "selected" : ""}>Bingo</option>
-            <option value="wendithapn" ${settings.inputMode === "wendithapn" ? "selected" : ""}>Wen dit hapn</option>
-          </select>
-        </label>
-
-        ${
-          settings.lockAfterBuzz
-            ? `<label>
-                Close buzzers on points given
-                <select data-setting="closeBuzzersOnPointsGiven" ${settingDisabledAttr}>
-                  <option value="true" ${settings.closeBuzzersOnPointsGiven ? "selected" : ""}>On</option>
-                  <option value="false" ${!settings.closeBuzzersOnPointsGiven ? "selected" : ""}>Off</option>
-                </select>
-              </label>`
-            : ""
-        }
-
-        ${
-          settings.inputMode === "text"
-            ? ""
-            : `<label>
-                Option count
-                <select data-setting="optionCount" ${settingDisabledAttr}>
-                  <option value="1" ${settings.optionCount === 1 ? "selected" : ""}>1</option>
-                  <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>
-                  <option value="4" ${settings.optionCount === 4 ? "selected" : ""}>4</option>
-                  <option value="6" ${settings.optionCount === 6 ? "selected" : ""}>6</option>
-                </select>
-              </label>`
-        }
-
-        <label>
-          Scoring
-          <select data-setting="scoringMode" ${settingDisabledAttr}>
-            <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform</option>
-            <option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK</option>
-            <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Roulette</option>
-          </select>
-        </label>
-
-        ${
-          settings.scoringMode === "uniform"
-            ? `<label>
-                Uniform points
-                  <select data-setting="uniformPoints" ${settingDisabledAttr}>
-                  <option value="500" ${settings.uniformPoints === 500 ? "selected" : ""}>500</option>
-                  <option value="1000" ${settings.uniformPoints === 1000 ? "selected" : ""}>1000</option>
-                  <option value="1500" ${settings.uniformPoints === 1500 ? "selected" : ""}>1500</option>
-                  <option value="2000" ${settings.uniformPoints === 2000 ? "selected" : ""}>2000</option>
-                  <option value="2500" ${settings.uniformPoints === 2500 ? "selected" : ""}>2500</option>
-                  <option value="3000" ${settings.uniformPoints === 3000 ? "selected" : ""}>3000</option>
-                </select>
-              </label>`
-            : `<label>
-                JACK multiplier
-                  <select data-setting="jackMultiplier" ${settingDisabledAttr}>
-                  <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
-                  <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
-                  <option value="3" ${settings.jackMultiplier === 3 ? "selected" : ""}>3x</option>
-                </select>
-              </label>`
-        }
-
-        ${
-          settings.scoringMode === "roulette"
-            ? `<label>
-                Roulette mode
-                <select data-setting="rouletteMode" ${settingDisabledAttr}>
-                  <option value="additive" ${settings.rouletteMode === "additive" ? "selected" : ""}>Additive</option>
-                  <option value="highest" ${settings.rouletteMode === "highest" ? "selected" : ""}>Highest value</option>
-                  <option value="single-player" ${settings.rouletteMode === "single-player" ? "selected" : ""}>Single-player</option>
-                </select>
+      <!-- Section: Round -->
+      <div class="settings-section">
+        <details ${settingsLocked ? "" : "open"}>
+          <summary>Round</summary>
+          <div class="section-body">
+            <div class="control-grid">
+              <label>
+                Time open
+                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} />
+                <p class="setting-helper">How many seconds buzzers stay open each round.</p>
               </label>
               <label>
-                Top amount
-                <select data-setting="rouletteTopAmount" ${settingDisabledAttr}>
-                  <option value="500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 500 ? "selected" : ""}>500</option>
-                  <option value="1000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1000 ? "selected" : ""}>1000</option>
-                  <option value="1500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1500 ? "selected" : ""}>1500</option>
-                  <option value="2000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2000 ? "selected" : ""}>2000</option>
-                  <option value="2500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2500 ? "selected" : ""}>2500</option>
-                  <option value="3000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 3000 ? "selected" : ""}>3000</option>
-                </select>
+                Lock after buzz
+                ${toggleSwitch("lockAfterBuzz", settings.lockAfterBuzz)}
+                <p class="setting-helper">Pause the round after a player buzzes so you can rule on it.</p>
               </label>
-              ${settings.rouletteMode === "single-player"
+              ${
+                settings.lockAfterBuzz
+                  ? `<label>
+                      Close on positive ruling
+                      ${toggleSwitch("closeBuzzersOnPointsGiven", settings.closeBuzzersOnPointsGiven)}
+                      <p class="setting-helper">Instead of re-opening, close buzzers after awarding points.</p>
+                    </label>`
+                  : ""
+              }
+              <label>
+                Re-buzz allowed
+                ${toggleSwitch("rebuzzAllowed", settings.rebuzzAllowed)}
+                <p class="setting-helper">Let the same player buzz multiple times per round.</p>
+              </label>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Section: Answer Input -->
+      <div class="settings-section">
+        <details ${settingsLocked ? "" : "open"}>
+          <summary>Answer Input</summary>
+          <div class="section-body">
+            <div class="control-grid">
+              <label>
+                Answer mode
+                <select data-setting="inputMode" ${settingDisabledAttr}>
+                  <option value="buttons" ${settings.inputMode !== "text" && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" ? "selected" : ""}>Button buzzer</option>
+                  <option value="text" ${settings.inputMode === "text" ? "selected" : ""}>Text entry</option>
+                </select>
+                <p class="setting-helper">How players give their answers.</p>
+              </label>
+              ${
+                settings.inputMode === "text"
+                  ? ""
+                  : `<label>
+                      Option count
+                      <select data-setting="optionCount" ${settingDisabledAttr}>
+                        <option value="1" ${settings.optionCount === 1 ? "selected" : ""}>1</option>
+                        <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>
+                        <option value="4" ${settings.optionCount === 4 ? "selected" : ""}>4</option>
+                        <option value="6" ${settings.optionCount === 6 ? "selected" : ""}>6</option>
+                      </select>
+                      <p class="setting-helper">How many buzzer buttons each player sees.</p>
+                    </label>`
+              }
+            </div>
+
+            <!-- Pre-set correct answer -->
+            <div style="margin-top:0.75rem">
+              <h3 style="font-size:0.85rem;margin:0 0 0.4rem;color:var(--muted)">Pre-set correct answer</h3>
+              <p class="muted" style="font-size:0.8rem">Auto-award points when a player picks the right answer.</p>
+              ${settings.inputMode === "text"
+                ? `<label style="margin-top:0.4rem">Correct answer text
+                     <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
+                     <div style="margin-top:0.4rem">
+                       <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
+                       <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
+                     </div>
+                   </label>`
+                : `<div style="margin-top:0.4rem">
+                     <span class="muted">Correct options</span>
+                     <div class="toggle-list" style="margin-top:0.4rem">
+                       ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
+                         .map((opt) => {
+                           const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
+                           const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
+                           return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+                         })
+                         .join("")}
+                     </div>
+                     <div style="margin-top:0.4rem"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
+                   </div>`}
+            </div>
+
+            ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
+          </div>
+        </details>
+      </div>
+
+      <!-- Section: Scoring -->
+      <div class="settings-section">
+        <details ${settingsLocked ? "" : "open"}>
+          <summary>Scoring</summary>
+          <div class="section-body">
+            <div class="control-grid">
+              <label>
+                Scoring mode
+                <select data-setting="scoringMode" ${settingDisabledAttr}>
+                  <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
+                  <option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>
+                  <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Roulette (player-determined)</option>
+                </select>
+                <p class="setting-helper">How each buzz is valued.</p>
+              </label>
+              ${
+                settings.scoringMode === "uniform"
+                  ? `<label>
+                      Uniform points
+                      <select data-setting="uniformPoints" ${settingDisabledAttr}>
+                        <option value="500" ${settings.uniformPoints === 500 ? "selected" : ""}>500</option>
+                        <option value="1000" ${settings.uniformPoints === 1000 ? "selected" : ""}>1000</option>
+                        <option value="1500" ${settings.uniformPoints === 1500 ? "selected" : ""}>1500</option>
+                        <option value="2000" ${settings.uniformPoints === 2000 ? "selected" : ""}>2000</option>
+                        <option value="2500" ${settings.uniformPoints === 2500 ? "selected" : ""}>2500</option>
+                        <option value="3000" ${settings.uniformPoints === 3000 ? "selected" : ""}>3000</option>
+                      </select>
+                      <p class="setting-helper">Every correct answer is worth this many points.</p>
+                    </label>`
+                  : `<label>
+                      JACK multiplier
+                      <select data-setting="jackMultiplier" ${settingDisabledAttr}>
+                        <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
+                        <option value="1.5" ${settings.jackMultiplier === 1.5 ? "selected" : ""}>1.5x</option>
+                        <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
+                        <option value="2.5" ${settings.jackMultiplier === 2.5 ? "selected" : ""}>2.5x</option>
+                        <option value="3" ${settings.jackMultiplier === 3 ? "selected" : ""}>3x</option>
+                      </select>
+                      <p class="setting-helper">Points = time left × multiplier (faster buzz = more points).</p>
+                    </label>`
+              }
+            </div>
+            ${
+              settings.scoringMode === "roulette"
+                ? `<div class="control-grid" style="margin-top:0.5rem">
+                    <label>
+                      Roulette mode
+                      <select data-setting="rouletteMode" ${settingDisabledAttr}>
+                        <option value="additive" ${settings.rouletteMode === "additive" ? "selected" : ""}>Additive (everyone adds up)</option>
+                        <option value="highest" ${settings.rouletteMode === "highest" ? "selected" : ""}>Highest value wins</option>
+                        <option value="single-player" ${settings.rouletteMode === "single-player" ? "selected" : ""}>Single-player stops it</option>
+                      </select>
+                      <p class="setting-helper">How the roulette result is calculated from all players.</p>
+                    </label>
+                    <label>
+                      Top amount
+                      <select data-setting="rouletteTopAmount" ${settingDisabledAttr}>
+                        <option value="500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 500 ? "selected" : ""}>500</option>
+                        <option value="1000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1000 ? "selected" : ""}>1000</option>
+                        <option value="1500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1500 ? "selected" : ""}>1500</option>
+                        <option value="2000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2000 ? "selected" : ""}>2000</option>
+                        <option value="2500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2500 ? "selected" : ""}>2500</option>
+                        <option value="3000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 3000 ? "selected" : ""}>3000</option>
+                      </select>
+                      <p class="setting-helper">Maximum possible roulette value.</p>
+                    </label>
+                    ${settings.rouletteMode === "single-player"
+                      ? `<label>
+                          Target player
+                          <select data-setting="rouletteSinglePlayerTarget" ${settingDisabledAttr}>
+                            <option value="random" ${settings.rouletteSinglePlayerTarget === "random" ? "selected" : ""}>Random player</option>
+                            ${nonControllerPlayers
+                              .map((player) => `<option value="${player.id}" ${settings.rouletteSinglePlayerTarget === player.id ? "selected" : ""}>${escapeHtml(getPlayerName(player))}</option>`)
+                              .join("")}
+                          </select>
+                          <p class="setting-helper">Which player stops the roulette.</p>
+                        </label>`
+                      : ""}
+                    <span class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</span>
+                  </div>`
+                : ""
+            }
+          </div>
+        </details>
+      </div>
+
+      <!-- Section: Teams -->
+      <div class="settings-section">
+        <details ${settingsLocked ? "" : "open"}>
+          <summary>Teams</summary>
+          <div class="section-body">
+            <div class="control-grid">
+              <label>
+                Teams
+                ${toggleSwitch("teamModeEnabled", settings.teamModeEnabled)}
+                <p class="setting-helper">Group players into color teams.</p>
+              </label>
+              ${settings.teamModeEnabled
                 ? `<label>
-                    Single-player target
-                    <select data-setting="rouletteSinglePlayerTarget" ${settingDisabledAttr}>
-                      <option value="random" ${settings.rouletteSinglePlayerTarget === "random" ? "selected" : ""}>Random player</option>
-                      ${nonControllerPlayers
-                        .map((player) => `<option value="${player.id}" ${settings.rouletteSinglePlayerTarget === player.id ? "selected" : ""}>${escapeHtml(getPlayerName(player))}</option>`)
-                        .join("")}
+                    Team scoring
+                    <select data-setting="teamScoringMode" ${settingDisabledAttr}>
+                      <option value="alliance" ${settings.teamScoringMode === "alliance" ? "selected" : ""}>Alliance (individual + team totals)</option>
+                      <option value="shared" ${settings.teamScoringMode === "shared" ? "selected" : ""}>Shared (one buzzer per team)</option>
                     </select>
+                    <p class="setting-helper">"Alliance" keeps individual scores + tallies teams. "Shared" gives each team one buzzer.</p>
                   </label>`
                 : ""}
-              <div class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</div>`
-            : ""
-        }
-
-        <label>
-          Allow Screwing
-          <select data-setting="allowScrewing" ${settingDisabledAttr}>
-            <option value="true" ${settings.allowScrewing ? "selected" : ""}>On</option>
-            <option value="false" ${!settings.allowScrewing ? "selected" : ""}>Off</option>
-          </select>
-        </label>
-
-        <label>
-          Teams
-          <select data-setting="teamModeEnabled" ${settingDisabledAttr}>
-            <option value="false" ${!settings.teamModeEnabled ? "selected" : ""}>Off</option>
-            <option value="true" ${settings.teamModeEnabled ? "selected" : ""}>On</option>
-          </select>
-        </label>
-
-        ${settings.teamModeEnabled
-          ? `<label>
-              Team scoring
-              <select data-setting="teamScoringMode" ${settingDisabledAttr}>
-                <option value="alliance" ${settings.teamScoringMode === "alliance" ? "selected" : ""}>Alliance (individual scores + team totals)</option>
-                <option value="shared" ${settings.teamScoringMode === "shared" ? "selected" : ""}>Team mode (shared buzzer + shared score)</option>
-              </select>
-            </label>`
-          : ""}
+            </div>
+            ${settings.teamModeEnabled ? renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr) : ""}
+          </div>
+        </details>
       </div>
 
-      <!-- Pre-set correct answer UI -->
-      <div class="correct-answer">
-        <h3>Pre-set correct answer</h3>
-        <p class="muted">Optionally set the correct answer before opening buzzers. Text mode is case-insensitive.</p>
-        <div class="correct-controls">
-          ${settings.inputMode === "text"
-            ? `<label>Correct answer text
-                 <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
-                 <div style="margin-top:0.5rem">
-                   <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
-                   <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
-                 </div>
-               </label>`
-            : `<div>
-                 <span class="muted">Correct options</span>
-                 <div class="toggle-list" style="margin-top:0.5rem">
-                   ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
-                     .map((opt) => {
-                       const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
-                       const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
-                       return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
-                     })
-                     .join("")}
-                 </div>
-                 <div style="margin-top:0.5rem"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
-               </div>`}
+      <!-- Section: Extras -->
+      <div class="settings-section">
+        <details ${settingsLocked ? "" : "open"}>
+          <summary>Extras</summary>
+          <div class="section-body">
+            <div class="control-grid">
+              <label>
+                Screw mechanic
+                ${toggleSwitch("allowScrewing", settings.allowScrewing)}
+                <p class="setting-helper">Players can force another player to answer under a 5s timer. Points are swapped.</p>
+              </label>
+              <label>
+                Show scores to all
+                ${toggleSwitch("showScoresToPlayers", settings.showScoresToPlayers)}
+                <p class="setting-helper">Let non-host players see the scoreboard.</p>
+              </label>
+              <label>
+                Show scores on audience display
+                ${toggleSwitch("showScoresToAudience", settings.showScoresToAudience)}
+                <p class="setting-helper">Show scores on the audience/projection screen.</p>
+              </label>
+            </div>
+            ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
+          </div>
+        </details>
+      </div>
+
+      <!-- Section: Special Questions -->
+      <div class="settings-section">
+        <details>
+          <summary>Special Questions</summary>
+          <div class="section-body">
+            <p class="muted" style="font-size:0.82rem">Alternative question formats that replace the normal buzzer round.</p>
+            <div class="host-actions" style="margin-top:0.5rem">
+              <button type="button" data-set-mode="bingo" ${settingDisabledAttr} ${settings.inputMode === "bingo" ? "disabled" : ""}>Bingo</button>
+              <button type="button" data-set-mode="wendithapn" ${settingDisabledAttr} ${settings.inputMode === "wendithapn" ? "disabled" : ""}>Wen Dit Happn</button>
+            </div>
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn"
+              ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the Bingo panel below to control the round.</p>`
+              : ""}
+          </div>
+        </details>
+      </div>
+
+      <!-- Action buttons -->
+      <div style="margin-top:1rem">
+        <div class="host-actions">
+          ${settings.scoringMode === "roulette"
+            ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
+            : ""}
+          <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
+          <button type="button" data-host-action="close">Close Buzzers</button>
+          <button type="button" data-host-action="reset">Reset Round</button>
+          ${settings.allowScrewing && round.screwsUsed >= 1 ? `<button type="button" data-host-action="reset-screws">Reset Screws</button>` : ""}
         </div>
-      </div>
-
-      ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
-      ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
-
-        ${settings.scoringMode === "roulette"
-          ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
-          : ""}
-        <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
-        <button type="button" data-host-action="close">Close Buzzers</button>
-        <button type="button" data-host-action="reset">Reset Round</button>
-        ${settings.allowScrewing && round.screwsUsed >= 1 ? `<button type="button" data-host-action="reset-screws">Reset Screws</button>` : ""}
       </div>
 
       <div class="status-strip">
@@ -3160,7 +3326,8 @@ function render() {
         <header class="hero">
           <div>
             <h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1>
-            <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
+            <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
           </div>
           <div class="hero-meta">
             <span>You: ${getPlayerName(mePlayer)}</span>
@@ -3180,19 +3347,18 @@ function render() {
       <header class="hero">
         <div>
           <h1>Instant Buzzers</h1>
-          <p>Room: <strong>${getRoomCode() || "..."}</strong></p>
+          <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+          <div class="room-code-badge">${getRoomCode() || "..."}</div>
         </div>
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
           ${settings.teamModeEnabled && !isControllerPlayer() ? `<span>Alliance: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
           <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
           <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
-          <span style="font-size:0.8rem;margin-left:1rem;color:#999" data-debug-ids>me:${escapeHtml(mePlayer?.id||"?")} controller:${escapeHtml(getControllerId()||"?")} participants:${currentParticipants().length}</span>
         </div>
       </header>
 
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${settings.teamModeEnabled && isControllerPlayer() ? renderTeamAssignmentControls(settings, players, controller?.id || null, round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : "") : ""}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
@@ -3259,22 +3425,6 @@ function bindEvents() {
           setHostSetting("timeOpen", value);
           return;
         }
-        if (setting === "lockAfterBuzz") {
-          setHostSetting("lockAfterBuzz", input.value === "true");
-          return;
-        }
-        if (setting === "rebuzzAllowed") {
-          setHostSetting("rebuzzAllowed", input.value === "true");
-          return;
-        }
-        if (setting === "showScoresToPlayers") {
-          setHostSetting("showScoresToPlayers", input.value === "true");
-          return;
-        }
-        if (setting === "closeBuzzersOnPointsGiven") {
-          setHostSetting("closeBuzzersOnPointsGiven", input.value === "true");
-          return;
-        }
         if (setting === "inputMode") {
           setHostSetting("inputMode", input.value);
           return;
@@ -3307,18 +3457,24 @@ function bindEvents() {
           setHostSetting("jackMultiplier", Number(input.value));
           return;
         }
-        if (setting === "allowScrewing") {
-          setHostSetting("allowScrewing", input.value === "true");
-          return;
-        }
-        if (setting === "teamModeEnabled") {
-          setHostSetting("teamModeEnabled", input.value === "true");
-          return;
-        }
         if (setting === "teamScoringMode") {
           setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance");
           return;
         }
+      });
+    });
+
+    // Toggle switches (On/Off button pairs)
+    app.querySelectorAll("[data-toggle-setting]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const setting = button.dataset.toggleSetting;
+        const value = button.dataset.value === "true";
+        button.parentElement.querySelectorAll(".toggle-switch-btn").forEach((b) => {
+          b.classList.remove("is-active", "is-off-val");
+        });
+        button.classList.add("is-active");
+        if (!value) button.classList.add("is-off-val");
+        setHostSetting(setting, value);
       });
     });
 
@@ -3331,7 +3487,9 @@ function bindEvents() {
     app.querySelectorAll("[data-host-action]").forEach((button) => {
       button.addEventListener("click", () => {
         const action = button.dataset.hostAction;
-        if (action === "open") {
+        if (action === "randomize-teams") {
+          randomizeTeams();
+        } else if (action === "open") {
           openBuzzers();
         } else if (action === "start-roulette") {
           const result = startRoulettePhase();
@@ -3349,6 +3507,12 @@ function bindEvents() {
         } else if (action === "reset-screws") {
           resetScrews();
         }
+      });
+    });
+
+    app.querySelectorAll("[data-set-mode]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setHostSetting("inputMode", button.dataset.setMode);
       });
     });
 
@@ -3984,6 +4148,12 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     }
     updateTimerDisplays();
   }, 1000);
+
+  // Fast re-render interval for audience display (no interaction, shows live timer)
+  setInterval(() => {
+    if (!isAudienceDisplayClient()) return;
+    render();
+  }, 25);
 
   // Fast re-render interval for bingo mode cycling animation
   setInterval(() => {
