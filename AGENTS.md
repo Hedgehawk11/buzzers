@@ -14,7 +14,6 @@ CI: `npm ci && npm run build` (no tests/lint). No typecheck, formatter, or pre-c
 ## Key structure
 - `src/main.js` — entire app (render, state machine, event binding, prejoin UI). ~4500 lines.
 - `src/style.css` — all styles.
-- `src/counter.js` — unused dead code, do not touch.
 - `index.html` — mounts `<div id="app">`, loads `src/main.js` as module.
 - `public/favicon.svg`, `public/icons.svg`
 
