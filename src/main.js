@@ -1615,6 +1615,37 @@ function initiateScrew(screwerId) {
   return { ok: true, message: `${getPlayerName(screwer)} initiated a screw.` };
 }
 
+// Host/co-host initiates a screw without needing allowScrewing or screw cap
+function hostInitiateScrew() {
+  if (!hasHostPrivileges()) return;
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.OPEN) {
+    setBuzzNotice("Buzzers are not open.");
+    render();
+    return;
+  }
+  if (round.screw.active) {
+    setBuzzNotice("A screw is already in progress.");
+    render();
+    return;
+  }
+  const mePlayer = me();
+  setState("round", {
+    ...round,
+    screw: {
+      ...round.screw,
+      active: true,
+      screwerId: mePlayer.id,
+      screwerName: getPlayerName(mePlayer),
+      screweeId: null,
+      screeeName: null,
+      screwTimerMs: null,
+    },
+  }, true);
+  setBuzzNotice("Select a player to screw.");
+  render();
+}
+
 // Host selects the target player being screwed
 function selectScrewee(screweeId) {
   if (!isHost()) {
@@ -3225,8 +3256,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
           <button type="button" data-host-action="close">Close Buzzers</button>
           <button type="button" data-host-action="reset">Reset Round</button>
-          ${settings.allowScrewing && round.screwsUsed >= 1 ? `<button type="button" data-host-action="reset-screws">Reset Screws</button>` : ""}
         </div>
+        <div class="host-actions" style="margin-top:0.4rem">
+          ${!round.screw.active && round.status === ROUND_STATUSES.OPEN
+            ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
+            : ""}
+          <button type="button" data-host-action="reset-screws">Refund Screws</button>
+        </div>
+        ${renderScrewNotice(round)}
       </div>
 
       <div class="status-strip">
@@ -3252,8 +3289,25 @@ function renderScrewNotice(round) {
     return "";
   }
 
-  // Screw is active but screwee not selected yet - show waiting
+  // Screw is active but screwee not selected yet
   if (!round.screw.screweeId) {
+    const isScrewer = round.screw.screwerId === me().id;
+    if (isScrewer) {
+      const controllerId = getControllerId();
+      const cohostIds = getSafeState("cohostIds", []);
+      const targets = currentParticipants()
+        .filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && p.id !== round.screw.screwerId);
+      const targetButtons = targets.map(p =>
+        `<button type="button" data-screw-player="${p.id}">${getPlayerName(p)}</button>`
+      ).join("");
+      return `
+        <section class="card screw-card">
+          <h3>Select a Target</h3>
+          <p>Choose a player to screw:</p>
+          <div class="screw-player-list">${targetButtons}</div>
+        </section>
+      `;
+    }
     return `
       <section class="card screw-card">
         <h3>Screw In Progress</h3>
@@ -3668,6 +3722,10 @@ function bindEvents() {
           resetScrews();
         }
       });
+    });
+
+    app.querySelectorAll("[data-host-screw]").forEach((button) => {
+      button.addEventListener("click", () => hostInitiateScrew());
     });
 
     app.querySelectorAll("[data-set-mode]").forEach((button) => {
