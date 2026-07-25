@@ -171,7 +171,8 @@ function getTeamAssignments() {
 
 // Prune stale/deleted players from team assignment map
 function normalizeTeamAssignments(assignments, players, controllerId) {
-  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId));
+  const cohostIds = getSafeState("cohostIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
   const normalized = {};
   Object.entries(assignments || {}).forEach(([playerId, teamColor]) => {
     if (validIds.has(playerId) && TEAM_COLORS.includes(String(teamColor))) {
@@ -203,7 +204,8 @@ function getTeamMembers(teamColor, players = currentParticipants(), assignments 
     return [];
   }
   const controllerId = getControllerId();
-  return players.filter((player) => player.id !== controllerId && assignments[player.id] === teamColor);
+  const cohostIds = getSafeState("cohostIds", []);
+  return players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
 }
 
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
@@ -211,7 +213,8 @@ function hasUnassignedTeamPlayers(settings = getSettings(), players = currentPar
     return false;
   }
   const controllerId = getControllerId();
-  const activePlayers = players.filter((player) => player.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const activePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   return activePlayers.some((player) => !getPlayerTeamColor(player.id, assignments));
 }
 
@@ -234,7 +237,8 @@ function isOptionEnabled(settings, option) {
 }
 
 function normalizeDisabledPlayerIds(disabledIds, players, controllerId) {
-  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId));
+  const cohostIds = getSafeState("cohostIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
   return [...new Set((disabledIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
 }
 
@@ -355,6 +359,43 @@ function isControllerPlayer() {
   return me().id === getControllerId();
 }
 
+function isPlayerExcluded(playerId) {
+  if (playerId === getControllerId()) return true;
+  const cohostIds = getSafeState("cohostIds", []);
+  return Array.isArray(cohostIds) && cohostIds.includes(playerId);
+}
+
+function isCohost() {
+  const cohostIds = getSafeState("cohostIds", []);
+  return Array.isArray(cohostIds) && cohostIds.includes(me().id);
+}
+
+function hasHostPrivileges() {
+  return isHost() || isCohost();
+}
+
+async function cohostDispatch(fnName, ...args) {
+  if (isHost()) {
+    const dispatch = {
+      openBuzzers, closeBuzzers, resetRound, resetScrews,
+      startRoulettePhase, startScrewTimer, closeScrewMode,
+      startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
+      setHostSetting, toggleBuzzerOption, togglePlayerBuzzer,
+      setPlayerTeam, randomizeTeams,
+      updateScoresForLogEntry,
+    };
+    dispatch[fnName]?.(...args);
+    return;
+  }
+  if (isCohost()) {
+    try {
+      await RPC.call("cohost-action", { fn: fnName, args }, RPC.Mode.HOST);
+    } catch {
+      // ignore RPC errors — the host tick will re-render if needed
+    }
+  }
+}
+
 // =============================================================================
 // Authorization — check if a given player can buzz for a given option
 // =============================================================================
@@ -365,6 +406,10 @@ function canBuzz(playerId, option) {
   const participants = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, controllerId);
   if (playerId === controllerId) {
+    return false;
+  }
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) {
     return false;
   }
   if (settings.teamModeEnabled && !getPlayerTeamColor(playerId, assignments)) {
@@ -478,6 +523,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     pendingLogId,
     controllerId: getControllerId(),
+    cohostIds: getSafeState("cohostIds", []),
     participantCount: currentParticipants().length,
   });
 }
@@ -526,7 +572,8 @@ function getRouletteFrame(roulette, tick = null) {
 }
 
 function getRoulettePlayers() {
-  return currentParticipants().filter((player) => player.id !== getControllerId());
+  const cohostIds = getSafeState("cohostIds", []);
+  return currentParticipants().filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
 }
 
 function isRoulettePlayerAllowed(roulette, playerId) {
@@ -534,6 +581,10 @@ function isRoulettePlayerAllowed(roulette, playerId) {
     return false;
   }
   const settings = getSettings();
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) {
+    return false;
+  }
   if (settings.teamModeEnabled) {
     const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
     if (!getPlayerTeamColor(playerId, assignments)) {
@@ -653,6 +704,7 @@ function maybeFinalizeRoulettePhase() {
 // Host-only: transition from IDLE to ROULETTE (or directly to OPEN if no players)
 function startRoulettePhase() {
   if (!isHost()) {
+    if (isCohost()) { RPC.call("cohost-action", { fn: "startRoulettePhase", args: [] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can start roulette." };
   }
 
@@ -800,6 +852,7 @@ function renderRoulettePanel(settings, round, mePlayer) {
 // =============================================================================
 function updateScoresForLogEntry(logId, newAwardedDelta) {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "updateScoresForLogEntry", args: [logId, newAwardedDelta] }, RPC.Mode.HOST);
     return;
   }
   const log = getLog();
@@ -897,6 +950,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 // Force-set a delta (used by the F-You easter egg penalty)
 function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "resolveLogEntryWithForcedDelta", args: [logId, forcedDelta] }, RPC.Mode.HOST);
     return;
   }
 
@@ -1174,7 +1228,7 @@ function hostHandleBuzz(player, payload) {
 // Player calls this to send their buzz to the host via RPC
 // =============================================================================
 async function submitResponse(payload) {
-  if (isControllerPlayer()) {
+  if (isControllerPlayer() || isCohost()) {
     return;
   }
   try {
@@ -1204,6 +1258,7 @@ async function submitResponse(payload) {
 // =============================================================================
 function openBuzzers() {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
     return;
   }
   console.log("openBuzzers: host triggered");
@@ -1268,7 +1323,7 @@ function openBuzzers() {
 
 // Immediately close buzzers mid-round
 function closeBuzzers() {
-  if (!isHost()) return;
+  if (!isHost()) { if (isCohost()) RPC.call("cohost-action", { fn: "closeBuzzers", args: [] }, RPC.Mode.HOST); return; }
   console.log("closeBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
@@ -1462,6 +1517,7 @@ function handleBingoBuzz(player, payload) {
 // =============================================================================
 function resetRound() {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "resetRound", args: [] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -1513,6 +1569,7 @@ function resetRound() {
 // =============================================================================
 function initiateScrew(screwerId) {
   if (!isHost()) {
+    if (isCohost()) { RPC.call("cohost-action", { fn: "initiateScrew", args: [screwerId] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can initiate screw." };
   }
   const round = getRound();
@@ -1561,6 +1618,7 @@ function initiateScrew(screwerId) {
 // Host selects the target player being screwed
 function selectScrewee(screweeId) {
   if (!isHost()) {
+    if (isCohost()) { RPC.call("cohost-action", { fn: "selectScrewee", args: [screweeId] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can select screwee." };
   }
   const round = getRound();
@@ -1614,6 +1672,7 @@ function selectScrewee(screweeId) {
 // Start the 5-second screw countdown — only screwee can buzz during this window
 function startScrewTimer() {
   if (!isHost()) {
+    if (isCohost()) { RPC.call("cohost-action", { fn: "startScrewTimer", args: [] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can start screw timer." };
   }
   const round = getRound();
@@ -1641,6 +1700,7 @@ function startScrewTimer() {
 // End the screw and increment the screw-use counter
 function closeScrewMode() {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "closeScrewMode", args: [] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -1666,6 +1726,7 @@ function closeScrewMode() {
 // Reset the screw counter (e.g. between games)
 function resetScrews() {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "resetScrews", args: [] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -1809,6 +1870,7 @@ function hostTick() {
 // =============================================================================
 function setHostSetting(key, value) {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setHostSetting", args: [key, value] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -1867,6 +1929,7 @@ function setHostSetting(key, value) {
 // =============================================================================
 function toggleBuzzerOption(option) {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "toggleBuzzerOption", args: [option] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -1898,9 +1961,44 @@ function toggleBuzzerOption(option) {
   render();
 }
 
+// Host sets the correct text answer
+function setCorrectAnswerValue(val) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setCorrectAnswerValue", args: [val] }, RPC.Mode.HOST);
+    return;
+  }
+  const round = getRound();
+  setState("round", { ...round, correctAnswer: val, correctOptions: null }, true);
+  render();
+}
+
+function clearCorrectAnswerValue() {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "clearCorrectAnswerValue", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  const round = getRound();
+  setState("round", { ...round, correctAnswer: null, correctOptions: null }, true);
+  render();
+}
+
+function toggleCorrectOption(opt) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "toggleCorrectOption", args: [opt] }, RPC.Mode.HOST);
+    return;
+  }
+  const round = getRound();
+  const current = Array.isArray(round.correctOptions) ? round.correctOptions.map(Number) : [];
+  const included = current.includes(opt);
+  const next = included ? current.filter((v) => Number(v) !== opt) : [...current, opt].sort((a,b)=>a-b);
+  setState("round", { ...round, correctOptions: next.length ? next : null, correctAnswer: null }, true);
+  render();
+}
+
 // Host enables/disables a specific player's ability to buzz
 function togglePlayerBuzzer(playerId) {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "togglePlayerBuzzer", args: [playerId] }, RPC.Mode.HOST);
     return;
   }
 
@@ -1933,6 +2031,7 @@ function togglePlayerBuzzer(playerId) {
 // =============================================================================
 function setPlayerTeam(playerId, teamColor) {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerTeam", args: [playerId, teamColor] }, RPC.Mode.HOST);
     return;
   }
 
@@ -1958,13 +2057,15 @@ function setPlayerTeam(playerId, teamColor) {
 
 function randomizeTeams() {
   if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "randomizeTeams", args: [] }, RPC.Mode.HOST);
     return;
   }
 
   const players = currentParticipants();
   const controllerId = getControllerId();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
 
   if (nonControllerPlayers.length === 0) {
     return;
@@ -2035,6 +2136,20 @@ function ensureHostInit() {
   if (!getState("bingo")) {
     setState("bingo", getBingo(), true);
   }
+  if (!getState("cohostPassword")) {
+    const password = String(Math.floor(10000 + Math.random() * 90000));
+    setState("cohostPassword", password, true);
+  }
+  if (!getState("cohostIds")) {
+    setState("cohostIds", [], true);
+  } else {
+    const currentIds = getSafeState("cohostIds", []);
+    const activeIds = currentParticipants().map((p) => p.id);
+    const cleaned = Array.isArray(currentIds) ? currentIds.filter((id) => activeIds.includes(id)) : [];
+    if (cleaned.length !== (Array.isArray(currentIds) ? currentIds.length : 0)) {
+      setState("cohostIds", cleaned, true);
+    }
+  }
   assignControllerIfNeeded();
   const players = currentParticipants();
   const controllerId = getControllerId();
@@ -2062,11 +2177,12 @@ function optionButtonLabel(option) {
 // Bingo host panel — word entry, target selection, cycling controls
 // =============================================================================
 function renderBingoHostPanel(settings, players) {
-  if (!isControllerPlayer()) return "";
+  if (!hasHostPrivileges()) return "";
   const bingo = getBingo();
   const isWen = isWenDitHapnMode();
   const controllerId = getControllerId();
-  const nonController = players.filter(p => p.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
   if (!bingo.active) {
     const wordInput = isWen ? "" : `
       <label>
@@ -2129,7 +2245,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
     if (isMine) cls += " is-mine";
     return `<span class="${cls}">${item}</span>`;
   }).join("");
-  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer();
+  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isCohost();
   const scores = getScores();
   const myScore = scores[mePlayer.id] || 0;
   const winner = bingo.winner ? currentParticipants().find(p => p.id === bingo.winner) : null;
@@ -2191,11 +2307,11 @@ function renderBingoAudienceDisplay(settings, players) {
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
-  if (isControllerPlayer()) {
+  if (isControllerPlayer() || isCohost()) {
     return `
       <section class="card player-card controller-card">
         <h2>Host Control Screen</h2>
-        <p>You are the Host and do not have a buzzer input.</p>
+        <p>You are ${isCohost() ? "a Co-host" : "the Host"} and do not have a buzzer input.</p>
       </section>
     `;
   }
@@ -2494,7 +2610,8 @@ function getBuzzedParticipants(round, players) {
 // =============================================================================
 function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   const buzzedPlayers = getBuzzedParticipants(round, players);
-  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId());
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
   const leader = round.winnerId
     ? players.find((player) => player.id === round.winnerId) || buzzedPlayers[0] || null
@@ -2695,7 +2812,8 @@ function renderBuzzerToggles(settings, settingDisabledAttr) {
 }
 
 function renderPlayerToggles(settings, players, controllerId, settingDisabledAttr) {
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   if (nonControllerPlayers.length === 0) {
     return `
       <div class="toggle-group">
@@ -2726,7 +2844,8 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
   }
 
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   if (nonControllerPlayers.length === 0) {
     return `
       <div class="toggle-group team-setup-group">
@@ -2765,18 +2884,43 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
 }
 
 // =============================================================================
+// Renders the co-host list for the host to manage
+// =============================================================================
+function renderCohostList(players) {
+  const cohostIds = getSafeState("cohostIds", []);
+  if (!Array.isArray(cohostIds) || cohostIds.length === 0) {
+    return `<span class="muted">No co-hosts assigned.</span>`;
+  }
+  const rows = cohostIds
+    .map((id) => {
+      const player = players.find((p) => p.id === id);
+      const name = player ? getPlayerName(player) : "(disconnected)";
+      const removeBtn = isHost()
+        ? `<button type="button" class="toggle-chip is-off" data-remove-cohost="${id}" style="margin-left:0.5rem">Remove</button>`
+        : "";
+      return `<div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.3rem"><span>${escapeHtml(name)}</span>${removeBtn}</div>`;
+    })
+    .join("");
+  return rows;
+}
+
+// =============================================================================
 // Host settings panel — controls for timing, scoring, input mode, teams, etc.
 // =============================================================================
 function renderHostSettings(settings, round, timeLeftCs, players, controllerId) {
-  if (!isControllerPlayer()) {
+  if (!hasHostPrivileges()) {
     return "";
   }
 
-  if (isBingoMode()) return renderBingoHostPanel(settings, players);
+  if (isBingoMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control BINGO/Wen Dit Happn. The host must manage it. This is a technical restriction I think</p></section>`;
+    return renderBingoHostPanel(settings, players);
+  }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const missingTeamAssignments = hasUnassignedTeamPlayers(settings, players, teamAssignments);
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
@@ -3037,6 +3181,20 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
+            <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
+              <label>
+                Co-host password
+                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${escapeHtml(getSafeState("cohostPassword", ""))}</div>
+                <p class="setting-helper">Share this 5-digit code with your co-host.</p>
+              </label>
+              <label>
+                Co-hosts
+                <div style="margin-top:0.3rem">
+                  ${renderCohostList(players)}
+                </div>
+                <p class="setting-helper">Players with host privileges.</p>
+              </label>
+            </div>
           </div>
         </details>
       </div>
@@ -3090,7 +3248,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
 }
 
 function renderScrewNotice(round) {
-  if (!isControllerPlayer() || !round.screw.active) {
+  if (!hasHostPrivileges() || !round.screw.active) {
     return "";
   }
 
@@ -3130,7 +3288,7 @@ function renderScrewNotice(round) {
 // When lockAfterBuzz is on, show the host a Correct / Incorrect ruling prompt
 // =============================================================================
 function renderLockedRuling(settings, pendingEntry) {
-  if (!isControllerPlayer() || !settings.lockAfterBuzz || !pendingEntry) {
+  if (!hasHostPrivileges() || !settings.lockAfterBuzz || !pendingEntry) {
     return "";
   }
 
@@ -3162,7 +3320,8 @@ function renderLockedRuling(settings, pendingEntry) {
 function renderScores(players, scores) {
   const settings = getSettings();
   const controllerId = getControllerId();
-  const visiblePlayers = players.filter((player) => player.id !== controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
@@ -3226,7 +3385,7 @@ function renderLog(log, settings) {
   const rows = [...log]
     .reverse()
     .map((entry) => {
-      const controls = isControllerPlayer()
+      const controls = hasHostPrivileges()
         ? `
           <div class="log-controls">
             <input type="number" value="${Number(entry.awardedDelta || 0)}" data-log-input="${entry.id}" />
@@ -3299,7 +3458,7 @@ function render() {
   const controller = getController();
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controller?.id || null);
   const myTeamColor = getPlayerTeamColor(mePlayer.id, teamAssignments);
-  const showAdminData = isControllerPlayer();
+  const showAdminData = hasHostPrivileges();
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
 
   if (isAudienceDisplayClient()) {
@@ -3352,7 +3511,8 @@ function render() {
         </div>
         <div class="hero-meta">
           <span>You: ${getPlayerName(mePlayer)}</span>
-          ${settings.teamModeEnabled && !isControllerPlayer() ? `<span>Alliance: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
+          ${isCohost() ? `<span class="cohost-badge">Co-host</span>` : ""}
+          ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>Alliance: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
           <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
           <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
         </div>
@@ -3416,7 +3576,7 @@ function bindEvents() {
     });
   }
 
-  if (isControllerPlayer()) {
+  if (hasHostPrivileges()) {
     app.querySelectorAll("[data-setting]").forEach((input) => {
       input.addEventListener("change", () => {
         const setting = input.dataset.setting;
@@ -3534,35 +3694,37 @@ function bindEvents() {
         const input = app.querySelector("#correct-answer-entry");
         const val = String(input?.value || "").trim();
         if (!val) return;
-        const round = getRound();
-        setState("round", { ...round, correctAnswer: val, correctOptions: null }, true);
-        render();
+        setCorrectAnswerValue(val);
       });
     });
 
     app.querySelectorAll("[data-clear-correct]").forEach((button) => {
       button.addEventListener("click", () => {
-        const round = getRound();
-        setState("round", { ...round, correctAnswer: null, correctOptions: null }, true);
-        render();
+        clearCorrectAnswerValue();
       });
     });
 
     app.querySelectorAll("[data-correct-option]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (!isControllerPlayer()) return;
+        if (!hasHostPrivileges()) return;
         const opt = Number(button.dataset.correctOption);
         if (!Number.isInteger(opt)) return;
-        const round = getRound();
-        const current = Array.isArray(round.correctOptions) ? round.correctOptions.map(Number) : [];
-        const included = current.includes(opt);
-        const next = included ? current.filter((v) => Number(v) !== opt) : [...current, opt].sort((a,b)=>a-b);
-        setState("round", { ...round, correctOptions: next.length ? next : null, correctAnswer: null }, true);
-        render();
+        toggleCorrectOption(opt);
       });
     });
 
-    
+    // Remove co-host (host only)
+    app.querySelectorAll("[data-remove-cohost]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!isHost()) return;
+        const removeId = button.dataset.removeCohost;
+        const current = getSafeState("cohostIds", []);
+        if (Array.isArray(current) && current.includes(removeId)) {
+          setState("cohostIds", current.filter((id) => id !== removeId), true);
+          render();
+        }
+      });
+    });
 
     app.querySelectorAll("[data-ruling]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -3671,7 +3833,7 @@ function bindEvents() {
     app.querySelectorAll("[data-bingo-buzz]").forEach(btn => {
       btn.addEventListener("pointerdown", async (event) => {
         event.preventDefault();
-        if (isControllerPlayer()) return;
+        if (isControllerPlayer() || isCohost()) return;
         const bState = getBingo();
         const payload = { litIndex: bState.currentLitIndex };
         try {
@@ -3725,7 +3887,7 @@ function handleRouletteKeydown(event) {
 
 // Player submits their roulette stop (locks in current value)
 function submitRouletteStop() {
-  if (isControllerPlayer()) {
+  if (isControllerPlayer() || isCohost()) {
     return;
   }
 
@@ -3836,7 +3998,47 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
             <div class="prejoin-actions">
               <button class="primary-action" type="submit">Host Game</button>
+              <button class="secondary-action" data-prejoin-switch="cohost" type="button">Cohost Instead</button>
               <button class="secondary-action" data-prejoin-switch="join" type="button">Join Instead</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  } else if (mode === "cohost") {
+    app.innerHTML = `
+      <main class="prejoin-layout">
+        <section class="card prejoin-panel prejoin-panel-join">
+          <div class="prejoin-header">
+            <button class="prejoin-back" data-prejoin-back type="button">Back</button>
+            <div>
+              <p class="prejoin-kicker">Co-host game</p>
+              <h1>Enter room code &amp; password</h1>
+              <p class="muted">Ask the host for the room code and the 5-digit co-host password.</p>
+            </div>
+          </div>
+
+          <form class="prejoin-form" data-prejoin-form="cohost">
+            <label>
+              Your name
+              <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
+            </label>
+
+            <label>
+              Room code
+              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="4" placeholder="XXXX" />
+            </label>
+
+            <label>
+              Co-host password
+              <input data-prejoin-input id="prejoin-cohost-password" type="text" maxlength="5" placeholder="12345" />
+            </label>
+
+            ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
+
+            <div class="prejoin-actions">
+              <button class="primary-action" type="submit">Join as Co-host</button>
+              <button class="secondary-action" data-prejoin-switch="host" type="button">Host Instead</button>
             </div>
           </form>
         </section>
@@ -3964,20 +4166,29 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
       const chosenName = nameInput?.value?.trim() || "";
       const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
+      const cohostPasswordInput = app.querySelector("#prejoin-cohost-password");
+      const cohostPassword = cohostPasswordInput?.value?.trim() || "";
 
       if (mode !== "display" && !chosenName) {
         renderPrejoinScreen(mode || "landing", "Please choose a player name.");
         return;
       }
 
-      if (mode === "join" && !roomCode) {
-        renderPrejoinScreen("join", "Enter a room code to join.");
+      if ((mode === "join" || mode === "cohost") && !roomCode) {
+        renderPrejoinScreen(mode, "Enter a room code to join.");
         return;
       }
 
       if (mode === "display" && !roomCode) {
         renderPrejoinScreen("display", "Enter a room code for the display.");
         return;
+      }
+
+      if (mode === "cohost") {
+        if (!/^\d{5}$/.test(cohostPassword)) {
+          renderPrejoinScreen("cohost", "Enter a valid 5-digit co-host password.");
+          return;
+        }
       }
 
       if (mode !== "display") {
@@ -3996,17 +4207,34 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
       await launchGame({
         playerName: mode === "display" ? "Audience Display" : chosenName,
-        roomCode: mode === "join" || mode === "display" ? roomCode : undefined,
+        roomCode: mode === "join" || mode === "display" || mode === "cohost" ? roomCode : undefined,
         clientMode: mode === "display" ? "display" : "player",
+        cohostPassword: mode === "cohost" ? cohostPassword : undefined,
       });
     });
   });
 }
 
 // =============================================================================
+// Claim co-host status by sending the password to the host via RPC
+// =============================================================================
+async function claimCohost(password, maxRetries = 15) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const result = await RPC.call("claim-cohost", { password }, RPC.Mode.HOST);
+      if (result?.ok) return true;
+    } catch {
+      // host may not be ready yet
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+// =============================================================================
 // Game launch — insert coin into PlayroomKit, register RPC handlers, start loops
 // =============================================================================
-async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "player" }) {
+async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "player", cohostPassword: joinCohostPassword }) {
   if (gameLaunched) {
     return;
   }
@@ -4022,7 +4250,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   try {
     const insertCoinOptions = {
       skipLobby: true,
-      maxPlayersPerRoom: 31,
+      maxPlayersPerRoom: 42,
     };
     if (clientMode === "display") {
       insertCoinOptions.clientMode = "display";
@@ -4134,7 +4362,53 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return selectScrewee(screweeId);
   });
 
+  RPC.register("claim-cohost", async (payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+    const storedPassword = getSafeState("cohostPassword", "");
+    if (payload?.password === storedPassword) {
+      const current = getSafeState("cohostIds", []);
+      if (!Array.isArray(current) || !current.includes(senderPlayer.id)) {
+        setState("cohostIds", Array.isArray(current) ? [...current, senderPlayer.id] : [senderPlayer.id], true);
+        render();
+      }
+      return { ok: true };
+    }
+    return { ok: false, reason: "Invalid co-host password." };
+  });
+
+  // Co-host actions RPC — relays co-host UI actions through the host
+  const HOST_ACTIONS = {
+    openBuzzers, closeBuzzers, resetRound, resetScrews,
+    startRoulettePhase, startScrewTimer, closeScrewMode,
+    startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
+    setHostSetting, toggleBuzzerOption, togglePlayerBuzzer,
+    setPlayerTeam, randomizeTeams,
+    updateScoresForLogEntry,
+    setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
+  };
+  RPC.register("cohost-action", async (payload, _senderPlayer) => {
+    if (!isHost()) return { ok: false };
+    const { fn, args } = payload || {};
+    if (HOST_ACTIONS[fn]) {
+      HOST_ACTIONS[fn](...(args || []));
+      render();
+      return { ok: true };
+    }
+    return { ok: false, reason: "Unknown action" };
+  });
+
   ensureHostInit();
+
+  if (joinCohostPassword) {
+    claimCohost(joinCohostPassword).then((ok) => {
+      if (!ok) {
+        setBuzzNotice("Could not verify co-host password.");
+      }
+      render();
+    });
+  }
   render();
   startRouletteAnimationLoop();
 
