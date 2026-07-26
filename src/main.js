@@ -869,9 +869,9 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const oldAwarded = Number(entry.awardedDelta || 0);
   let nextAwarded = Number(newAwardedDelta || 0);
   
-  // Handle screw scoring: reverse the points if screw is active
   if (round.screw.active && round.screw.screweeId === entry.playerId) {
-    nextAwarded = -nextAwarded;
+    const screwBonus = nextAwarded >= 0 ? 1000 : -1000;
+    nextAwarded = nextAwarded + screwBonus;
   }
   
   const diff = nextAwarded - oldAwarded;
@@ -879,11 +879,10 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const scores = { ...getScores() };
   scores[entryScoreKey] = Number(scores[entryScoreKey] || 0) + diff;
   
-  // If screw is active, also update the screwer's score (opposite)
   if (round.screw.active && round.screw.screwerId) {
     const screwerScoreKey = getScoreKeyForPlayer(round.screw.screwerId, settings, assignments);
-    const screwReverseDiff = -diff;
-    scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwReverseDiff;
+    const screwSign = nextAwarded >= 0 ? -1000 : 1000;
+    scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwSign;
   }
 
   const updatedLog = [...log];
@@ -905,7 +904,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
 
-      if (shouldCloseOnPointsGiven || remainingCs <= 0) {
+      if (round.screw.active || shouldCloseOnPointsGiven || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -991,7 +990,7 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
 
-      if (shouldCloseOnPointsGiven || remainingCs <= 0) {
+      if (round.screw.active || shouldCloseOnPointsGiven || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -1076,7 +1075,7 @@ function hostHandleBuzz(player, payload) {
   const players = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
   const playerTeamColor = getPlayerTeamColor(player.id, assignments);
-  const shouldLockAfterBuzz = settings.lockAfterBuzz && !settings.rebuzzAllowed;
+  const shouldLockAfterBuzz = round.screw.active || (settings.lockAfterBuzz && !settings.rebuzzAllowed);
   const usingTextEntry = settings.inputMode === "text";
 
   let validOption = null;
@@ -1105,7 +1104,7 @@ function hostHandleBuzz(player, payload) {
     return { ok: false, reason: "Buzzers are not open, disabled, or you already buzzed." };
   }
 
-  const timeLeftCs = getTimeLeftCs(round, settings);
+  const timeLeftCs = round.screw.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
   const logEntry = pushBuzzLogEntry(
     player,
     {
@@ -1133,6 +1132,7 @@ function hostHandleBuzz(player, payload) {
           winnerName: getPlayerName(player),
           remainingCs: timeLeftCs,
           buzzedPlayerIds,
+          screw: { ...round.screw, screwTimerMs: 0 },
         },
         true,
       );
@@ -1172,6 +1172,7 @@ function hostHandleBuzz(player, payload) {
         winnerName: getPlayerName(player),
         remainingCs: timeLeftCs,
         buzzedPlayerIds,
+        screw: { ...round.screw, screwTimerMs: 0 },
       },
       true,
     );
@@ -1436,7 +1437,10 @@ function startBingoCycling() {
     if (!isHost()) return;
     const cur = getBingo();
     if (!cur.active || !cur.cycling) return;
-    const nextIdx = Math.floor(Math.random() * cur.items.length);
+    let nextIdx;
+    do {
+      nextIdx = Math.floor(Math.random() * cur.items.length);
+    } while (nextIdx === cur.currentLitIndex && cur.items.length > 1);
     setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitTs: now() }, true);
   }, BINGO_ITEM_CHANGE_INTERVAL_MS);
   render();
@@ -1575,6 +1579,9 @@ function initiateScrew(screwerId) {
   const round = getRound();
   const settings = getSettings();
   
+  if (isBingoMode()) {
+    return { ok: false, reason: "Cannot screw during special questions." };
+  }
   if (!settings.allowScrewing) {
     return { ok: false, reason: "Screwing is not enabled." };
   }
@@ -1619,6 +1626,11 @@ function initiateScrew(screwerId) {
 function hostInitiateScrew() {
   if (!hasHostPrivileges()) return;
   const round = getRound();
+  if (isBingoMode()) {
+    setBuzzNotice("Cannot screw during special questions.");
+    render();
+    return;
+  }
   if (round.status !== ROUND_STATUSES.OPEN) {
     setBuzzNotice("Buzzers are not open.");
     render();
@@ -1712,6 +1724,10 @@ function startScrewTimer() {
     return { ok: false, reason: "No screw in progress or screwee not selected." };
   }
   
+  const settings = getSettings();
+  const timeLeftCs = getTimeLeftCs(round, settings);
+  const frozenPoints = computeBasePoints(settings, timeLeftCs, round);
+  
   setState(
     "round",
     {
@@ -1719,6 +1735,8 @@ function startScrewTimer() {
       screw: {
         ...round.screw,
         screwTimerMs: 5000,
+        frozenCs: timeLeftCs,
+        frozenPoints: frozenPoints,
       },
     },
     true,
@@ -1827,7 +1845,8 @@ function hostTick() {
           const screweeTeamColor = getPlayerTeamColor(round.screw.screweeId, assignments);
           const screweeScoreKey = getScoreKeyForPlayer(round.screw.screweeId, settings, assignments);
           const screwerScoreKey = getScoreKeyForPlayer(round.screw.screwerId, settings, assignments);
-          const basePoints = computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
+          const frozenCs = round.screw.frozenCs ?? (round.remainingCs || settings.timeOpen * 100);
+          const basePoints = round.screw.frozenPoints ?? computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
           const entry = {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
             type: "buzz",
@@ -1839,7 +1858,7 @@ function hostTick() {
             scoreTarget: screweeScoreKey.startsWith("team:") ? `Team ${screweeTeamColor}` : round.screw.screeeName,
             option: null,
             answerText: "[No answer - Screw timeout]",
-            timeLeftCs: round.remainingCs || settings.timeOpen * 100,
+            timeLeftCs: frozenCs,
             scoringMode: settings.scoringMode,
             jackMultiplier: settings.jackMultiplier,
             uniformPoints: settings.uniformPoints,
@@ -1848,16 +1867,15 @@ function hostTick() {
             rouletteTopAmount: settings.rouletteTopAmount,
             rouletteFinalValue: round.roulette?.finalValue ?? null,
             basePoints: basePoints,
-            awardedDelta: -basePoints,
+            awardedDelta: -(basePoints + 1000),
             resolved: true,
           };
           const log = getLog();
           setState("gameLog", [...log, entry], true);
           
-          // Auto-award points (screwee loses, screwer gains)
           const scores = { ...getScores() };
-          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints;
-          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + basePoints;
+          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints - 1000;
+          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + 1000;
           setState("scores", scores, true);
         }
       }
@@ -2299,8 +2317,8 @@ function renderBingoAudienceDisplay(settings, players) {
   const scores = getScores();
   if (!bingo.active) {
     return `
-      <main class="layout audience-layout">
-        <header class="hero audience-hero">
+    <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""}>
+      <header class="hero audience-hero">
           <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Waiting for the game to start...</p></div>
         </header>
       </main>`;
@@ -2801,7 +2819,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
     : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
 
   return `
-    <main class="layout audience-layout">
+    <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""}>
       <header class="hero audience-hero">
         <div>
           <p class="prejoin-kicker">Audience display</p>
@@ -3506,7 +3524,7 @@ function render() {
   const round = getRound();
   const scores = getScores();
   const gameLog = getLog();
-  const timeLeftCs = getTimeLeftCs(round, settings);
+  const timeLeftCs = round.screw.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
   const pendingLogId = getSafeState("pendingLogId", null);
   const pendingEntry = gameLog.find((entry) => entry.id === pendingLogId) || null;
   const controller = getController();
@@ -3556,7 +3574,7 @@ function render() {
   }
 
   app.innerHTML = `
-    <main class="layout">
+    <main class="layout"${round.screw.active ? ' data-screw-active="true"' : ""}>
       <header class="hero">
         <div>
           <h1>Instant Buzzers</h1>
@@ -3571,7 +3589,7 @@ function render() {
           <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
         </div>
       </header>
-
+      
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}

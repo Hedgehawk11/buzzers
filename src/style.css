@@ -1310,3 +1310,10 @@ body {
 .site-footer.hidden {
   display: none !important;
 }
+
+body:has([data-screw-active]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
+    linear-gradient(160deg, #1f0a0a, #0d0505);
+}

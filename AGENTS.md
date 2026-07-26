@@ -1,7 +1,7 @@
 # Buzzers — Agent guide
 
 ## Project
-Vanilla JS single-page app (Vite + PlayroomKit). No framework, no TypeScript, no test runner, no linter. Multiplayer buzzer system for live gameshows.
+Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows.
 
 ## Commands
 ```
@@ -9,41 +9,60 @@ npm run dev      # vite dev server
 npm run build    # vite build → dist/
 npm run preview  # vite preview
 ```
-CI: `npm ci && npm run build` (no tests/lint). No typecheck, formatter, or pre-commit hooks exist.
+CI: `npm ci && npm run build`. No typecheck, formatter, or pre-commit hooks.
 
 ## Key structure
-- `src/main.js` — entire app (render, state machine, event binding, prejoin UI). ~4500 lines.
-- `src/style.css` — all styles.
-- `index.html` — mounts `<div id="app">`, loads `src/main.js` as module.
-- `public/favicon.svg`, `public/icons.svg`
+- `src/main.js` (~4520 lines) — entire app: render, state machine, event binding, prejoin UI
+- `src/style.css` (~1320 lines) — flat CSS, custom properties for theming
+- `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
 
 ## Architecture
-- **PlayroomKit** (`insertCoin`) for multiplayer — host is the single source of truth via `setState`/`getState`. Players send buzzes via `RPC.call("buzz", ..., RPC.Mode.HOST)`.
-- Round state machine: `IDLE → OPEN → LOCKED/ROULETTE → CLOSED → IDLE`. Host drives transitions with `setState("round", ...)`.
-- Three client modes selectable at join: **player** (buzzer UI), **host** (same as player but also sees controls), **audience display** (projection screen).
-- Settings persisted in shared state under key `"settings"`. Only host can change them (gated by `isHost()`).
-- Settings locked while round is OPEN or ROULETTE.
-- Scores, team assignments, game log, bingo state, controller ID all live in shared PlayroomKit state keys.
+- **PlayroomKit** (`insertCoin`) — host is single source of truth via `setState`/`getState`. Players send buzzes via `RPC.call("buzz", ..., RPC.Mode.HOST)`.
+- Round state machine: `IDLE → OPEN → LOCKED/ROULETTE → CLOSED → IDLE`. Host drives transitions via `setState("round", ...)`.
+- Three client modes: **player**, **host** (sees controls), **audience display** (projection screen).
+- All state mutations use `setState(key, value, true)` (reliable broadcast).
+- Settings key `"settings"`, only host can change (`isHost()`), locked while round is OPEN or ROULETTE.
+- Scores, teams, log, bingo, controller ID all in shared PlayroomKit state keys.
+
+## Scoring modes
+- **Uniform**: fixed `uniformPoints` (500–3000, default 1000).
+- **JACK**: `timeLeftCs × jackMultiplier` (1×–3×). Value decreases as timer ticks.
+- **Roulette**: players set a value, ceiling = `topAmount / playerCount` (additive) or `topAmount` (highest/single).
 
 ## Host flow
-1. Host opens a room (creates via `insertCoin`, no roomCode param).
+1. `insertCoin` with no roomCode → creates room.
 2. `ensureHostInit()` seeds shared state: settings, round, scores, gameLog, controllerId.
-3. Players join with the 4-char room code.
-4. Host configures settings, assigns teams (optional), sets pre-set correct answer (optional).
-5. Host clicks "Open Buzzers" → `RPC.call("buzz")` → host calls `hostHandleBuzz()` → log entry created → auto-evaluates if correct answer pre-set.
-6. If `lockAfterBuzz` is on, host sees a ruling prompt (Correct/Incorrect).
-7. Host clicks "Reset Round" to return to IDLE.
+3. Players join via 4-char room code.
+4. Host configures settings, assigns teams, sets pre-set correct answer (optional).
+5. "Open Buzzers" → buzzer phase until timer expires or a buzz locks.
+6. Auto-evaluates if preset correct answer exists; otherwise host rules Correct/Incorrect.
+7. "Reset Round" → IDLE.
+
+## Screw mechanic
+- One screw per game. Screwer picks a target (screwee), then a 5s countdown starts — only screwee can buzz.
+- **Scoring**: screwee gets normal ±1000 (correct → +1000 extra, wrong → −1000 extra), screwer gets ∓1000 (opposite transfer).
+- **Timeout** (no buzz): screwee loses `basePoints + 1000`, screwer gains +1000.
+- Buzz freezes question value (`screw.frozenCs`/`screw.frozenPoints`) for JACK scoring.
+- Main timer pauses during screw.
+- Red background (`body:has([data-screw-active])`) on all screens during screw.
+- Round always closes after screw ruling (never re-opens).
+- Disabled during bingo/Wen Dit Happn modes.
+
+## Input modes
+- **`buttons`**: 1–6 option buttons. `correctOptions` array for auto-eval.
+- **`text`**: free-text entry. `correctAnswer` string for auto-eval.
+- **`bingo`**: 5-letter word, grid of tiles, cycling animation, first to collect all wins.
+- **`wendithapn`**: 3-option "Before/Never/After" per tile. Same cycling/collection as bingo.
+- Bingo/Wen Dit Happn: host-only control (co-host UI hidden, functions return early). Tick function returns early (`if (isBingoMode()) return`).
 
 ## Notable quirks
-- **PlayroomKit hash collision**: The `launchGame()` function clears `window.location.hash` before calling `insertCoin` because PlayroomKit prioritises the `#r` parameter over the `roomCode` option. If you add navigation that preserves hashes, be aware.
-- **Roulette ceiling** = `topAmount / playerCount` (additive mode), or `topAmount` (highest/single-player).
-- **Screw mechanic**: One screw per game. Points are reversed: screwee loses, screwer gains.
-- **F-You easter egg**: Typing "fuck you" in text-entry mode applies -2× base points penalty.
-- **Bingo/Wen Dit Happn**: Separate input modes that replace the normal buzzer UI. 5-letter word for bingo, 3-option "Before/Never/After" for Wen Dit Happn. Co-hosts cannot control these modes (UI hidden, functions return early). Only the host manages bingo.
-- Host tick runs every ~1s via `setInterval` in the `insertCoin` callback — manages timers, screw countdowns, roulette finalization.
+- **PlayroomKit hash collision**: `launchGame()` clears `window.location.hash` before `insertCoin` because PlayroomKit prioritises `#r` over `roomCode` option.
+- **F-You easter egg**: Typing "fuck you" in text mode applies `-2 × basePoints` penalty via `resolveLogEntryWithForcedDelta` (bypasses normal screw scoring).
+- **Host tick**: `setInterval` ~1s in `insertCoin` callback — manages timers, screw countdown, roulette finalization.
+- **Roulette** uses `getRouletteFrame()` deterministic pseudo-random based on `round.roulette.seed`.
 
 ## Conventions
-- All DOM event binding via `data-*` attributes, re-bound on every `render()` call.
-- No CSS modules, no CSS-in-JS. Flat CSS with CSS custom properties for theming.
-- `ESM` only (`"type": "module"`).
-- All state mutations go through `setState(key, value, true)` (third param = reliable broadcast).
+- DOM event binding via `data-*` attributes, re-bound on every `render()` call.
+- No CSS modules or CSS-in-JS. Flat CSS with custom properties for theming.
+- `ESM` only (`"type": "module"` in package.json).
+- No vite config file — all defaults.
