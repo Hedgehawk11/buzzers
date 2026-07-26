@@ -39,7 +39,7 @@ CI: `npm ci && npm run build`. No typecheck, formatter, or pre-commit hooks.
 7. "Reset Round" → IDLE.
 
 ## Screw mechanic
-- One screw per game. Screwer picks a target (screwee), then a 5s countdown starts — only screwee can buzz.
+- One screw per player per game. Tracked via `round.screwsUsedBy` array. Screwer picks a target (screwee), then a 5s countdown starts — only screwee can buzz.
 - **Scoring**: screwee gets normal ±1000 (correct → +1000 extra, wrong → −1000 extra), screwer gets ∓1000 (opposite transfer).
 - **Timeout** (no buzz): screwee loses `basePoints + 1000`, screwer gains +1000.
 - Buzz freezes question value (`screw.frozenCs`/`screw.frozenPoints`) for JACK scoring.

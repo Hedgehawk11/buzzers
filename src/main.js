@@ -287,7 +287,7 @@ function getRound() {
       screeeName: null,
       screwTimerMs: null,
     },
-    screwsUsed: 0,
+    screwsUsedBy: [],
   });
 }
 
@@ -497,7 +497,7 @@ function getUiSignature() {
       buzzedPlayerIds: round.buzzedPlayerIds,
       roulette: round.roulette,
       screw: round.screw,
-      screwsUsed: round.screwsUsed,
+      screwsUsedBy: round.screwsUsedBy,
     },
     settings: {
       inputMode: settings.inputMode,
@@ -1591,8 +1591,8 @@ function initiateScrew(screwerId) {
   if (round.screw.active) {
     return { ok: false, reason: "A screw is already in progress." };
   }
-  if (round.screwsUsed >= 1) {
-    return { ok: false, reason: "A screw has already been used this game." };
+  if (round.screwsUsedBy?.includes(screwerId)) {
+    return { ok: false, reason: "You have already used your screw." };
   }
   
   const screwer = currentParticipants().find((p) => p.id === screwerId);
@@ -1765,7 +1765,7 @@ function closeScrewMode() {
         screeeName: null,
         screwTimerMs: null,
       },
-      screwsUsed: round.screwsUsed + 1,
+      screwsUsedBy: [...(round.screwsUsedBy || []), round.screw.screwerId],
     },
     true,
   );
@@ -1791,7 +1791,7 @@ function resetScrews() {
         screeeName: null,
         screwTimerMs: null,
       },
-      screwsUsed: 0,
+      screwsUsedBy: [],
     },
     true,
   );
@@ -2478,6 +2478,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     : false;
   const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
   const screwInProgress = round.screw.active;
+  const screwUsedByMe = round.screwsUsedBy?.includes(mePlayer.id);
+  const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwInProgress;
   const globalDisabled = disabled || (!rebuzzAllowed && (alreadyBuzzed || teamAlreadyBuzzed)) || playerDisabled || screwInProgress;
   const helperText = playerDisabled
     ? "Your buzzer is disabled by the Host."
@@ -2543,9 +2545,15 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (settings.optionCount === 1) {
     const optionDisabled = !isOptionEnabled(settings, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
-    const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
-      ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-      : "";
+const screwBtn = settings.allowScrewing
+    ? (screwUsedByMe
+        ? `<p class="muted" style="margin-top:0.5rem">Your screw has been used.</p>`
+        : screwInProgress
+            ? ""
+            : screwAvailable && !disabled && !playerDisabled
+                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
+                : `<p class="muted" style="margin-top:0.5rem">Screw available.</p>`)
+    : "";
     
     return `
       <section class="card player-card">
@@ -2567,9 +2575,15 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
       })
       .join("");
-    const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
-      ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-      : "";
+const screwBtn = settings.allowScrewing
+    ? (screwUsedByMe
+        ? `<p class="muted" style="margin-top:0.5rem">Your screw has been used.</p>`
+        : screwInProgress
+            ? ""
+            : screwAvailable && !disabled && !playerDisabled
+                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
+                : `<p class="muted" style="margin-top:0.5rem">Screw available.</p>`)
+    : "";
     
     return `
       <section class="card player-card">
@@ -2592,7 +2606,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
       return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
-    const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
+    const screwBtn = screwAvailable && !disabled && !playerDisabled
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
       : "";
 
@@ -2630,8 +2644,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     })
     .join("");
-  const screwBtn = settings.allowScrewing && !disabled && !playerDisabled && !screwInProgress
-    ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+  const screwBtn = settings.allowScrewing
+    ? (screwUsedByMe
+        ? `<p class="muted" style="margin-top:0.5rem">Your screw has been used.</p>`
+        : screwInProgress
+            ? ""
+            : screwAvailable && !disabled && !playerDisabled
+                ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
+                : `<p class="muted" style="margin-top:0.5rem">Screw available.</p>`)
     : "";
 
   return `
@@ -3282,6 +3302,15 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           <button type="button" data-host-action="reset-screws">Refund Screws</button>
         </div>
         ${renderScrewNotice(round)}
+        ${settings.allowScrewing && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && players.length > 0
+          ? `<div class="screw-status" style="margin-top:0.4rem;font-size:0.82rem">
+              <span class="muted">Screw status:</span>
+              ${players
+                .filter(p => p.id !== controllerId)
+                .map(p => `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:${round.screwsUsedBy?.includes(p.id) ? "rgba(235,61,48,0.2)" : "rgba(29,185,84,0.2)"}">${getPlayerName(p)}</span>`)
+                .join("")}
+            </div>`
+          : ""}
       </div>
 
       <div class="status-strip">
