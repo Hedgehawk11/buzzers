@@ -11,6 +11,9 @@ But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow 
 ### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
 Yes. yes there is, handwritten responce too, try it, I dare ya
 
+### My players are being evil
+Screw em'
+
 ### Support for jack attack rounds? 
 I dont know how this could work with how I made this so yea, if you want to take a jack at it, open a PR, i'd love to see it. although if you set it to 6-choice mode, something like Full Stream might be possible
 
