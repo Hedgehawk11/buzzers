@@ -72,6 +72,7 @@ let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
 let bingoCycleInterval = null;
+let audienceTimerFrozenCs = null;
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -135,7 +136,7 @@ function getRecentBuzzNotice(maxAgeMs = 4000) {
 function currentParticipants() {
   const participants = Object.values(getParticipants() || {}).filter((player) => {
     const mode = player?.getState?.("clientMode");
-    return mode !== "display" && player?.getState?.("isAudienceDisplay") !== true;
+    return mode !== "display" && mode !== "tablet_timer" && player?.getState?.("isAudienceDisplay") !== true;
   });
   return participants.sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -144,7 +145,7 @@ function currentParticipants() {
 // True when the local client is an audience/projection display
 // =============================================================================
 function isAudienceDisplayClient() {
-  return clientMode === "display" || me()?.getState?.("clientMode") === "display";
+  return clientMode === "display" || clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "display" || me()?.getState?.("clientMode") === "tablet_timer";
 }
 
 // =============================================================================
@@ -2706,7 +2707,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     ? `<div class="audience-leader">
         <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
         <strong>${leader ? escapeHtml(getPlayerName(leader)) : "Waiting for a buzz"}</strong>
-        <span class="muted">${leader ? `Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong>` : "No one has buzzed yet."}</span>
+        <span class="muted">${leader ? `Time left: <strong>${formatSeconds(timeLeftCs)}s</strong>` : "No one has buzzed yet."}</span>
       </div>`
     : `<ul class="audience-buzz-list">
         ${buzzedPlayers.length
@@ -2724,7 +2725,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
           <h2>${statusLabel}</h2>
         </div>
         <div class="audience-meta">
-          <span class="audience-timer" data-live-time-left>${formatSeconds(timeLeftCs)}s</span>
+          <span class="audience-timer">${formatSeconds(timeLeftCs)}s</span>
           ${pointsUpForGrabs !== null ? `<span class="audience-points">${pointsLabel}</span>` : ""}
         </div>
       </div>
@@ -2829,6 +2830,36 @@ function renderAudienceScrewPanel(round) {
 // =============================================================================
 // Full audience display layout — combos primary panel + scores + screw card
 // =============================================================================
+// =============================================================================
+// Tablet timer display — full-screen timer with player count, SCREW overlay
+// =============================================================================
+function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
+  const buzzedCount = (round.buzzedPlayerIds || []).length;
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
+  const isScrewActive = round.screw.active;
+  const screwTimerMs = round.screw.screwTimerMs;
+
+  let timerDisplay;
+  if (isScrewActive && screwTimerMs !== null) {
+    timerDisplay = `${formatSeconds(Math.ceil(screwTimerMs / 10))}s`;
+  } else if (isScrewActive) {
+    timerDisplay = "SCREW";
+  } else {
+    timerDisplay = `${formatSeconds(timeLeftCs)}s`;
+  }
+
+  return `
+    <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}>
+      <div class="tablet-timer-container">
+        <div class="tablet-timer-value">${timerDisplay}</div>
+        <div class="tablet-timer-players">${buzzedCount}/${totalPlayers} players answered</div>
+      </div>
+    </main>
+  `;
+}
+
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
@@ -3563,7 +3594,26 @@ function render() {
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
 
   if (isAudienceDisplayClient()) {
-    app.innerHTML = renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry);
+    const buzzedCount = (round.buzzedPlayerIds || []).length;
+    const controllerId = controller?.id || getControllerId();
+    const cohostIds = getSafeState("cohostIds", []);
+    const totalPlayers = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && isPlayerBuzzerEnabled(settings, p.id)).length;
+    const timerRunning = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
+    const allBuzzed = buzzedCount >= totalPlayers && totalPlayers > 0;
+    if (!timerRunning || round.screw.active) {
+      audienceTimerFrozenCs = null;
+    } else if (allBuzzed) {
+      if (audienceTimerFrozenCs === null) audienceTimerFrozenCs = timeLeftCs;
+    } else {
+      audienceTimerFrozenCs = null;
+    }
+    const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
+
+    if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
+      app.innerHTML = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
+    } else {
+      app.innerHTML = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
+    }
     lastUiSignature = getUiSignature();
     bindEvents();
     return;
@@ -4206,6 +4256,37 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
             <div class="prejoin-actions">
               <button class="primary-action" type="submit">Open Display</button>
+              <button class="secondary-action" data-prejoin-switch="tablet_timer" type="button">Timer Display Instead</button>
+              <button class="secondary-action" data-prejoin-switch="landing" type="button">Back</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    `;
+  } else if (mode === "tablet_timer") {
+    app.innerHTML = `
+      <main class="prejoin-layout">
+        <section class="card prejoin-panel prejoin-panel-display">
+          <div class="prejoin-header">
+            <button class="prejoin-back" data-prejoin-back type="button">Back</button>
+            <div>
+              <p class="prejoin-kicker">Tablet Timer Display</p>
+              <h1>Open the timer display</h1>
+              <p class="muted">Enter the room code to show a full-screen timer with buzz count.</p>
+            </div>
+          </div>
+
+          <form class="prejoin-form" data-prejoin-form="tablet_timer">
+            <label>
+              Room code
+              <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="4" placeholder="XXXX" />
+            </label>
+
+            ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
+
+            <div class="prejoin-actions">
+              <button class="primary-action" type="submit">Open Timer Display</button>
+              <button class="secondary-action" data-prejoin-switch="display" type="button">Display Instead</button>
               <button class="secondary-action" data-prejoin-switch="landing" type="button">Back</button>
             </div>
           </form>
@@ -4274,7 +4355,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       const cohostPasswordInput = app.querySelector("#prejoin-cohost-password");
       const cohostPassword = cohostPasswordInput?.value?.trim() || "";
 
-      if (mode !== "display" && !chosenName) {
+      if (mode !== "display" && mode !== "tablet_timer" && !chosenName) {
         renderPrejoinScreen(mode || "landing", "Please choose a player name.");
         return;
       }
@@ -4289,6 +4370,11 @@ function renderPrejoinScreen(mode = "landing", error = "") {
         return;
       }
 
+      if (mode === "tablet_timer" && !roomCode) {
+        renderPrejoinScreen("tablet_timer", "Enter a room code for the timer display.");
+        return;
+      }
+
       if (mode === "cohost") {
         if (!/^\d{5}$/.test(cohostPassword)) {
           renderPrejoinScreen("cohost", "Enter a valid 5-digit co-host password.");
@@ -4296,7 +4382,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
         }
       }
 
-      if (mode !== "display") {
+      if (mode !== "display" && mode !== "tablet_timer") {
         localStorage.setItem(NAME_KEY, chosenName);
       }
 
@@ -4311,9 +4397,9 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       }
 
       await launchGame({
-        playerName: mode === "display" ? "Audience Display" : chosenName,
-        roomCode: mode === "join" || mode === "display" || mode === "cohost" ? roomCode : undefined,
-        clientMode: mode === "display" ? "display" : "player",
+        playerName: mode === "display" ? "Audience Display" : mode === "tablet_timer" ? "Tablet Timer" : chosenName,
+        roomCode: mode === "join" || mode === "display" || mode === "tablet_timer" || mode === "cohost" ? roomCode : undefined,
+        clientMode: mode === "display" ? "display" : mode === "tablet_timer" ? "tablet_timer" : "player",
         cohostPassword: mode === "cohost" ? cohostPassword : undefined,
       });
     });
@@ -4357,7 +4443,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       skipLobby: true,
       maxPlayersPerRoom: 42,
     };
-    if (clientMode === "display") {
+    if (clientMode === "display" || clientMode === "tablet_timer") {
       insertCoinOptions.clientMode = "display";
     }
     if (roomCode) {
@@ -4378,7 +4464,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 
   me().setState("displayName", playerName, true);
   me().setState("clientMode", clientMode, true);
-  if (clientMode === "display") {
+  if (clientMode === "display" || clientMode === "tablet_timer") {
     me().setState("isAudienceDisplay", true, true);
   }
 
