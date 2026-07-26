@@ -517,6 +517,41 @@ button:disabled {
   color: var(--muted);
 }
 
+/* =============================================================================
+   Tablet Timer Display — full-screen timer with buzz count
+   ============================================================================= */
+.tablet-timer-layout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: 2rem;
+}
+
+.tablet-timer-container {
+  text-align: center;
+}
+
+.tablet-timer-value {
+  font-size: clamp(5rem, 20vw, 16rem);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: #fff4e7;
+  text-shadow: 0 0 40px rgba(255, 139, 36, 0.5);
+  line-height: 1.1;
+}
+
+.tablet-timer-layout[data-screw-active] .tablet-timer-value {
+  color: #eb3d30;
+  text-shadow: 0 0 40px rgba(235, 61, 48, 0.6);
+}
+
+.tablet-timer-players {
+  font-size: clamp(1.5rem, 5vw, 3rem);
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+
 .player-card {
   min-height: 220px;
 }
