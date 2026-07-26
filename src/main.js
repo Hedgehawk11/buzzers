@@ -3236,7 +3236,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               <label>
                 Screw mechanic
                 ${toggleSwitch("allowScrewing", settings.allowScrewing)}
-                <p class="setting-helper">Players can force another player to answer under a 5s timer. Points are swapped.</p>
+                <p class="setting-helper">Players can force another player to answer under a 5s timer. Screwer gains 1000 if screwee gets it wrong, loses 1000 if they get it right.</p>
               </label>
               <label>
                 Show scores to all
