@@ -15,7 +15,7 @@ Yes. yes there is, handwritten response too, try it, I dare ya
 Screw em'
 
 ### Support for jack attack rounds? 
-I dont know how this could work with how I made this so yea, if you want to take a jack at it, open a PR, i'd love to see it. although if you set it to 6-choice mode, something like Full Stream might be possible
+I dont know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6-choice mode, something like Full Stream would be possible
 
 ### Whats on said slide deck?
 Music, Questions, eveything exept a scoreboard, who buzzed etc.
@@ -24,16 +24,15 @@ Music, Questions, eveything exept a scoreboard, who buzzed etc.
 Thanks captain obvious, I was mainly on the configurablily of everything (seriously, go look at the options)
 
 ### Can we have all in one instead of requiring a slideshow?
-no. at least not now, I do see the idea of one in the distant future, but thats when I decide, it would probably look like a question creator menu in a separate area (another main menu button) which lets you make a set there, then you import when creating a lobby.
+No. at least not now, I do see the idea of one in the distant future, but thats when I decide, it would probably look like a question creator menu in a separate area (another main menu button) which lets you make a set there, then you import when creating a lobby.
 
 ### Whats coming?
 Better UI, disordat support, roadkill, and more round types.
 
 ### How make work?
-Just run the thing as you would a node app, ive only tested it on Linux Mint and Kubuntu, so idk if it will work on windows, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
+Just run the thing as you would a node app, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
 
 USE NODE 20+
-(I used v24.15.0 and that seemed to work)
 
 ### Setup:
 ```
@@ -51,6 +50,6 @@ npm run build
 ```
 
 ## AI disclamer:
-I am currently trying to learn node.js, and this was a project I decided to make, as I saw a possibility of this being useful, then added more and more then decided to release it. this is mostly vibe-coded in its current state (github copilot and opencode), this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy. Still adding new features using AI at this time, and dont worry, I dont YOLO ai code instantly, I test it out, make sure it works, then fix it myself if I have to. Also, I work on this in week long phases, where a lot gets added then I leave it be for a month or two
+I am currently trying to learn node.js, and this was a project I decided to make, as I saw a possibility of this being useful, then added more and more then decided to release it. this is mostly vibe-coded in its current state (github copilot and opencode), this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy. Still adding new features using AI at this time, and dont worry, I dont YOLO ai code instantly, I test it out, make sure it works, then fix it myself if I have to. Also, I work on this in week long phases, where a lot gets added then I leave it be for a month or two, If there is a feature you want to add in, fork, make, PR.
 
 Built on playroom kit and nodejs
