@@ -2834,9 +2834,27 @@ function renderAudienceScrewPanel(round) {
 // Tablet timer display — full-screen timer with player count, SCREW overlay
 // =============================================================================
 function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
-  const buzzedCount = (round.buzzedPlayerIds || []).length;
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
+
+  if (round.status === ROUND_STATUSES.ROULETTE) {
+    const roulette = round.roulette || {};
+    const completedCount = Array.isArray(roulette.completedPlayerIds) ? roulette.completedPlayerIds.length : 0;
+    const expectedCount = getRouletteExpectedCount(roulette);
+    const playerSelections = Object.values(roulette.selections || {});
+    const accumulatedValue = playerSelections.reduce((total, selection) => total + (Number(selection.value) || 0), 0);
+
+    return `
+      <main class="tablet-timer-layout">
+        <div class="tablet-timer-container">
+          <div class="tablet-timer-value roulette-total">${accumulatedValue}</div>
+          <div class="tablet-timer-players">${completedCount}/${expectedCount} players locked in</div>
+        </div>
+      </main>
+    `;
+  }
+
+  const buzzedCount = (round.buzzedPlayerIds || []).length;
   const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
   const isScrewActive = round.screw.active;
   const screwTimerMs = round.screw.screwTimerMs;
