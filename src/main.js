@@ -53,6 +53,8 @@ const WEN_DIT_HAPN_ITEMS = ["Before", "Never", "After"];
 const DIS_OR_DAT_QUESTION_COUNT = 7;
 const DIS_OR_DAT_CORRECT_POINTS = 300;
 const DIS_OR_DAT_TIMED_SECONDS = 30;
+const DIS_OR_DAT_REVEAL_MS = 150;
+const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
 
 const ROULETTE_PATTERN = [
   { label: "", min: 0.16, max: 0.34 },
@@ -77,6 +79,7 @@ let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
 let bingoCycleInterval = null;
 let audienceTimerFrozenCs = null;
+let disOrDatRevealUntil = 0;
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -1611,6 +1614,10 @@ function handleDisOrDatAnswer(player, payload) {
   if (resps[q] === "dis" || resps[q] === "dat" || resps[q] === "both" || resps[q] === "none") {
     return { ok: false, reason: "Already answered." };
   }
+  if ((dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed") &&
+    q !== resps.filter(a => a === "dis" || a === "dat" || a === "both").length) {
+    return { ok: false, reason: "Answer the current question first." };
+  }
 
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
   const isCorrect = answer === dd.answers[q];
@@ -1627,7 +1634,10 @@ function handleDisOrDatAnswer(player, payload) {
   let nextFinished = dd.finishedPlayerIds || [];
   const answeredAll = nextResps.filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT;
   if (answeredAll && isTimed && !nextFinished.includes(player.id)) {
-    nextBonus[player.id] = getDisOrDatTimeLeftCs(dd);
+    const correctCount = nextResps.filter((a, i) => a === dd.answers[i]).length;
+    if (correctCount >= DIS_OR_DAT_BONUS_MIN_CORRECT) {
+      nextBonus[player.id] = getDisOrDatTimeLeftCs(dd);
+    }
     nextFinished = [...nextFinished, player.id];
   }
 
@@ -2789,13 +2799,13 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
   }
 
   const myResponses = dd.responses[mePlayer.id] || [];
+  const bothShown = dd.answers.some(a => a === "both");
 
   const renderQuestionRow = (i) => {
     const q = dd.answers[i];
     const myAnswer = myResponses[i];
     const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
     const isCorrect = answered && myAnswer === q;
-    const bothShown = q === "both";
     const btn = (value, label) => {
       const chosen = myAnswer === value;
       const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
@@ -2815,11 +2825,15 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     `;
   };
 
+  const answeredCount = myResponses.filter(a => a === "dis" || a === "dat" || a === "both").length;
+  const answeredAll = answeredCount >= DIS_OR_DAT_QUESTION_COUNT;
+  const revealShowing = isTimed && answeredCount > 0 && now() < disOrDatRevealUntil;
+  const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
+
   const rows = isTimed
-    ? dd.answers.map((_, i) => renderQuestionRow(i)).join("")
+    ? (revealShowing || !answeredAll ? renderQuestionRow(currentQ) : "")
     : dd.currentQuestion < DIS_OR_DAT_QUESTION_COUNT ? renderQuestionRow(dd.currentQuestion) : "";
 
-  const answeredAll = myResponses.filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT;
   const points = dd.pointsEarned[mePlayer.id] || 0;
   const bonus = dd.jackBonus[mePlayer.id] || 0;
 
@@ -2831,6 +2845,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
         <h3>Results</h3>
         <p class="muted">${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct</p>
         <p>Base: <strong>${points}</strong>${isTimed ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${points + bonus}</strong> pts</p>
+        ${isTimed && answeredAll && bonus === 0 ? `<p class="muted">Finish with ${DIS_OR_DAT_BONUS_MIN_CORRECT}+ correct to claim the time bonus.</p>` : ""}
         <p class="muted">Waiting for the host to continue...</p>
       </div>
     `;
@@ -2838,17 +2853,17 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     body = `
       ${isTimed
         ? `<div class="disordat-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
-           <p class="muted">Answer all ${DIS_OR_DAT_QUESTION_COUNT} questions before the timer ends.</p>`
+           ${answeredAll && !revealShowing ? "" : `<p class="muted">Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.</p>`}`
         : `<p class="muted">Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.</p>`}
       <div class="disordat-list">${rows}</div>
-      ${answeredAll && isTimed ? `<p class="disordat-done">All answered! Wait for results.</p>` : ""}
+      ${answeredAll && isTimed && !revealShowing ? `<p class="disordat-done">All answered! Wait for results.</p>` : ""}
     `;
   }
 
   return `
     <section class="card player-card disordat-player-card">
       <h2>Dis or Dat</h2>
-      <div class="disordat-labels"><span class="dis">${escapeHtml(dd.disLabel || "Dis")}</span> vs <span class="dat">${escapeHtml(dd.datLabel || "Dat")}</span></div>
+      <div class="disordat-labels"><span class="dis">${escapeHtml(dd.disLabel || "Dis")}</span> or <span class="dat">${escapeHtml(dd.datLabel || "Dat")}</span></div>
       ${body}
     </section>
   `;
@@ -4686,7 +4701,9 @@ function bindEvents() {
           const result = await RPC.call("disordat-answer", { q, answer }, RPC.Mode.HOST);
           if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
           else if (result?.message) setBuzzNotice(result.message);
+          disOrDatRevealUntil = now() + DIS_OR_DAT_REVEAL_MS;
           render();
+          setTimeout(() => render(), DIS_OR_DAT_REVEAL_MS + 30);
         } catch {
           setBuzzNotice("Could not send answer.");
           render();
