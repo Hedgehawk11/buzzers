@@ -1311,6 +1311,157 @@ button.red {
   }
 }
 
+/* Dis or Dat */
+.disordat-setup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.4rem 0;
+}
+
+.disordat-setup-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.disordat-setup-row .toggle-chip {
+  flex: 0 1 auto;
+}
+
+.disordat-pick {
+  margin-top: 0.75rem;
+  padding: 0.6rem;
+  border: 1px dashed var(--panel-border);
+  border-radius: 8px;
+}
+
+.disordat-pick h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+}
+
+.disordat-progress {
+  margin-top: 0.6rem;
+}
+
+.disordat-progress div {
+  font-size: 0.85rem;
+  margin-bottom: 0.2rem;
+}
+
+.disordat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+
+.disordat-question {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.5rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+
+.disordat-q-num {
+  font-weight: 800;
+  color: var(--muted);
+  min-width: 1.5rem;
+}
+
+.disordat-q-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.disordat-answer-btn {
+  min-width: 4.5rem;
+  font-weight: 700;
+}
+
+.disordat-answer-btn.is-chosen {
+  outline: 2px solid var(--amber);
+}
+
+.disordat-answer-btn.is-correct {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.disordat-answer-btn.is-wrong {
+  background: var(--red);
+  border-color: var(--red);
+}
+
+.disordat-q-result {
+  font-weight: 900;
+  font-size: 1.1rem;
+}
+
+.disordat-timer {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--amber);
+  margin: 0.5rem 0;
+}
+
+.disordat-done {
+  margin-top: 0.5rem;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.disordat-labels {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.disordat-labels .dis {
+  color: var(--green);
+}
+
+.disordat-labels .dat {
+  color: var(--red);
+}
+
+.disordat-standings {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.disordat-standings li {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.disordat-results {
+  text-align: center;
+  padding: 0.5rem;
+}
+
+.disordat-results p {
+  margin: 0.3rem 0;
+}
+
+.disordat-audience-question {
+  text-align: center;
+  font-size: 1.6rem;
+  margin: 1rem 0;
+}
+
 /* Fixed bottom footer bar */
 .site-footer {
   position: fixed;

@@ -50,6 +50,10 @@ const BINGO_CORRECT_POINTS = 500;
 const BINGO_INCORRECT_POINTS = -500;
 const WEN_DIT_HAPN_ITEMS = ["Before", "Never", "After"];
 
+const DIS_OR_DAT_QUESTION_COUNT = 7;
+const DIS_OR_DAT_CORRECT_POINTS = 300;
+const DIS_OR_DAT_TIMED_SECONDS = 30;
+
 const ROULETTE_PATTERN = [
   { label: "", min: 0.16, max: 0.34 },
   { label: "", min: 0.14, max: 0.32 },
@@ -327,6 +331,38 @@ function isWenDitHapnMode() {
   return getSettings().inputMode === "wendithapn";
 }
 
+function isDisOrDatMode() {
+  return getSettings().inputMode === "disordat";
+}
+
+function freshDisOrDatState() {
+  return {
+    active: false,
+    phase: "playing",
+    disLabel: "",
+    datLabel: "",
+    answers: Array(DIS_OR_DAT_QUESTION_COUNT).fill(null),
+    mode: null,
+    activePlayerId: null,
+    pendingPick: false,
+    timeEndsAt: null,
+    currentQuestion: 0,
+    responses: {},
+    pointsEarned: {},
+    jackBonus: {},
+    finishedPlayerIds: [],
+  };
+}
+
+function getDisOrDat() {
+  return getSafeState("disordat", freshDisOrDatState());
+}
+
+function getDisOrDatTimeLeftCs(dd) {
+  if (!dd?.timeEndsAt) return DIS_OR_DAT_TIMED_SECONDS * 100;
+  return Math.max(0, Math.ceil((dd.timeEndsAt - now()) / 10));
+}
+
 function getBingo() {
   return getSafeState("bingo", {
     active: false,
@@ -478,6 +514,12 @@ function updateTimerDisplays() {
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
   });
+  if (isDisOrDatMode()) {
+    const ddText = `${formatSeconds(getDisOrDatTimeLeftCs(getDisOrDat()))}s`;
+    document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
+      element.textContent = ddText;
+    });
+  }
 }
 
 function getUiSignature() {
@@ -525,6 +567,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     pendingLogId,
     controllerId: getControllerId(),
     cohostIds: getSafeState("cohostIds", []),
+    disordat: getDisOrDat(),
     participantCount: currentParticipants().length,
   });
 }
@@ -1518,6 +1561,234 @@ function handleBingoBuzz(player, payload) {
 }
 
 // =============================================================================
+// Dis or Dat — host-only game logic (no cycling, static questions)
+// =============================================================================
+function startDisOrDat(mode, playerId) {
+  if (!isHost()) return;
+  const dd = getDisOrDat();
+  if (dd.answers.some(a => a !== "dis" && a !== "dat" && a !== "both")) return;
+  const isTimed = mode === "onePlayTimed" || mode === "allPlayTimed";
+  setState("disordat", {
+    ...dd,
+    active: true,
+    phase: "playing",
+    mode,
+    activePlayerId: mode === "onePlayTimed" ? playerId : null,
+    pendingPick: false,
+    timeEndsAt: isTimed ? now() + DIS_OR_DAT_TIMED_SECONDS * 1000 : null,
+    currentQuestion: 0,
+    responses: {},
+    pointsEarned: {},
+    jackBonus: {},
+    finishedPlayerIds: [],
+  }, true);
+  render();
+}
+
+function handleDisOrDatAnswer(player, payload) {
+  const dd = getDisOrDat();
+  if (!dd.active || dd.phase !== "playing") {
+    return { ok: false, reason: "Dis or Dat isn't active." };
+  }
+  const q = Number(payload?.q);
+  const answer = payload?.answer;
+  if (!Number.isInteger(q) || q < 0 || q >= DIS_OR_DAT_QUESTION_COUNT) {
+    return { ok: false, reason: "Bad question." };
+  }
+  if (answer !== "dis" && answer !== "dat" && answer !== "both") {
+    return { ok: false, reason: "Bad answer." };
+  }
+  if (dd.mode === "onePlayTimed" && player.id !== dd.activePlayerId) {
+    return { ok: false, reason: "You're not the active player." };
+  }
+  if (dd.mode === "allPlayHostPaced" && q !== dd.currentQuestion) {
+    return { ok: false, reason: "That question isn't live yet." };
+  }
+  if (dd.timeEndsAt && now() > dd.timeEndsAt) {
+    return { ok: false, reason: "Time's up." };
+  }
+  const resps = dd.responses[player.id] || [];
+  if (resps[q] === "dis" || resps[q] === "dat" || resps[q] === "both" || resps[q] === "none") {
+    return { ok: false, reason: "Already answered." };
+  }
+
+  const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
+  const isCorrect = answer === dd.answers[q];
+
+  const nextResponses = { ...(dd.responses || {}) };
+  const nextResps = [...resps];
+  nextResps[q] = answer;
+  nextResponses[player.id] = nextResps;
+
+  const nextPoints = { ...(dd.pointsEarned || {}) };
+  if (isCorrect) nextPoints[player.id] = (nextPoints[player.id] || 0) + DIS_OR_DAT_CORRECT_POINTS;
+
+  const nextBonus = { ...(dd.jackBonus || {}) };
+  let nextFinished = dd.finishedPlayerIds || [];
+  const answeredAll = nextResps.filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT;
+  if (answeredAll && isTimed && !nextFinished.includes(player.id)) {
+    nextBonus[player.id] = getDisOrDatTimeLeftCs(dd);
+    nextFinished = [...nextFinished, player.id];
+  }
+
+  setState("disordat", {
+    ...dd,
+    responses: nextResponses,
+    pointsEarned: nextPoints,
+    jackBonus: nextBonus,
+    finishedPlayerIds: nextFinished,
+  }, true);
+
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const activePlayers = dd.mode === "onePlayTimed" ? participants.filter(p => p.id === dd.activePlayerId) : participants;
+  if (isTimed && activePlayers.length > 0 && activePlayers.every(p =>
+    (nextResponses[p.id] || []).filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT)) {
+    finalizeDisOrDat();
+    return { ok: true, message: isCorrect ? "Correct! +300" : "Incorrect." };
+  }
+
+  render();
+  return { ok: true, message: isCorrect ? "Correct! +300" : "Incorrect." };
+}
+
+function nextDisOrDatQuestion() {
+  if (!isHost()) return;
+  const dd = getDisOrDat();
+  if (!dd.active || dd.phase !== "playing" || dd.mode !== "allPlayHostPaced") return;
+  const q = dd.currentQuestion;
+  const nextResponses = { ...(dd.responses || {}) };
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  for (const p of participants) {
+    const resps = nextResponses[p.id] || [];
+    if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
+      const next = [...resps];
+      next[q] = "none";
+      nextResponses[p.id] = next;
+    }
+  }
+  const nextQ = q + 1;
+  if (nextQ >= DIS_OR_DAT_QUESTION_COUNT) {
+    setState("disordat", { ...dd, responses: nextResponses, currentQuestion: nextQ }, true);
+    finalizeDisOrDat();
+    return;
+  }
+  setState("disordat", { ...dd, responses: nextResponses, currentQuestion: nextQ }, true);
+  render();
+}
+
+function finalizeDisOrDat() {
+  if (!isHost()) return;
+  const dd = getDisOrDat();
+  if (!dd.active || dd.phase === "results") return;
+
+  const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+
+  let responses = dd.responses || {};
+  if (isTimed) {
+    const next = {};
+    for (const p of participants) {
+      const resps = responses[p.id] || [];
+      const filled = resps.map(a => (a === "dis" || a === "dat" || a === "both") ? a : "none");
+      next[p.id] = filled;
+    }
+    responses = next;
+  }
+
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const scores = { ...getScores() };
+  const log = getLog();
+
+  for (const p of participants) {
+    const resps = responses[p.id] || [];
+    if (resps.length === 0) continue;
+    const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
+    const base = correctCount * DIS_OR_DAT_CORRECT_POINTS;
+    const bonus = dd.jackBonus[p.id] || 0;
+    const total = base + bonus;
+    const teamColor = getPlayerTeamColor(p.id, assignments);
+    const scoreKey = getScoreKeyForPlayer(p.id, settings, assignments);
+    scores[scoreKey] = Number(scores[scoreKey] || 0) + total;
+    log.push({
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "disordat",
+      ts: now(),
+      playerId: p.id,
+      playerName: getPlayerName(p),
+      teamColor,
+      scoreKey,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(p),
+      option: null,
+      answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${isTimed && bonus ? ` + ${bonus} bonus` : ""}`,
+      timeLeftCs: 0,
+      scoringMode: "uniform",
+      jackMultiplier: settings.jackMultiplier,
+      uniformPoints: DIS_OR_DAT_CORRECT_POINTS,
+      basePoints: 0,
+      awardedDelta: total,
+      resolved: true,
+    });
+  }
+
+  setState("scores", scores, true);
+  setState("gameLog", log, true);
+  setState("disordat", { ...dd, responses, phase: "results" }, true);
+  render();
+}
+
+function endDisOrDat() {
+  if (!isHost()) return;
+  finalizeDisOrDat();
+}
+
+function resetDisOrDat() {
+  if (!isHost()) return;
+  const dd = getDisOrDat();
+  setState("disordat", {
+    ...dd,
+    active: false,
+    phase: "playing",
+    mode: null,
+    activePlayerId: null,
+    pendingPick: false,
+    timeEndsAt: null,
+    currentQuestion: 0,
+    responses: {},
+    pointsEarned: {},
+    jackBonus: {},
+    finishedPlayerIds: [],
+  }, true);
+  render();
+}
+
+function exitDisOrDat() {
+  if (!isHost()) return;
+  const dd = getDisOrDat();
+  if (dd.active && dd.phase === "playing") finalizeDisOrDat();
+  setHostSetting("inputMode", "buttons");
+}
+
+function handleDisOrDatTick() {
+  if (!isHost()) return;
+  const dd = getDisOrDat();
+  if (!dd.active || dd.phase !== "playing") return;
+  if (dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed") {
+    if (dd.timeEndsAt && now() >= dd.timeEndsAt) {
+      finalizeDisOrDat();
+      return;
+    }
+    render();
+  }
+}
+
+// =============================================================================
 // Return round to IDLE, preserving roulette final value and settings
 // =============================================================================
 function resetRound() {
@@ -1807,6 +2078,10 @@ function hostTick() {
     return;
   }
   if (isBingoMode()) return;
+  if (isDisOrDatMode()) {
+    handleDisOrDatTick();
+    return;
+  }
   const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) {
     if (maybeFinalizeRoulettePhase()) {
@@ -1959,6 +2234,32 @@ function setHostSetting(key, value) {
       };
       setState("round", idleRound, true);
       setState("pendingLogId", null, true);
+    }
+    if (value === "disordat") {
+      const idleRound = {
+        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
+        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null,
+        buzzedPlayerIds: [],
+        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null },
+      };
+      setState("round", idleRound, true);
+      setState("pendingLogId", null, true);
+      setState("disordat", {
+        ...getDisOrDat(),
+        active: false,
+        phase: "playing",
+        mode: null,
+        activePlayerId: null,
+        pendingPick: false,
+        timeEndsAt: null,
+        currentQuestion: 0,
+        responses: {},
+        pointsEarned: {},
+        jackBonus: {},
+        finishedPlayerIds: [],
+      }, true);
     }
   }
   if (key === "rouletteTopAmount") {
@@ -2351,11 +2652,263 @@ function renderBingoAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
+// Dis or Dat host panel — setup, playing controls, and results
+// =============================================================================
+function renderDisOrDatHostPanel(settings, players) {
+  if (!hasHostPrivileges()) return "";
+  const dd = getDisOrDat();
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
+
+  const modeLabel = {
+    onePlayTimed: "One Play — Timed",
+    allPlayTimed: "All Play — Timed",
+    allPlayHostPaced: "All Play — Host Paced",
+  }[dd.mode] || "Dis or Dat";
+
+  if (!dd.active) {
+    const allAnswered = dd.answers.every(a => a !== null);
+    const answerRows = dd.answers.map((answer, i) => {
+      const chip = (value, label) => {
+        const on = answer === value ? "is-on" : "";
+        return `<button type="button" class="toggle-chip ${on}" data-disordat-answer-chip data-q="${i}" data-answer="${value}">${label}</button>`;
+      };
+      return `
+        <div class="disordat-setup-row">
+          <span class="disordat-q-num">${i + 1}</span>
+          ${chip("dis", dd.disLabel || "Dis")}
+          ${chip("dat", dd.datLabel || "Dat")}
+          ${chip("both", "Both")}
+        </div>
+      `;
+    }).join("");
+    const pickMenu = dd.pendingPick ? `
+      <div class="disordat-pick">
+        <h3>Who plays this Dis or Dat?</h3>
+        <div class="host-actions">
+          ${nonController.map(p => `<button type="button" class="primary-action" data-disordat-pick-player="${p.id}">${getPlayerName(p)}</button>`).join("") || '<p class="muted">No players in the room yet.</p>'}
+        </div>
+      </div>
+    ` : "";
+    return `
+      <section class="card host-panel bingo-host-panel">
+        <h2>Dis or Dat Setup</h2>
+        <p class="muted">Optional labels shown on every question (you read each question aloud). Tap the correct answer for each of the ${DIS_OR_DAT_QUESTION_COUNT} questions.</p>
+        <div class="control-grid">
+          <label>Dis label
+            <input type="text" id="disordat-dis-label" maxlength="40" value="${escapeHtml(dd.disLabel)}" placeholder="Dis" />
+          </label>
+          <label>Dat label
+            <input type="text" id="disordat-dat-label" maxlength="40" value="${escapeHtml(dd.datLabel)}" placeholder="Dat" />
+          </label>
+        </div>
+        <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Correct answers (${DIS_OR_DAT_QUESTION_COUNT})</h3>
+        <div class="disordat-setup-list">${answerRows}</div>
+        ${pickMenu}
+        <div class="host-actions" style="margin-top:0.9rem">
+          <button type="button" class="primary-action" data-disordat-start="onePlayTimed" ${allAnswered ? "" : "disabled"}>One Play Timed</button>
+          <button type="button" class="primary-action" data-disordat-start="allPlayTimed" ${allAnswered ? "" : "disabled"}>All Play Timed</button>
+          <button type="button" class="primary-action" data-disordat-start="allPlayHostPaced" ${allAnswered ? "" : "disabled"}>All Play, Host Paced</button>
+        </div>
+        ${allAnswered ? "" : '<p class="setting-helper" style="margin-top:0.4rem">Pick the correct answer for all ' + DIS_OR_DAT_QUESTION_COUNT + ' questions to start.</p>'}
+        <div class="host-actions" style="margin-top:0.6rem">
+          <button type="button" data-disordat-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+
+  if (dd.phase === "results") {
+    const playersInGame = dd.mode === "onePlayTimed"
+      ? nonController.filter(p => p.id === dd.activePlayerId)
+      : nonController;
+    const sorted = [...playersInGame].sort((a, b) =>
+      ((dd.pointsEarned[b.id] || 0) + (dd.jackBonus[b.id] || 0)) - ((dd.pointsEarned[a.id] || 0) + (dd.jackBonus[a.id] || 0)));
+    const rows = sorted.map(p => {
+      const resps = dd.responses[p.id] || [];
+      const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
+      const base = dd.pointsEarned[p.id] || 0;
+      const bonus = dd.jackBonus[p.id] || 0;
+      return `<li><strong>${getPlayerName(p)}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct, ${base} pts${isTimed ? ` + ${bonus} bonus` : ""} = <strong>${base + bonus} pts</strong></li>`;
+    }).join("");
+    return `
+      <section class="card host-panel bingo-host-panel">
+        <h2>Dis or Dat — Results</h2>
+        <ul class="disordat-standings">${rows || '<li class="muted">No players.</li>'}</ul>
+        <div class="host-actions">
+          <button type="button" class="primary-action" data-disordat-reset>Play Again</button>
+          <button type="button" data-disordat-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+
+  const playersInGame = dd.mode === "onePlayTimed"
+    ? nonController.filter(p => p.id === dd.activePlayerId)
+    : nonController;
+  const progressRows = playersInGame.map(p => {
+    const resps = dd.responses[p.id] || [];
+    const answeredCount = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
+    const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
+    const bonus = dd.jackBonus[p.id] || 0;
+    const total = (dd.pointsEarned[p.id] || 0) + bonus;
+    return `<div><strong>${getPlayerName(p)}</strong>: ${answeredCount}/${DIS_OR_DAT_QUESTION_COUNT} answered, ${correctCount} correct${isTimed ? `, ${bonus} bonus` : ""} — ${total} pts</div>`;
+  }).join("");
+  const activePlayer = playersInGame[0];
+
+  return `
+    <section class="card host-panel bingo-host-panel">
+      <h2>Dis or Dat — Active</h2>
+      <p class="muted">Mode: <strong>${modeLabel}</strong>${activePlayer ? ` — Player: <strong>${getPlayerName(activePlayer)}</strong>` : ""}</p>
+      ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></p>` : ""}
+      ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>` : ""}
+      <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
+      ${!isTimed ? `<div class="host-actions" style="margin-top:0.6rem"><button type="button" class="primary-action" data-disordat-next>Next Question</button></div>` : ""}
+      <div class="host-actions" style="margin-top:0.6rem">
+        <button type="button" data-disordat-end>End & Award Points</button>
+        <button type="button" data-disordat-exit>Return to buzzer mode</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderDisOrDatPlayerPanel(settings, mePlayer) {
+  const dd = getDisOrDat();
+  const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
+  const isOnePlay = dd.mode === "onePlayTimed";
+
+  if (!dd.active) {
+    return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">Waiting for the host to start...</p></section>`;
+  }
+
+  if (isOnePlay && mePlayer.id !== dd.activePlayerId) {
+    const activePlayer = currentParticipants().find(p => p.id === dd.activePlayerId);
+    return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${activePlayer ? escapeHtml(getPlayerName(activePlayer)) : "A player"} is playing this round. Sit back and watch!</p></section>`;
+  }
+
+  const myResponses = dd.responses[mePlayer.id] || [];
+
+  const renderQuestionRow = (i) => {
+    const q = dd.answers[i];
+    const myAnswer = myResponses[i];
+    const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
+    const isCorrect = answered && myAnswer === q;
+    const bothShown = q === "both";
+    const btn = (value, label) => {
+      const chosen = myAnswer === value;
+      const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+      const chosenCls = chosen ? " is-chosen" : "";
+      return `<button type="button" class="disordat-answer-btn${resultCls}${chosenCls}" data-disordat-answer data-q="${i}" data-answer="${value}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+    };
+    return `
+      <div class="disordat-question ${answered ? "is-answered" : ""}">
+        <span class="disordat-q-num">Q${i + 1}</span>
+        <div class="disordat-q-buttons">
+          ${btn("dis", dd.disLabel || "Dis")}
+          ${btn("dat", dd.datLabel || "Dat")}
+          ${bothShown ? btn("both", "Both") : ""}
+        </div>
+        ${answered ? `<span class="disordat-q-result">${isCorrect ? "✓" : "✗"}</span>` : ""}
+      </div>
+    `;
+  };
+
+  const rows = isTimed
+    ? dd.answers.map((_, i) => renderQuestionRow(i)).join("")
+    : dd.currentQuestion < DIS_OR_DAT_QUESTION_COUNT ? renderQuestionRow(dd.currentQuestion) : "";
+
+  const answeredAll = myResponses.filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT;
+  const points = dd.pointsEarned[mePlayer.id] || 0;
+  const bonus = dd.jackBonus[mePlayer.id] || 0;
+
+  let body;
+  if (dd.phase === "results") {
+    const correctCount = myResponses.filter((a, i) => a === dd.answers[i]).length;
+    body = `
+      <div class="disordat-results">
+        <h3>Results</h3>
+        <p class="muted">${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct</p>
+        <p>Base: <strong>${points}</strong>${isTimed ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${points + bonus}</strong> pts</p>
+        <p class="muted">Waiting for the host to continue...</p>
+      </div>
+    `;
+  } else {
+    body = `
+      ${isTimed
+        ? `<div class="disordat-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+           <p class="muted">Answer all ${DIS_OR_DAT_QUESTION_COUNT} questions before the timer ends.</p>`
+        : `<p class="muted">Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.</p>`}
+      <div class="disordat-list">${rows}</div>
+      ${answeredAll && isTimed ? `<p class="disordat-done">All answered! Wait for results.</p>` : ""}
+    `;
+  }
+
+  return `
+    <section class="card player-card disordat-player-card">
+      <h2>Dis or Dat</h2>
+      <div class="disordat-labels"><span class="dis">${escapeHtml(dd.disLabel || "Dis")}</span> vs <span class="dat">${escapeHtml(dd.datLabel || "Dat")}</span></div>
+      ${body}
+    </section>
+  `;
+}
+
+function renderDisOrDatAudienceDisplay(settings, players) {
+  const dd = getDisOrDat();
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const participants = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
+  const modeLabel = {
+    onePlayTimed: "One Play — Timed",
+    allPlayTimed: "All Play — Timed",
+    allPlayHostPaced: "All Play — Host Paced",
+  }[dd.mode] || "Dis or Dat";
+
+  if (!dd.active) {
+    return `
+      <main class="layout audience-layout">
+        <header class="hero audience-hero">
+          <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">Waiting for the game to start...</p></div>
+        </header>
+      </main>`;
+  }
+
+  const standings = [...participants]
+    .sort((a, b) => ((dd.pointsEarned[b.id] || 0) + (dd.jackBonus[b.id] || 0)) - ((dd.pointsEarned[a.id] || 0) + (dd.jackBonus[a.id] || 0)))
+    .map(p => {
+      const resps = dd.responses[p.id] || [];
+      const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
+      const total = (dd.pointsEarned[p.id] || 0) + (dd.jackBonus[p.id] || 0);
+      return `<li><strong>${getPlayerName(p)}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} — ${total} pts</li>`;
+    }).join("");
+
+  const timerHtml = isTimed && dd.phase === "playing"
+    ? `<div class="audience-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>`
+    : "";
+  const questionHtml = !isTimed && dd.phase === "playing"
+    ? `<div class="disordat-audience-question"><h2>Question ${dd.currentQuestion + 1}</h2><p>${escapeHtml(dd.disLabel || "Dis")} or ${escapeHtml(dd.datLabel || "Dat")}?</p></div>`
+    : "";
+
+  return `
+    <main class="layout audience-layout">
+      <header class="hero audience-hero">
+        <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
+      </header>
+      ${timerHtml}
+      ${questionHtml}
+      <section class="card"><h2>${dd.phase === "results" ? "Final Standings" : "Standings"} — ${modeLabel}</h2><ul class="bingo-standings">${standings || "<li class='muted'>No players yet.</li>"}</ul></section>
+    </main>`;
+}
+
+// =============================================================================
 // Player buzzer panel — shows appropriate UI depending on game state
 // (roulette, screw, buttons, text entry, etc.)
 // =============================================================================
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
+  if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   if (isControllerPlayer() || isCohost()) {
     return `
@@ -2880,6 +3433,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
 
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
+  if (isDisOrDatMode()) return renderDisOrDatAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
@@ -3035,6 +3589,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     return renderBingoHostPanel(settings, players);
   }
 
+  if (isDisOrDatMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control Dis or Dat. The host must manage it.</p></section>`;
+    return renderDisOrDatHostPanel(settings, players);
+  }
+
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
   const cohostIds = getSafeState("cohostIds", []);
@@ -3110,7 +3669,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               <label>
                 Answer mode
                 <select data-setting="inputMode" ${settingDisabledAttr}>
-                  <option value="buttons" ${settings.inputMode !== "text" && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" ? "selected" : ""}>Button buzzer</option>
+                  <option value="buttons" ${settings.inputMode !== "text" && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && settings.inputMode !== "disordat" ? "selected" : ""}>Button buzzer</option>
                   <option value="text" ${settings.inputMode === "text" ? "selected" : ""}>Text entry</option>
                 </select>
                 <p class="setting-helper">How players give their answers.</p>
@@ -3326,9 +3885,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="host-actions" style="margin-top:0.5rem">
               <button type="button" data-set-mode="bingo" ${settingDisabledAttr} ${settings.inputMode === "bingo" ? "disabled" : ""}>Bingo</button>
               <button type="button" data-set-mode="wendithapn" ${settingDisabledAttr} ${settings.inputMode === "wendithapn" ? "disabled" : ""}>Wen Dit Happn</button>
+              <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
             </div>
-            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn"
-              ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the Bingo panel below to control the round.</p>`
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat"
+              ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
               : ""}
           </div>
         </details>
@@ -3351,7 +3911,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           <button type="button" data-host-action="reset-screws">Refund Screws</button>
         </div>
         ${renderScrewNotice(round)}
-        ${settings.allowScrewing && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && players.length > 0
+        ${settings.allowScrewing && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && settings.inputMode !== "disordat" && players.length > 0
           ? `<div class="screw-status" style="margin-top:0.4rem;font-size:0.82rem">
               <span class="muted">Screw status:</span>
               ${players
@@ -3663,6 +4223,38 @@ function render() {
           </div>
         </header>
         ${bingoBody}
+      </main>
+    `;
+    lastUiSignature = getUiSignature();
+    bindEvents();
+    return;
+  }
+
+  if (isDisOrDatMode()) {
+    const ddBody = showAdminData ? `
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      <section class="grid">
+        ${renderScores(players, scores)}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores right now.")}
+      </section>` ;
+    app.innerHTML = `
+      <main class="layout">
+        <header class="hero">
+          <div>
+            <h1>Dis or Dat</h1>
+            <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
+          </div>
+          <div class="hero-meta">
+            <span>You: ${getPlayerName(mePlayer)}</span>
+            <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
+          </div>
+        </header>
+        ${ddBody}
       </main>
     `;
     lastUiSignature = getUiSignature();
@@ -4025,6 +4617,80 @@ function bindEvents() {
       button.addEventListener("click", () => {
         fYouEasterEggUnlocked = false;
         render();
+      });
+    });
+
+    // Dis or Dat — host setup and control (host-only)
+    app.querySelectorAll("#disordat-dis-label").forEach(input => {
+      input.addEventListener("change", () => {
+        if (!isHost()) return;
+        setState("disordat", { ...getDisOrDat(), disLabel: String(input.value || "").trim() }, true);
+      });
+    });
+    app.querySelectorAll("#disordat-dat-label").forEach(input => {
+      input.addEventListener("change", () => {
+        if (!isHost()) return;
+        setState("disordat", { ...getDisOrDat(), datLabel: String(input.value || "").trim() }, true);
+      });
+    });
+    app.querySelectorAll("[data-disordat-answer-chip]").forEach(button => {
+      button.addEventListener("click", () => {
+        if (!isHost()) return;
+        const q = Number(button.dataset.q);
+        if (!Number.isInteger(q) || q < 0 || q >= DIS_OR_DAT_QUESTION_COUNT) return;
+        const dd = getDisOrDat();
+        const answers = [...dd.answers];
+        answers[q] = button.dataset.answer;
+        setState("disordat", { ...dd, answers }, true);
+        render();
+      });
+    });
+    app.querySelectorAll("[data-disordat-start]").forEach(button => {
+      button.addEventListener("click", () => {
+        if (!isHost()) return;
+        const mode = button.dataset.disordatStart;
+        if (mode === "onePlayTimed") {
+          setState("disordat", { ...getDisOrDat(), mode, pendingPick: true }, true);
+          render();
+        } else {
+          startDisOrDat(mode);
+        }
+      });
+    });
+    app.querySelectorAll("[data-disordat-pick-player]").forEach(button => {
+      button.addEventListener("click", () => {
+        if (!isHost()) return;
+        startDisOrDat("onePlayTimed", button.dataset.disordatPickPlayer);
+      });
+    });
+    app.querySelectorAll("[data-disordat-next]").forEach(button => {
+      button.addEventListener("click", () => nextDisOrDatQuestion());
+    });
+    app.querySelectorAll("[data-disordat-end]").forEach(button => {
+      button.addEventListener("click", () => endDisOrDat());
+    });
+    app.querySelectorAll("[data-disordat-reset]").forEach(button => {
+      button.addEventListener("click", () => resetDisOrDat());
+    });
+    app.querySelectorAll("[data-disordat-exit]").forEach(button => {
+      button.addEventListener("click", () => exitDisOrDat());
+    });
+
+    // Dis or Dat — player answer
+    app.querySelectorAll("[data-disordat-answer]").forEach(button => {
+      button.addEventListener("click", async () => {
+        if (isControllerPlayer() || isCohost()) return;
+        const q = Number(button.dataset.q);
+        const answer = button.dataset.answer;
+        try {
+          const result = await RPC.call("disordat-answer", { q, answer }, RPC.Mode.HOST);
+          if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+          else if (result?.message) setBuzzNotice(result.message);
+          render();
+        } catch {
+          setBuzzNotice("Could not send answer.");
+          render();
+        }
       });
     });
 
@@ -4550,6 +5216,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   RPC.register("bingo-buzz", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false, reason: "Not host" };
     return handleBingoBuzz(senderPlayer, payload);
+  });
+
+  RPC.register("disordat-answer", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleDisOrDatAnswer(senderPlayer, payload);
   });
 
   RPC.register("screw", async (payload, senderPlayer) => {
