@@ -207,6 +207,15 @@ function getScoreKeyForPlayer(playerId, settings = getSettings(), assignments = 
   return teamColor ? getTeamScoreKey(teamColor) : playerId;
 }
 
+// Shared key for special-question state (bingo tiles, disordat responses).
+// In shared team mode every team member shares one track; otherwise per-player.
+function getTeamTrackKey(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
+  if (!settings.teamModeEnabled || settings.teamScoringMode !== "shared") {
+    return playerId;
+  }
+  return getPlayerTeamColor(playerId, assignments) || playerId;
+}
+
 function getTeamMembers(teamColor, players = currentParticipants(), assignments = getTeamAssignments()) {
   if (!teamColor) {
     return [];
@@ -1511,33 +1520,44 @@ function handleBingoBuzz(player, payload) {
   if (!bingo.active || !bingo.cycling) {
     return { ok: false, reason: "Not active." };
   }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const teamColor = getPlayerTeamColor(player.id, assignments);
+  if (settings.teamModeEnabled && !teamColor) {
+    return { ok: false, reason: "Host has not assigned you to a team yet." };
+  }
+  const trackKey = getTeamTrackKey(player.id, settings, assignments);
+  const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
   const observedIndex = payload?.litIndex;
   if (observedIndex === undefined || observedIndex < 0) {
     return { ok: false, reason: "Invalid." };
   }
   const targetIndex = bingo.targetIndex;
   const playerItems = bingo.playerItems || {};
-  const collected = playerItems[player.id] || [];
+  const collected = playerItems[trackKey] || [];
   if (collected.includes(targetIndex)) {
     return { ok: false, reason: "Already collected." };
   }
   if (observedIndex === targetIndex) {
     const newPlayerItems = { ...playerItems };
-    newPlayerItems[player.id] = [...collected, targetIndex];
+    newPlayerItems[trackKey] = [...collected, targetIndex];
     const collectedCounts = { ...bingo.collectedCounts };
-    collectedCounts[player.id] = (collectedCounts[player.id] || 0) + 1;
+    collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
     let winner = null;
-    if (!isWenDitHapnMode() && collectedCounts[player.id] >= bingo.items.length) {
-      winner = player.id;
+    if (!isWenDitHapnMode() && collectedCounts[trackKey] >= bingo.items.length) {
+      winner = trackKey;
     }
     const scores = { ...getScores() };
-    scores[player.id] = (scores[player.id] || 0) + BINGO_CORRECT_POINTS;
+    scores[scoreKey] = (scores[scoreKey] || 0) + BINGO_CORRECT_POINTS;
     setState("scores", scores, true);
     const log = getLog();
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "bingo", ts: now(), playerId: player.id,
-      playerName: getPlayerName(player), item: bingo.items[targetIndex],
+      playerName: getPlayerName(player), teamColor,
+      scoreKey,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
+      item: bingo.items[targetIndex],
       result: "correct", points: BINGO_CORRECT_POINTS,
     }], true);
     if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
@@ -1549,13 +1569,16 @@ function handleBingoBuzz(player, payload) {
     return { ok: true, message: "Correct! +500" };
   } else {
     const scores = { ...getScores() };
-    scores[player.id] = (scores[player.id] || 0) + BINGO_INCORRECT_POINTS;
+    scores[scoreKey] = (scores[scoreKey] || 0) + BINGO_INCORRECT_POINTS;
     setState("scores", scores, true);
     const log = getLog();
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "bingo", ts: now(), playerId: player.id,
-      playerName: getPlayerName(player), item: bingo.items[observedIndex],
+      playerName: getPlayerName(player), teamColor,
+      scoreKey,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
+      item: bingo.items[observedIndex],
       result: "incorrect", points: BINGO_INCORRECT_POINTS,
     }], true);
     render();
@@ -1601,8 +1624,18 @@ function handleDisOrDatAnswer(player, payload) {
   if (answer !== "dis" && answer !== "dat" && answer !== "both") {
     return { ok: false, reason: "Bad answer." };
   }
-  if (dd.mode === "onePlayTimed" && player.id !== dd.activePlayerId) {
-    return { ok: false, reason: "You're not the active player." };
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const trackKey = getTeamTrackKey(player.id, settings, assignments);
+  const isSharedTeam = trackKey !== player.id;
+  if (settings.teamModeEnabled && !getPlayerTeamColor(player.id, assignments)) {
+    return { ok: false, reason: "Host has not assigned you to a team yet." };
+  }
+  if (dd.mode === "onePlayTimed") {
+    const activeTrackKey = isSharedTeam ? getTeamTrackKey(dd.activePlayerId, settings, assignments) : dd.activePlayerId;
+    if (player.id !== dd.activePlayerId && trackKey !== activeTrackKey) {
+      return { ok: false, reason: "You're not the active player." };
+    }
   }
   if (dd.mode === "allPlayHostPaced" && q !== dd.currentQuestion) {
     return { ok: false, reason: "That question isn't live yet." };
@@ -1610,7 +1643,7 @@ function handleDisOrDatAnswer(player, payload) {
   if (dd.timeEndsAt && now() > dd.timeEndsAt) {
     return { ok: false, reason: "Time's up." };
   }
-  const resps = dd.responses[player.id] || [];
+  const resps = dd.responses[trackKey] || [];
   if (resps[q] === "dis" || resps[q] === "dat" || resps[q] === "both" || resps[q] === "none") {
     return { ok: false, reason: "Already answered." };
   }
@@ -1625,20 +1658,20 @@ function handleDisOrDatAnswer(player, payload) {
   const nextResponses = { ...(dd.responses || {}) };
   const nextResps = [...resps];
   nextResps[q] = answer;
-  nextResponses[player.id] = nextResps;
+  nextResponses[trackKey] = nextResps;
 
   const nextPoints = { ...(dd.pointsEarned || {}) };
-  if (isCorrect) nextPoints[player.id] = (nextPoints[player.id] || 0) + DIS_OR_DAT_CORRECT_POINTS;
+  if (isCorrect) nextPoints[trackKey] = (nextPoints[trackKey] || 0) + DIS_OR_DAT_CORRECT_POINTS;
 
   const nextBonus = { ...(dd.jackBonus || {}) };
   let nextFinished = dd.finishedPlayerIds || [];
   const answeredAll = nextResps.filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT;
-  if (answeredAll && isTimed && !nextFinished.includes(player.id)) {
+  if (answeredAll && isTimed && !nextFinished.includes(trackKey)) {
     const correctCount = nextResps.filter((a, i) => a === dd.answers[i]).length;
     if (correctCount >= DIS_OR_DAT_BONUS_MIN_CORRECT) {
-      nextBonus[player.id] = getDisOrDatTimeLeftCs(dd);
+      nextBonus[trackKey] = getDisOrDatTimeLeftCs(dd);
     }
-    nextFinished = [...nextFinished, player.id];
+    nextFinished = [...nextFinished, trackKey];
   }
 
   setState("disordat", {
@@ -1652,9 +1685,16 @@ function handleDisOrDatAnswer(player, payload) {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
   const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
-  const activePlayers = dd.mode === "onePlayTimed" ? participants.filter(p => p.id === dd.activePlayerId) : participants;
-  if (isTimed && activePlayers.length > 0 && activePlayers.every(p =>
-    (nextResponses[p.id] || []).filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT)) {
+  let activeTracks;
+  if (dd.mode === "onePlayTimed") {
+    activeTracks = [getTeamTrackKey(dd.activePlayerId, settings, assignments)].filter(Boolean);
+  } else if (isSharedTeam) {
+    activeTracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  } else {
+    activeTracks = participants.map(p => p.id);
+  }
+  if (isTimed && activeTracks.length > 0 && activeTracks.every(track =>
+    (nextResponses[track] || []).filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT)) {
     finalizeDisOrDat();
     return { ok: true, message: isCorrect ? "Correct! +300" : "Incorrect." };
   }
@@ -1672,12 +1712,15 @@ function nextDisOrDatQuestion() {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
   const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
-  for (const p of participants) {
-    const resps = nextResponses[p.id] || [];
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+  const tracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  for (const track of tracks) {
+    const resps = nextResponses[track] || [];
     if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
       const next = [...resps];
       next[q] = "none";
-      nextResponses[p.id] = next;
+      nextResponses[track] = next;
     }
   }
   const nextQ = q + 1;
@@ -1700,41 +1743,45 @@ function finalizeDisOrDat() {
   const cohostIds = getSafeState("cohostIds", []);
   const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
 
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+  const tracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+
   let responses = dd.responses || {};
   if (isTimed) {
     const next = {};
-    for (const p of participants) {
-      const resps = responses[p.id] || [];
+    for (const track of tracks) {
+      const resps = responses[track] || [];
       const filled = resps.map(a => (a === "dis" || a === "dat" || a === "both") ? a : "none");
-      next[p.id] = filled;
+      next[track] = filled;
     }
     responses = next;
   }
 
-  const settings = getSettings();
-  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const scores = { ...getScores() };
   const log = getLog();
 
-  for (const p of participants) {
-    const resps = responses[p.id] || [];
+  for (const track of tracks) {
+    const resps = responses[track] || [];
     if (resps.length === 0) continue;
     const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
     const base = correctCount * DIS_OR_DAT_CORRECT_POINTS;
-    const bonus = dd.jackBonus[p.id] || 0;
+    const bonus = dd.jackBonus[track] || 0;
     const total = base + bonus;
-    const teamColor = getPlayerTeamColor(p.id, assignments);
-    const scoreKey = getScoreKeyForPlayer(p.id, settings, assignments);
+    const isTeamTrack = TEAM_COLORS.includes(track);
+    const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const teamColor = isTeamTrack ? track : null;
+    const scoreKey = rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : track;
     scores[scoreKey] = Number(scores[scoreKey] || 0) + total;
     log.push({
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "disordat",
       ts: now(),
-      playerId: p.id,
-      playerName: getPlayerName(p),
+      playerId: rep?.id || track,
+      playerName: rep ? getPlayerName(rep) : track,
       teamColor,
       scoreKey,
-      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(p),
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (rep ? getPlayerName(rep) : track),
       option: null,
       answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${isTimed && bonus ? ` + ${bonus} bonus` : ""}`,
       timeLeftCs: 0,
@@ -2562,12 +2609,27 @@ function renderBingoHostPanel(settings, players) {
   const targetOptions = items.map((item, i) =>
     `<option value="${i}" ${i === bingo.targetIndex ? "selected" : ""}>${item}</option>`
   ).join("");
-  const progressHtml = nonController.map(p => {
-    const collected = (bingo.playerItems?.[p.id] || []).map(i => items[i]).join(", ");
-    const count = (bingo.collectedCounts?.[p.id] || 0);
-    return `<div><strong>${getPlayerName(p)}</strong>: ${collected || "none"} (${count}/${items.length})</div>`;
-  }).join("");
-  const winner = bingo.winner ? players.find(p => p.id === bingo.winner) : null;
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const progressHtml = isSharedTeam
+    ? TEAM_COLORS.map(teamColor => {
+        const members = getTeamMembers(teamColor, players, assignments);
+        if (members.length === 0) return "";
+        const collected = (bingo.playerItems?.[teamColor] || []).map(i => items[i]).join(", ");
+        const count = (bingo.collectedCounts?.[teamColor] || 0);
+        const names = members.map(m => getPlayerName(m)).join(", ");
+        return `<div><strong>Team ${teamColor}</strong> <small>(${names})</small>: ${collected || "none"} (${count}/${items.length})</div>`;
+      }).filter(Boolean).join("")
+    : nonController.map(p => {
+        const collected = (bingo.playerItems?.[p.id] || []).map(i => items[i]).join(", ");
+        const count = (bingo.collectedCounts?.[p.id] || 0);
+        return `<div><strong>${getPlayerName(p)}</strong>: ${collected || "none"} (${count}/${items.length})</div>`;
+      }).join("");
+  const winnerLabel = bingo.winner
+    ? TEAM_COLORS.includes(bingo.winner)
+      ? `Team ${bingo.winner}`
+      : (players.find(p => p.id === bingo.winner) ? getPlayerName(players.find(p => p.id === bingo.winner)) : null)
+    : null;
   return `
     <section class="card host-panel bingo-host-panel">
       <h2>${isWen ? "Wen Dit Happn" : "Bingo"} — Active</h2>
@@ -2583,7 +2645,7 @@ function renderBingoHostPanel(settings, players) {
         <button type="button" data-bingo-cycle ${bingo.cycling ? "disabled" : ""}>${bingo.cycling ? "Cycling..." : "Start Cycling"}</button>
         <button type="button" data-bingo-stop-cycle ${bingo.cycling ? "" : "disabled"}>Stop Cycling</button>
       </div>
-      ${winner ? `<div class="bingo-winner"><h3>Winner: ${getPlayerName(winner)}!</h3></div>` : ""}
+      ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
       <div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
       <button type="button" data-bingo-exit>Return to buzzer mode</button>
@@ -2596,8 +2658,13 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   if (!bingo.active) {
     return `<section class="card player-card"><h2>${isWen ? "Wen Dit Happn" : "Bingo"}</h2><p class="muted">Waiting for the host to start...</p></section>`;
   }
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
   const items = bingo.items;
-  const collected = (bingo.playerItems?.[mePlayer.id] || []);
+  const collected = (bingo.playerItems?.[trackKey] || []);
   const tilesHtml = items.map((item, i) => {
     const isLit = bingo.cycling && i === bingo.currentLitIndex;
     const isMine = collected.includes(i);
@@ -2608,18 +2675,22 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   }).join("");
   const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isCohost();
   const scores = getScores();
-  const myScore = scores[mePlayer.id] || 0;
-  const winner = bingo.winner ? currentParticipants().find(p => p.id === bingo.winner) : null;
+  const myScore = scores[getScoreKeyForPlayer(mePlayer.id, settings, assignments)] || 0;
+  const winnerLabel = bingo.winner
+    ? TEAM_COLORS.includes(bingo.winner)
+      ? `Team ${bingo.winner}`
+      : (currentParticipants().find(p => p.id === bingo.winner) ? getPlayerName(currentParticipants().find(p => p.id === bingo.winner)) : null)
+    : null;
   return `
     <section class="card player-card bingo-player-card">
-      <h2>${isWen ? "Wen Dit Happn" : "Bingo"}</h2>
+      <h2>${isWen ? "Wen Dit Happn" : "Bingo"} ${teamPill}</h2>
       ${isWen ? "" : `<p class="muted">Collected: ${collected.length}/${items.length}</p>`}
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
       </div>
       <p class="muted">Score: <strong>${myScore}</strong></p>
-      ${winner ? `<p class="bingo-winner-msg">${getPlayerName(winner)} wins!</p>` : ""}
+      ${winnerLabel ? `<p class="bingo-winner-msg">${winnerLabel} wins!</p>` : ""}
     </section>`;
 }
 
@@ -2642,21 +2713,43 @@ function renderBingoAudienceDisplay(settings, players) {
     if (isLit) cls += " is-lit";
     return `<span class="${cls}">${item}</span>`;
   }).join("");
-  const sorted = players.filter(p => !isAudienceDisplayClient() && p.id !== getControllerId())
-    .sort((a, b) => (bingo.collectedCounts?.[b.id] || 0) - (bingo.collectedCounts?.[a.id] || 0));
-  const standings = sorted.map(p => {
-    const c = (bingo.collectedCounts?.[p.id] || 0);
-    const s = scores[p.id] || 0;
-    return `<li><strong>${getPlayerName(p)}</strong> ${isWen ? `Score: ${s}` : `${c}/${items.length} letters — ${s}pts`}</li>`;
-  }).join("");
-  const winner = bingo.winner ? players.find(p => p.id === bingo.winner) : null;
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const visible = players.filter(p => !isAudienceDisplayClient() && p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  let standings = "";
+  if (isSharedTeam) {
+    standings = TEAM_COLORS
+      .map(teamColor => {
+        const members = getTeamMembers(teamColor, players, assignments);
+        if (members.length === 0) return "";
+        const c = (bingo.collectedCounts?.[teamColor] || 0);
+        const s = scores[getTeamScoreKey(teamColor)] || 0;
+        const names = members.map(m => getPlayerName(m)).join(", ");
+        return `<li><strong>Team ${teamColor}</strong> <small>(${names})</small> ${isWen ? `Score: ${s}` : `${c}/${items.length} letters — ${s}pts`}</li>`;
+      }).filter(Boolean).join("");
+  } else {
+    const sorted = visible
+      .sort((a, b) => (bingo.collectedCounts?.[b.id] || 0) - (bingo.collectedCounts?.[a.id] || 0));
+    standings = sorted.map(p => {
+      const c = (bingo.collectedCounts?.[p.id] || 0);
+      const s = scores[p.id] || 0;
+      return `<li><strong>${getPlayerName(p)}</strong> ${isWen ? `Score: ${s}` : `${c}/${items.length} letters — ${s}pts`}</li>`;
+    }).join("");
+  }
+  const winnerLabel = bingo.winner
+    ? TEAM_COLORS.includes(bingo.winner)
+      ? `Team ${bingo.winner}`
+      : (players.find(p => p.id === bingo.winner) ? getPlayerName(players.find(p => p.id === bingo.winner)) : null)
+    : null;
   return `
     <main class="layout audience-layout">
       <header class="hero audience-hero">
         <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
       </header>
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
-      ${winner ? `<div class="bingo-winner-banner">${getPlayerName(winner)} WINS!</div>` : ""}
+      ${winnerLabel ? `<div class="bingo-winner-banner">${winnerLabel} WINS!</div>` : ""}
       <section class="card"><h2>Standings</h2><ul class="bingo-standings">${standings || "<li class='muted'>No players yet.</li>"}</ul></section>
     </main>`;
 }
@@ -2670,6 +2763,8 @@ function renderDisOrDatHostPanel(settings, players) {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
   const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
 
   const modeLabel = {
@@ -2694,11 +2789,19 @@ function renderDisOrDatHostPanel(settings, players) {
         </div>
       `;
     }).join("");
+    const pickButtons = isSharedTeam
+      ? TEAM_COLORS.map(teamColor => {
+          const members = getTeamMembers(teamColor, players, assignments);
+          if (members.length === 0) return "";
+          const names = members.map(m => getPlayerName(m)).join(", ");
+          return `<button type="button" class="primary-action team-${teamColor}" data-disordat-pick-player="${teamColor}">Team ${teamColor} <small>(${names})</small></button>`;
+        }).join("") || '<p class="muted">No teams assigned yet.</p>'
+      : nonController.map(p => `<button type="button" class="primary-action" data-disordat-pick-player="${p.id}">${getPlayerName(p)}</button>`).join("") || '<p class="muted">No players in the room yet.</p>';
     const pickMenu = dd.pendingPick ? `
       <div class="disordat-pick">
-        <h3>Who plays this Dis or Dat?</h3>
+        <h3>${isSharedTeam ? "Which team plays this Dis or Dat?" : "Who plays this Dis or Dat?"}</h3>
         <div class="host-actions">
-          ${nonController.map(p => `<button type="button" class="primary-action" data-disordat-pick-player="${p.id}">${getPlayerName(p)}</button>`).join("") || '<p class="muted">No players in the room yet.</p>'}
+          ${pickButtons}
         </div>
       </div>
     ` : "";
@@ -2730,18 +2833,27 @@ function renderDisOrDatHostPanel(settings, players) {
     `;
   }
 
-  if (dd.phase === "results") {
-    const playersInGame = dd.mode === "onePlayTimed"
-      ? nonController.filter(p => p.id === dd.activePlayerId)
-      : nonController;
-    const sorted = [...playersInGame].sort((a, b) =>
-      ((dd.pointsEarned[b.id] || 0) + (dd.jackBonus[b.id] || 0)) - ((dd.pointsEarned[a.id] || 0) + (dd.jackBonus[a.id] || 0)));
-    const rows = sorted.map(p => {
-      const resps = dd.responses[p.id] || [];
+  const activeTrack = dd.mode === "onePlayTimed"
+    ? getTeamTrackKey(dd.activePlayerId, settings, assignments)
+    : null;
+  const trackRows = (activeTrack ? [activeTrack] : [...new Set(nonController.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))])
+    .map(track => {
+      const resps = dd.responses[track] || [];
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
-      const base = dd.pointsEarned[p.id] || 0;
-      const bonus = dd.jackBonus[p.id] || 0;
-      return `<li><strong>${getPlayerName(p)}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct, ${base} pts${isTimed ? ` + ${bonus} bonus` : ""} = <strong>${base + bonus} pts</strong></li>`;
+      const base = dd.pointsEarned[track] || 0;
+      const bonus = dd.jackBonus[track] || 0;
+      const total = base + bonus;
+      const rep = nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+      const label = TEAM_COLORS.includes(track)
+        ? `Team ${track}` + (rep ? ` <small>(${getPlayerName(rep)})</small>` : "")
+        : getPlayerName(rep);
+      return { track, correctCount, base, bonus, total, label };
+    })
+    .sort((a, b) => b.total - a.total);
+
+  if (dd.phase === "results") {
+    const rows = trackRows.map(({ track, correctCount, base, bonus, label }) => {
+      return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct, ${base} pts${isTimed ? ` + ${bonus} bonus` : ""} = <strong>${base + bonus} pts</strong></li>`;
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel">
@@ -2755,23 +2867,22 @@ function renderDisOrDatHostPanel(settings, players) {
     `;
   }
 
-  const playersInGame = dd.mode === "onePlayTimed"
-    ? nonController.filter(p => p.id === dd.activePlayerId)
-    : nonController;
-  const progressRows = playersInGame.map(p => {
-    const resps = dd.responses[p.id] || [];
+  const progressRows = trackRows.map(({ track, label, correctCount, bonus, total }) => {
+    const resps = dd.responses[track] || [];
     const answeredCount = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
-    const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
-    const bonus = dd.jackBonus[p.id] || 0;
-    const total = (dd.pointsEarned[p.id] || 0) + bonus;
-    return `<div><strong>${getPlayerName(p)}</strong>: ${answeredCount}/${DIS_OR_DAT_QUESTION_COUNT} answered, ${correctCount} correct${isTimed ? `, ${bonus} bonus` : ""} — ${total} pts</div>`;
+    return `<div><strong>${label}</strong>: ${answeredCount}/${DIS_OR_DAT_QUESTION_COUNT} answered, ${correctCount} correct${isTimed ? `, ${bonus} bonus` : ""} — ${total} pts</div>`;
   }).join("");
-  const activePlayer = playersInGame[0];
+  const activePlayer = trackRows.length > 0 && dd.mode === "onePlayTimed"
+    ? nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === trackRows[0].track)
+    : null;
+  const activeLabel = dd.mode === "onePlayTimed" && trackRows.length > 0 && TEAM_COLORS.includes(trackRows[0].track)
+    ? `Team <strong>${trackRows[0].track}</strong>`
+    : activePlayer ? `Player: <strong>${getPlayerName(activePlayer)}</strong>` : "";
 
   return `
     <section class="card host-panel bingo-host-panel">
       <h2>Dis or Dat — Active</h2>
-      <p class="muted">Mode: <strong>${modeLabel}</strong>${activePlayer ? ` — Player: <strong>${getPlayerName(activePlayer)}</strong>` : ""}</p>
+      <p class="muted">Mode: <strong>${modeLabel}</strong>${activeLabel ? ` — ${activeLabel}` : ""}</p>
       ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></p>` : ""}
       ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>` : ""}
       <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
@@ -2793,34 +2904,43 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">Waiting for the host to start...</p></section>`;
   }
 
-  if (isOnePlay && mePlayer.id !== dd.activePlayerId) {
-    const activePlayer = currentParticipants().find(p => p.id === dd.activePlayerId);
-    return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${activePlayer ? escapeHtml(getPlayerName(activePlayer)) : "A player"} is playing this round. Sit back and watch!</p></section>`;
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
+
+  if (isOnePlay) {
+    const activeTrackKey = getTeamTrackKey(dd.activePlayerId, settings, assignments);
+    if (trackKey !== activeTrackKey) {
+      if (isSharedTeam && TEAM_COLORS.includes(activeTrackKey)) {
+        return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">Team ${activeTrackKey} is playing this round. Sit back and watch!</p></section>`;
+      }
+      const activePlayer = currentParticipants().find(p => p.id === dd.activePlayerId);
+      return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${activePlayer ? escapeHtml(getPlayerName(activePlayer)) : "A player"} is playing this round. Sit back and watch!</p></section>`;
+    }
   }
 
-  const myResponses = dd.responses[mePlayer.id] || [];
+  const myResponses = dd.responses[trackKey] || [];
   const bothShown = dd.answers.some(a => a === "both");
 
-  const renderQuestionRow = (i) => {
+  const renderQuestionDiamond = (i) => {
     const q = dd.answers[i];
     const myAnswer = myResponses[i];
     const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
     const isCorrect = answered && myAnswer === q;
-    const btn = (value, label) => {
+    const btn = (value, pos, label) => {
       const chosen = myAnswer === value;
       const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
       const chosenCls = chosen ? " is-chosen" : "";
-      return `<button type="button" class="disordat-answer-btn${resultCls}${chosenCls}" data-disordat-answer data-q="${i}" data-answer="${value}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+      return `<button type="button" class="disordat-answer-btn ${pos}${resultCls}${chosenCls}" data-disordat-answer data-q="${i}" data-answer="${value}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
     };
     return `
-      <div class="disordat-question ${answered ? "is-answered" : ""}">
-        <span class="disordat-q-num">Q${i + 1}</span>
-        <div class="disordat-q-buttons">
-          ${btn("dis", dd.disLabel || "Dis")}
-          ${btn("dat", dd.datLabel || "Dat")}
-          ${bothShown ? btn("both", "Both") : ""}
-        </div>
-        ${answered ? `<span class="disordat-q-result">${isCorrect ? "✓" : "✗"}</span>` : ""}
+      <div class="abxy-diamond disordat-diamond">
+        ${btn("dis", "pos-x", dd.disLabel || "Dis")}
+        ${btn("dat", "pos-b", dd.datLabel || "Dat")}
+        ${bothShown ? btn("both", "pos-a", "Both") : ""}
+        <div class="diamond-center disordat-diamond-center">${answered ? (isCorrect ? "✓" : "✗") : `Q${i + 1}`}</div>
       </div>
     `;
   };
@@ -2830,12 +2950,12 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
   const revealShowing = isTimed && answeredCount > 0 && now() < disOrDatRevealUntil;
   const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
 
-  const rows = isTimed
-    ? (revealShowing || !answeredAll ? renderQuestionRow(currentQ) : "")
-    : dd.currentQuestion < DIS_OR_DAT_QUESTION_COUNT ? renderQuestionRow(dd.currentQuestion) : "";
+  const diamond = isTimed
+    ? (revealShowing || !answeredAll ? renderQuestionDiamond(currentQ) : "")
+    : dd.currentQuestion < DIS_OR_DAT_QUESTION_COUNT ? renderQuestionDiamond(dd.currentQuestion) : "";
 
-  const points = dd.pointsEarned[mePlayer.id] || 0;
-  const bonus = dd.jackBonus[mePlayer.id] || 0;
+  const points = dd.pointsEarned[trackKey] || 0;
+  const bonus = dd.jackBonus[trackKey] || 0;
 
   let body;
   if (dd.phase === "results") {
@@ -2855,14 +2975,14 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
         ? `<div class="disordat-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
            ${answeredAll && !revealShowing ? "" : `<p class="muted">Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.</p>`}`
         : `<p class="muted">Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.</p>`}
-      <div class="disordat-list">${rows}</div>
+      <div class="disordat-diamond-wrap">${diamond}</div>
       ${answeredAll && isTimed && !revealShowing ? `<p class="disordat-done">All answered! Wait for results.</p>` : ""}
     `;
   }
 
   return `
     <section class="card player-card disordat-player-card">
-      <h2>Dis or Dat</h2>
+      <h2>Dis or Dat ${teamPill}</h2>
       <div class="disordat-labels"><span class="dis">${escapeHtml(dd.disLabel || "Dis")}</span> or <span class="dat">${escapeHtml(dd.datLabel || "Dat")}</span></div>
       ${body}
     </section>
@@ -2874,6 +2994,8 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
   const participants = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
   const modeLabel = {
     onePlayTimed: "One Play — Timed",
@@ -2883,21 +3005,31 @@ function renderDisOrDatAudienceDisplay(settings, players) {
 
   if (!dd.active) {
     return `
-      <main class="layout audience-layout">
+      <main class="layout audience-layout" data-disordat-active="true">
         <header class="hero audience-hero">
           <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">Waiting for the game to start...</p></div>
         </header>
       </main>`;
   }
 
-  const standings = [...participants]
-    .sort((a, b) => ((dd.pointsEarned[b.id] || 0) + (dd.jackBonus[b.id] || 0)) - ((dd.pointsEarned[a.id] || 0) + (dd.jackBonus[a.id] || 0)))
-    .map(p => {
-      const resps = dd.responses[p.id] || [];
+  const activeTrack = dd.mode === "onePlayTimed"
+    ? getTeamTrackKey(dd.activePlayerId, settings, assignments)
+    : null;
+  const tracks = (activeTrack ? [activeTrack] : [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))])
+    .map(track => {
+      const resps = dd.responses[track] || [];
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
-      const total = (dd.pointsEarned[p.id] || 0) + (dd.jackBonus[p.id] || 0);
-      return `<li><strong>${getPlayerName(p)}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} — ${total} pts</li>`;
-    }).join("");
+      const total = (dd.pointsEarned[track] || 0) + (dd.jackBonus[track] || 0);
+      const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+      const label = TEAM_COLORS.includes(track)
+        ? `Team ${track}` + (rep ? ` <small>(${getPlayerName(rep)})</small>` : "")
+        : getPlayerName(rep);
+      return { track, correctCount, total, label };
+    })
+    .sort((a, b) => b.total - a.total);
+  const standings = tracks.map(({ correctCount, total, label }) => {
+    return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} — ${total} pts</li>`;
+  }).join("");
 
   const timerHtml = isTimed && dd.phase === "playing"
     ? `<div class="audience-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>`
@@ -2907,7 +3039,7 @@ function renderDisOrDatAudienceDisplay(settings, players) {
     : "";
 
   return `
-    <main class="layout audience-layout">
+    <main class="layout audience-layout" data-disordat-active="true">
       <header class="hero audience-hero">
         <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
       </header>
@@ -3401,9 +3533,47 @@ function renderAudienceScrewPanel(round) {
 // =============================================================================
 // Tablet timer display — full-screen timer with player count, SCREW overlay
 // =============================================================================
+function renderTabletTimerNotUseful() {
+  return `
+    <main class="tablet-timer-layout" data-notuseful="true">
+      <div class="tablet-timer-container">
+        <div class="tablet-timer-value">This screen is not useful right now, so stop reading, and dont you have a game to be playing or hosting.</div>
+      </div>
+    </main>
+  `;
+}
+
+function isTabletTimerFlashing(cs) {
+  if (!Number.isFinite(cs) || cs <= 0 || cs > 500) return false;
+  return Math.floor(now() / 250) % 2 === 0;
+}
+
 function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
+
+  // Bingo / Wen Dit Happn tablets are not useful.
+  if (isBingoMode()) {
+    return renderTabletTimerNotUseful();
+  }
+
+  if (isDisOrDatMode()) {
+    const dd = getDisOrDat();
+    const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
+    if (isTimed && dd.active && dd.phase === "playing") {
+      const ddCs = getDisOrDatTimeLeftCs(dd);
+      const flash = isTabletTimerFlashing(ddCs);
+      return `
+        <main class="tablet-timer-layout"${flash ? ' data-flash="true"' : ""}>
+          <div class="tablet-timer-container">
+            <div class="tablet-timer-value">${formatSeconds(ddCs)}s</div>
+            <div class="tablet-timer-players">Dis or Dat</div>
+          </div>
+        </main>
+      `;
+    }
+    return renderTabletTimerNotUseful();
+  }
 
   if (round.status === ROUND_STATUSES.ROULETTE) {
     const roulette = round.roulette || {};
@@ -3428,16 +3598,21 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   const screwTimerMs = round.screw.screwTimerMs;
 
   let timerDisplay;
+  let timerCs;
   if (isScrewActive && screwTimerMs !== null) {
-    timerDisplay = `${formatSeconds(Math.ceil(screwTimerMs / 10))}s`;
+    timerCs = Math.ceil(screwTimerMs / 10);
+    timerDisplay = `${formatSeconds(timerCs)}s`;
   } else if (isScrewActive) {
+    timerCs = 0;
     timerDisplay = "SCREW";
   } else {
+    timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
+  const flash = isTabletTimerFlashing(timerCs);
 
   return `
-    <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}>
+    <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""}>
       <div class="tablet-timer-container">
         <div class="tablet-timer-value">${timerDisplay}</div>
         <div class="tablet-timer-players">${buzzedCount}/${totalPlayers} players answered</div>
@@ -3896,11 +4071,20 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         <details>
           <summary>Special Questions</summary>
           <div class="section-body">
-            <p class="muted" style="font-size:0.82rem">Alternative question formats that replace the normal buzzer round.</p>
-            <div class="host-actions" style="margin-top:0.5rem">
-              <button type="button" data-set-mode="bingo" ${settingDisabledAttr} ${settings.inputMode === "bingo" ? "disabled" : ""}>Bingo</button>
-              <button type="button" data-set-mode="wendithapn" ${settingDisabledAttr} ${settings.inputMode === "wendithapn" ? "disabled" : ""}>Wen Dit Happn</button>
-              <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
+            <p class="muted" style="font-size:0.82rem">Alternative question formats that replace the normal buzzer round, little minigames from various JACK games.</p>
+            <div style="margin-top:0.5rem;display:flex;flex-direction:column;gap:0.6rem">
+              <div>
+                <button type="button" data-set-mode="bingo" ${settingDisabledAttr} ${settings.inputMode === "bingo" ? "disabled" : ""}>Bingo</button>
+                <p class="setting-helper">Players race to be the first to collect all 5 letters of a word. Set the 5-letter word, choose a target letter, then Start Cycling — players buzz to grab the lit tile. Rinse and repeat First to complete the word wins. (From YDKJ Vol. 4: The Ride, Recommended for small games (2-5 players) or team mode, not reccomended for large games)</p>
+              </div>
+              <div>
+                <button type="button" data-set-mode="wendithapn" ${settingDisabledAttr} ${settings.inputMode === "wendithapn" ? "disabled" : ""}>Wen Dit Happn</button>
+                <p class="setting-helper">Same collection race, but the tiles are "Before, Never, After". Pick the correct one for every question, then Start Cycling — players buzz to grab tiles as they light up. First to collect them all wins. (From YDKJ: Louder Faster Funnier, remade in the fangame YDKJ: The Re-ride, Recommended for small games (2-5 players) or team mode, not reccomended for large games)</p>
+              </div>
+              <div>
+                <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a 30-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games)</p>
+              </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat"
               ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
@@ -4257,7 +4441,7 @@ function render() {
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores right now.")}
       </section>` ;
     app.innerHTML = `
-      <main class="layout">
+      <main class="layout" data-disordat-active="true">
         <header class="hero">
           <div>
             <h1>Dis or Dat</h1>
