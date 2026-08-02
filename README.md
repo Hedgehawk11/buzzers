@@ -27,7 +27,7 @@ Thanks captain obvious, I was mainly on the configurablily of everything (seriou
 No. at least not now, I do see the idea of one in the distant future, but thats when I decide, it would probably look like a question creator menu in a separate area (another main menu button) which lets you make a set there, then you import when creating a lobby.
 
 ### Whats coming?
-Better UI, disordat support, roadkill, and more round types.
+Better UI, roadkill, and more round types.
 
 ### How make work?
 Just run the thing as you would a node app, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
