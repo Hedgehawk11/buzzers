@@ -793,6 +793,14 @@ button.team-buzzer.team-gray:hover:enabled {
   background: linear-gradient(160deg, rgba(172, 184, 199, 0.98), rgba(98, 112, 133, 0.98));
 }
 
+button.team-buzzer.team-brown {
+  background: linear-gradient(160deg, rgba(139, 90, 43, 0.95), rgba(97, 58, 24, 0.96));
+}
+
+button.team-buzzer.team-brown:hover:enabled {
+  background: linear-gradient(160deg, rgba(161, 110, 57, 0.98), rgba(110, 68, 30, 0.98));
+}
+
 button.buzzer-a {
   background: linear-gradient(160deg, rgba(29, 185, 84, 0.95), rgba(20, 123, 61, 0.96));
 }
@@ -991,6 +999,11 @@ button.red {
 .team-magenta {
   background: rgba(255, 61, 148, 0.24);
   color: #ffe2f2;
+}
+
+.team-brown {
+  background: rgba(139, 90, 43, 0.3);
+  color: #f0e0cf;
 }
 
 .team-score-row small {

@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS = {
   teamScoringMode: "alliance",
 };
 
-const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "magenta"];
+const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "magenta", "brown"];
 
 // =============================================================================
 // Round state machine: IDLE -> OPEN -> LOCKED/ROULETTE -> CLOSED -> IDLE
