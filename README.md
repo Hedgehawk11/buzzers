@@ -43,6 +43,10 @@ npm install
 ```
 npm run dev
 ```
+### Development server but actually using a network:
+```
+npm run dev-server
+```
 
 ### Set up for running on YOUR server (if vercel no worky)
 ```
