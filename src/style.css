@@ -801,6 +801,22 @@ button.team-buzzer.team-brown:hover:enabled {
   background: linear-gradient(160deg, rgba(161, 110, 57, 0.98), rgba(110, 68, 30, 0.98));
 }
 
+button.team-buzzer.team-orange {
+  background: linear-gradient(160deg, rgba(255, 139, 36, 0.95), rgba(222, 106, 12, 0.96));
+}
+
+button.team-buzzer.team-orange:hover:enabled {
+  background: linear-gradient(160deg, rgba(255, 158, 66, 0.98), rgba(238, 122, 22, 0.98));
+}
+
+button.team-buzzer.team-magenta {
+  background: linear-gradient(160deg, rgba(240, 0, 240, 0.95), rgba(180, 0, 180, 0.96));
+}
+
+button.team-buzzer.team-magenta:hover:enabled {
+  background: linear-gradient(160deg, rgba(250, 52, 250, 0.98), rgba(200, 28, 200, 0.98));
+}
+
 button.buzzer-a {
   background: linear-gradient(160deg, rgba(29, 185, 84, 0.95), rgba(20, 123, 61, 0.96));
 }
@@ -982,7 +998,7 @@ button.red {
 }
 
 .team-purple {
-  background: rgba(142, 90, 247, 0.25);
+  background: rgba(160, 42, 240, 0.25);
   color: #f0e6ff;
 }
 
@@ -997,7 +1013,7 @@ button.red {
 }
 
 .team-magenta {
-  background: rgba(255, 61, 148, 0.24);
+  background: rgba(240, 0, 240, 0.24);
   color: #ffe2f2;
 }
 
@@ -1549,16 +1565,41 @@ body {
   display: none !important;
 }
 
-body:has([data-screw-active]) {
-  background:
-    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
-    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
-    linear-gradient(160deg, #1f0a0a, #0d0505);
-}
-
 body:has([data-disordat-active]) {
   background:
     radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.35), transparent 58%),
     radial-gradient(1000px 520px at 100% 0%, rgba(255, 190, 0, 0.25), transparent 55%),
     linear-gradient(160deg, #2b1d06, #0d0a02);
+}
+
+/* Black background for Bingo / Wen Dit Happn (team gradient and screw warning still override) */
+body:has([data-bingo-active]):not(:has([data-screw-active])):not([data-team]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.14), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(34, 166, 242, 0.12), transparent 55%),
+    linear-gradient(160deg, #000000, #000000);
+}
+
+/* Team-colored page background (only when no screw warning is active) */
+body[data-team]:not(:has([data-screw-active])) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.18), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(255, 255, 255, 0.06), transparent 55%);
+}
+
+body[data-team="red"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2a0f0d, #130005); }
+body[data-team="blue"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #0b1d2e, #050c16); }
+body[data-team="green"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #0b2418, #041208); }
+body[data-team="purple"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1b1130, #0b0618); }
+body[data-team="gray"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #16111c, #0a0a10); }
+body[data-team="orange"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2b1d06, #120d02); }
+body[data-team="magenta"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2a0b28, #140313); }
+body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #241709, #120b04); }
+
+/* Screw warning has ultimate priority over all other backgrounds */
+body:has([data-screw-active]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
+    linear-gradient(160deg, #1f0a0a, #0d0505);
 }

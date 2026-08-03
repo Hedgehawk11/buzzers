@@ -1535,16 +1535,18 @@ function handleBingoBuzz(player, payload) {
   const targetIndex = bingo.targetIndex;
   const playerItems = bingo.playerItems || {};
   const collected = playerItems[trackKey] || [];
-  if (collected.includes(targetIndex)) {
-    return { ok: false, reason: "Already collected." };
-  }
   if (observedIndex === targetIndex) {
+    const alreadyCollected = collected.includes(targetIndex);
     const newPlayerItems = { ...playerItems };
-    newPlayerItems[trackKey] = [...collected, targetIndex];
+    if (!alreadyCollected) {
+      newPlayerItems[trackKey] = [...collected, targetIndex];
+    }
     const collectedCounts = { ...bingo.collectedCounts };
-    collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
+    if (!alreadyCollected) {
+      collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
+    }
     let winner = null;
-    if (!isWenDitHapnMode() && collectedCounts[trackKey] >= bingo.items.length) {
+    if (!isWenDitHapnMode() && (collectedCounts[trackKey] || 0) >= bingo.items.length) {
       winner = trackKey;
     }
     const scores = { ...getScores() };
@@ -2700,7 +2702,7 @@ function renderBingoAudienceDisplay(settings, players) {
   const scores = getScores();
   if (!bingo.active) {
     return `
-    <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""}>
+    <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""} data-bingo-active="true">
       <header class="hero audience-hero">
           <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Waiting for the game to start...</p></div>
         </header>
@@ -2744,7 +2746,7 @@ function renderBingoAudienceDisplay(settings, players) {
       : (players.find(p => p.id === bingo.winner) ? getPlayerName(players.find(p => p.id === bingo.winner)) : null)
     : null;
   return `
-    <main class="layout audience-layout">
+    <main class="layout audience-layout" data-bingo-active="true">
       <header class="hero audience-hero">
         <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
       </header>
@@ -3204,12 +3206,12 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <h2>${escapeHtml(F_YOU_EASTER_EGG_H2)}</h2>
           <p class="muted">
             This F You easter egg comes about by the fact that in the series "You Don't Know Jack" which this buzzer system is designed to allow for the recreation of games of, if you were to type "Fuck You" in a text field you would get scolded by the host (something like "F*** me? no F*** you") and lose some points the first time, the second time you would get told how unoriginal you are, and the third time the game would just end, I am here to emulate that, Your score has been decreased, and im sure your scolding will come in a moment or two, I guess you are either a fan of jack and just curious if I did something like this, a programmer who found this in the README, or most likely, a 30 year old degenerate living in the basement of your parents home (or your name is either SomeNightYT, fullwizard, or Psych82, hi guys!) whichever way you found yourself here, welcome! Consider this your entry into a club you will want out of right away
-            <br /><br />-- Hedgehawk11
+            <br /><br />-- Hedgehawk11 <3
             <br /><br />P.S. You might have noticed I'm giving you the Full Stream treatment here, which means its time for the chicken:
             <a href="https://www.youtube.com/watch?v=xEDIkKXPIHs" target="_blank" rel="noopener noreferrer">https://www.youtube.com/watch?v=xEDIkKXPIHs</a>
           </p>
           <div class="easter-egg-actions">
-            <button type="button" data-f-you-close>Close</button>
+            <button type="button" data-f-you-close>Let me play again</button>
           </div>
         </section>
       `;
@@ -3537,7 +3539,7 @@ function renderTabletTimerNotUseful() {
   return `
     <main class="tablet-timer-layout" data-notuseful="true">
       <div class="tablet-timer-container">
-        <div class="tablet-timer-value">This screen is not useful right now, so stop reading, and dont you have a game to be playing or hosting.</div>
+        <div class="tablet-timer-value">This screen is not useful right now, so stop reading, don't you have a game to be playing or hosting.</div>
       </div>
     </main>
   `;
@@ -4083,7 +4085,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
-                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a 30-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games)</p>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a 30-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat"
@@ -4368,6 +4370,11 @@ function render() {
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controller?.id || null);
   const myTeamColor = getPlayerTeamColor(mePlayer.id, teamAssignments);
   const showAdminData = hasHostPrivileges();
+  if (settings.teamModeEnabled && myTeamColor && !isAudienceDisplayClient()) {
+    document.body.dataset.team = myTeamColor;
+  } else {
+    delete document.body.dataset.team;
+  }
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
 
   if (isAudienceDisplayClient()) {
@@ -4409,7 +4416,7 @@ function render() {
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores right now.")}
       </section>` ;
     app.innerHTML = `
-      <main class="layout">
+      <main class="layout" data-bingo-active="true">
         <header class="hero">
           <div>
             <h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1>
