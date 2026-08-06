@@ -15,19 +15,54 @@ Yes. yes there is, handwritten response too, try it, I dare ya
 Screw em'
 
 ### Support for jack attack rounds? 
-I dont know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6-choice mode, something like Full Stream would be possible
+I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6-choice mode, something like Full Stream would be possible.
 
 ### Whats on said slide deck?
-Music, Questions, eveything exept a scoreboard, who buzzed etc.
+Music, Questions, everything except a scoreboard, who buzzed etc.
 
 ### The player controller sucks!
-Thanks captain obvious, I was mainly on the configurablily of everything (seriously, go look at the options)
+Thanks captain obvious, I was mainly on the configurability of everything (seriously, go look at the options)
 
 ### Can we have all in one instead of requiring a slideshow?
 No. at least not now, I do see the idea of one in the distant future, but thats when I decide, it would probably look like a question creator menu in a separate area (another main menu button) which lets you make a set there, then you import when creating a lobby.
 
-### Whats coming?
+### Alright, where is the snark in the messages
+I ~~might~~ probably will add a snark mode in the future, until then, you yourself, yes you, must bring the snark
+
+### What's coming?
 Better UI, roadkill, and more round types.
+
+### How do you decide what to add?
+Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a suite of random qol changes added in as well
+
+### Tutorial
+Soon!
+
+### How much experience with JACK would you recommend to understand this
+play a few episodes of the [re-ride](thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation
+
+### Speaking of themes... what would you recommend
+I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually
+
+### Complete feature list?
+(breathes in)\
+- 1,2,4,6 response multiple choice questions with the ability to toggle specific answers on and off
+- Text response mode for gibberish/anagram questions (or lame fill in the blanks)
+- Dis or Dats
+- Bingo
+- Wen dit happn
+- Audience display
+- Timer display for host companion devices
+- Co-hosting
+- SCREWS
+- F*** You easter egg
+- Team mode (share buzzer across multiple devices)
+- Alliance mode (lump scores together)
+- 42 Player cap
+- Three separate scoring modes (Uniform, JACK, and Pick-a-value)
+- Organized labeled menu
+- ADHD stream-of-consciousness made README and eventual tutorial on how to use
+- and probably more 
 
 ### How make work?
 Just run the thing as you would a node app, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
@@ -43,7 +78,7 @@ npm install
 ```
 npm run dev
 ```
-### Development server but actually using a network:
+### Development server but actually using a network (for multi device testing):
 ```
 npm run dev-server
 ```
