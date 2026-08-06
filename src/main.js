@@ -3943,8 +3943,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                       </select>
                       <p class="setting-helper">Every correct answer is worth this many points.</p>
                     </label>`
-                  : `<label>
-                      JACK multiplier
+                  : settings.scoringMode === "jack"
+                    ? `<label>
+                        JACK multiplier
                       <select data-setting="jackMultiplier" ${settingDisabledAttr}>
                         <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
                         <option value="1.5" ${settings.jackMultiplier === 1.5 ? "selected" : ""}>1.5x</option>
@@ -3954,6 +3955,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                       </select>
                       <p class="setting-helper">Points = time left × multiplier (faster buzz = more points).</p>
                     </label>`
+                    : ""
               }
             </div>
             ${
