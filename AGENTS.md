@@ -13,8 +13,8 @@ npm run preview    # vite preview
 CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`). No typecheck, formatter, or pre-commit hooks.
 
 ## Key structure
-- `src/main.js` (~5500 lines) — entire app: render, state machine, event binding, prejoin UI
-- `src/style.css` (~1600 lines) — flat CSS, custom properties for theming
+- `src/main.js` (~5600 lines) — entire app: render, state machine, event binding, prejoin UI
+- `src/style.css` (~1630 lines) — flat CSS, custom properties for theming
 - `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
 
 ## Architecture
@@ -65,6 +65,15 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - **`wendithapn`**: 3-option "Before/Never/After" per tile. Same cycling/collection as bingo.
 - **`disordat`**: 7 "Dis or Dat" questions (300 pts each, 30s timed, +bonus for 5+ correct). Host taps correct answers to preset; players answer each. Uses its own host panel and tick handler.
 - Bingo/Wen/Dis-or-Dat: host-only control; `hostTick()` returns early for bingo, routes to `handleDisOrDatTick()` for disordat.
+
+## Buzz handling (`hostHandleBuzz`)
+- With `lockAfterBuzz` **off** and `rebuzzAllowed` **off**, buzzers stay open and host rules each entry from the Game Log — **but the round auto-closes to `CLOSED` as soon as every eligible player has buzzed** (`isAllEligibleBuzzed`; eligible = non-host, non-cohost, buzzer enabled). Re-buzz on → no auto-close.
+- **Rebuzz per-option cap**: with `rebuzzAllowed` on, each player can buzz each option at most `maxBuzzesPerOption` (default 1, host-adjustable 1–50). Counts live in `round.buzzCounts` (`{playerId: {option: n}}`), reset in `openBuzzers`/`resetRound`; enforced in `canBuzz()` and by disabling the matching buzzer buttons. Text entry is uncapped.
+- `round.buzzedPlayerIds` = who has answered this round (resets each open). For shared-team scoring, all team members are appended together.
+
+## UI animations
+- Buzzers-open flash: `data-buzzers-open` on `<main>` when `isBuzzersOpenFlash()` (round `OPEN`, `inputMode === "buttons"`, no active screw). CSS `buzzersOpenFlash` animates `background-color` — **not** `background-image` gradients, which Chrome/Safari snap rather than interpolate. The tablet timer is excluded.
+- Host toggle `uiAnimationsEnabled` (default on) → `render()` sets `body[data-ui-anims="on"|"off"]`; CSS `body[data-ui-anims="off"] * { animation: none !important }` kills the flash and roulette pulse (`roulettePulse`). New decorative animations must animate descendants of `body` or add their own `!important` gate.
 
 ## Notable quirks
 - **PlayroomKit hash collision**: `launchGame()` clears `window.location.hash` (via `history.replaceState`) before `insertCoin` because PlayroomKit prioritises `#r` over `roomCode` option.

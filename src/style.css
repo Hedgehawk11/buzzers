@@ -1596,6 +1596,29 @@ body[data-team="orange"]:not(:has([data-screw-active])) { background-image: line
 body[data-team="magenta"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2a0b28, #140313); }
 body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #241709, #120b04); }
 
+/* Rapid color crossfade while buzzers are open on a multiple-choice question */
+@keyframes buzzersOpenFlash {
+  0%, 100% { background-color: #2b0d0d; }
+  17%      { background-color: #2b1d06; }
+  33%      { background-color: #2b2506; }
+  50%      { background-color: #0b2412; }
+  67%      { background-color: #0a1b2e; }
+  83%      { background-color: #1b1130; }
+}
+
+body:has([data-buzzers-open]):not(:has([data-screw-active])) {
+  background-image:
+    radial-gradient(1200px 500px at 8% -20%, rgba(255, 255, 255, 0.08), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(255, 255, 255, 0.05), transparent 55%);
+  animation: buzzersOpenFlash 1.75s linear infinite;
+}
+
+/* Host can disable UI animations (flash background, roulette pulse, etc.) */
+body[data-ui-anims="off"],
+body[data-ui-anims="off"] * {
+  animation: none !important;
+}
+
 /* Screw warning has ultimate priority over all other backgrounds */
 body:has([data-screw-active]) {
   background:
