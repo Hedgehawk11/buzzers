@@ -5,15 +5,16 @@ Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or 
 
 ## Commands
 ```
-npm run dev      # vite dev server
-npm run build    # vite build → dist/
-npm run preview  # vite preview
+npm run dev        # vite dev server
+npm run dev-server # vite --host (LAN access for multi-device testing)
+npm run build      # vite build → dist/
+npm run preview    # vite preview
 ```
-CI: `npm ci && npm run build` on Node 20/22/24. No typecheck, formatter, or pre-commit hooks.
+CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`). No typecheck, formatter, or pre-commit hooks.
 
 ## Key structure
 - `src/main.js` (~5500 lines) — entire app: render, state machine, event binding, prejoin UI
-- `src/style.css` (~1550 lines) — flat CSS, custom properties for theming
+- `src/style.css` (~1600 lines) — flat CSS, custom properties for theming
 - `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
 
 ## Architecture
@@ -35,7 +36,8 @@ CI: `npm ci && npm run build` on Node 20/22/24. No typecheck, formatter, or pre-
 ## Scoring modes
 - **Uniform**: fixed `uniformPoints` (500–3000, default 1000).
 - **JACK**: `timeLeftCs × jackMultiplier` (1×–3×). Value decreases as timer ticks.
-- **Roulette**: players set a value, ceiling = `topAmount / playerCount` (additive) or `topAmount` (highest/single).
+- **Pick-a-Value** (display name for the mode internally keyed as `roulette`): players set a value, ceiling = `topAmount / playerCount` (additive) or `topAmount` (highest/single).
+  - All internal identifiers stay `roulette`: settings keys `rouletteMode`/`rouletteTopAmount`/`rouletteSinglePlayerTarget`, `round.roulette`, status `ROUND_STATUSES.ROULETTE`, RPC `"roulette-stop"`, CSS classes, and function names. Only user-facing strings say "Pick-a-Value".
 
 ## Host flow
 1. `insertCoin` with no roomCode → creates room (host = first `insertCoin`).
@@ -68,7 +70,7 @@ CI: `npm ci && npm run build` on Node 20/22/24. No typecheck, formatter, or pre-
 - **PlayroomKit hash collision**: `launchGame()` clears `window.location.hash` (via `history.replaceState`) before `insertCoin` because PlayroomKit prioritises `#r` over `roomCode` option.
 - **F-You easter egg**: Typing "fuck you" in text mode applies `-2 × basePoints` penalty via `resolveLogEntryWithForcedDelta` (bypasses normal screw scoring).
 - **Host tick**: `setInterval` ~1s in `insertCoin` callback — manages timers, screw countdown, roulette finalization. Extra fast loops: 25ms re-render for audience display, 50ms for bingo cycling.
-- **Roulette** uses `getRouletteFrame()` deterministic pseudo-random based on `round.roulette.seed`.
+- **Roulette (Pick-a-Value) rendering** uses `getRouletteFrame()` deterministic pseudo-random based on `round.roulette.seed`.
 - `maxPlayersPerRoom: 42`; `skipLobby: true`.
 
 ## Conventions
