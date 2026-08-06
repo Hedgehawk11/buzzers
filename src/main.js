@@ -761,7 +761,7 @@ function maybeFinalizeRoulettePhase() {
 function startRoulettePhase() {
   if (!isHost()) {
     if (isCohost()) { RPC.call("cohost-action", { fn: "startRoulettePhase", args: [] }, RPC.Mode.HOST); return { ok: true }; }
-    return { ok: false, reason: "Only host can start roulette." };
+    return { ok: false, reason: "Only host can start pick-a-value." };
   }
 
   const settings = getSettings();
@@ -769,7 +769,7 @@ function startRoulettePhase() {
   const participants = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, getControllerId());
   if (hasUnassignedTeamPlayers(settings, participants, assignments)) {
-    return { ok: false, reason: "Assign every player to a team before starting roulette." };
+    return { ok: false, reason: "Assign every player to a team before starting pick-a-value." };
   }
   const players = getRoulettePlayers();
   const topAmount = normalizeRouletteTopAmount(settings.rouletteTopAmount);
@@ -811,7 +811,7 @@ function startRoulettePhase() {
     );
     setState("pendingLogId", null, true);
     render();
-    return { ok: true, message: "No players available for roulette, opening buzzers." };
+    return { ok: true, message: "No players available for pick-a-value, opening buzzers." };
   }
 
   setState(
@@ -857,8 +857,8 @@ function startRoulettePhase() {
   return {
     ok: true,
     message: settings.rouletteMode === "single-player" && targetPlayer
-      ? `${getPlayerName(targetPlayer)} will stop the roulette.`
-      : "Roulette started.",
+      ? `${getPlayerName(targetPlayer)} will stop the pick-a-value.`
+      : "Pick-a-value started.",
   };
 }
 
@@ -888,7 +888,7 @@ function renderRoulettePanel(settings, round, mePlayer) {
 
   return `
     <section class="card player-card roulette-card">
-      <h2>Value Roulette</h2>
+      <h2>Pick a Value</h2>
       <p class="muted">${modeLabel} mode · Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)} · Ceiling ${roulette.ceiling || 0}</p>
       <div class="roulette-display" aria-live="polite">
         <span class="roulette-value">${displayedValue}</span>
@@ -1329,7 +1329,7 @@ function openBuzzers() {
     return;
   }
   if (settings.valueSelectionMethod === "roulette" && (round.roulette?.finalValue === null || round.roulette?.finalValue === undefined)) {
-    setBuzzNotice("Start roulette first to set the round value.");
+    setBuzzNotice("Start pick-a-value first to set the round value.");
     render();
     return;
   }
@@ -3392,7 +3392,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   const statusLabel = {
     [ROUND_STATUSES.IDLE]: "Waiting for the round to start",
     [ROUND_STATUSES.OPEN]: "Buzzers open",
-    [ROUND_STATUSES.ROULETTE]: "Roulette in progress",
+    [ROUND_STATUSES.ROULETTE]: "Pick-a-value in progress",
     [ROUND_STATUSES.LOCKED]: "Buzz locked",
     [ROUND_STATUSES.CLOSED]: "Round closed",
   }[round.status];
@@ -3467,7 +3467,7 @@ function renderAudienceRoulettePanel(settings, round, players) {
     <section class="card audience-card roulette-card audience-roulette-card">
       <div class="audience-card-header">
         <div>
-          <p class="prejoin-kicker">Roulette</p>
+          <p class="prejoin-kicker">Pick-a-Value</p>
           <h2>${modeLabel} mode</h2>
         </div>
         <div class="audience-meta muted">
@@ -3484,7 +3484,7 @@ function renderAudienceRoulettePanel(settings, round, players) {
       <p class="audience-roulette-total">Accumulated total: <strong>${accumulatedValue}</strong></p>
       <p class="muted">${targetLabel}</p>
       <p class="muted">${selectionCountLabel}</p>
-      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">Final roulette value: <strong>${Number(finalValue)}</strong></p>` : ""}
+      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">Final value: <strong>${Number(finalValue)}</strong></p>` : ""}
       <ul class="audience-roulette-list">${selections}</ul>
     </section>
   `;
@@ -3798,7 +3798,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   const statusText = {
     [ROUND_STATUSES.IDLE]: "Idle",
     [ROUND_STATUSES.OPEN]: "Open",
-    [ROUND_STATUSES.ROULETTE]: "Roulette",
+    [ROUND_STATUSES.ROULETTE]: "Pick-a-Value",
     [ROUND_STATUSES.LOCKED]: "Locked",
     [ROUND_STATUSES.CLOSED]: "Closed",
   }[round.status];
@@ -3925,7 +3925,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <select data-setting="scoringMode" ${settingDisabledAttr}>
                   <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
                   <option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>
-                  <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Roulette (player-determined)</option>
+                  <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Pick-a-value (player-determined)</option>
                 </select>
                 <p class="setting-helper">How each buzz is valued.</p>
               </label>
@@ -3960,13 +3960,13 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               settings.scoringMode === "roulette"
                 ? `<div class="control-grid" style="margin-top:0.5rem">
                     <label>
-                      Roulette mode
+                      Pick-a-value mode
                       <select data-setting="rouletteMode" ${settingDisabledAttr}>
                         <option value="additive" ${settings.rouletteMode === "additive" ? "selected" : ""}>Additive (everyone adds up)</option>
                         <option value="highest" ${settings.rouletteMode === "highest" ? "selected" : ""}>Highest value wins</option>
                         <option value="single-player" ${settings.rouletteMode === "single-player" ? "selected" : ""}>Single-player stops it</option>
                       </select>
-                      <p class="setting-helper">How the roulette result is calculated from all players.</p>
+                      <p class="setting-helper">How the pick-a-value result is calculated from all players.</p>
                     </label>
                     <label>
                       Top amount
@@ -3978,7 +3978,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                         <option value="2500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2500 ? "selected" : ""}>2500</option>
                         <option value="3000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 3000 ? "selected" : ""}>3000</option>
                       </select>
-                      <p class="setting-helper">Maximum possible roulette value.</p>
+                      <p class="setting-helper">Maximum possible value.</p>
                     </label>
                     ${settings.rouletteMode === "single-player"
                       ? `<label>
@@ -3989,7 +3989,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                               .map((player) => `<option value="${player.id}" ${settings.rouletteSinglePlayerTarget === player.id ? "selected" : ""}>${escapeHtml(getPlayerName(player))}</option>`)
                               .join("")}
                           </select>
-                          <p class="setting-helper">Which player stops the roulette.</p>
+                          <p class="setting-helper">Which player stops the pick-a-value.</p>
                         </label>`
                       : ""}
                     <span class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</span>
@@ -4099,7 +4099,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       <div style="margin-top:1rem">
         <div class="host-actions">
           ${settings.scoringMode === "roulette"
-            ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Roulette</button>`
+            ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
             : ""}
           <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
           <button type="button" data-host-action="close">Close Buzzers</button>
@@ -4127,11 +4127,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         <span>Status: <strong>${statusText}</strong></span>
         <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
         ${settings.scoringMode === "roulette" && round.roulette?.finalValue !== null && round.roulette?.finalValue !== undefined
-          ? `<span>Final roulette value: <strong>${round.roulette.finalValue}</strong></span>`
+          ? `<span>Final value: <strong>${round.roulette.finalValue}</strong></span>`
           : ""}
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
-        ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Roulette is running.</span>" : ""}
+        ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Pick-a-value is running.</span>" : ""}
         ${settings.teamModeEnabled && missingTeamAssignments
           ? "<span>Assign every player to a team before opening buzzers.</span>"
           : ""}
@@ -4320,7 +4320,7 @@ function renderLog(log, settings) {
               }
             </span>
             <span>${formatSeconds(entry.timeLeftCs)}s</span>
-            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Roulette`}</span>
+            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Pick-a-Value`}</span>
             <span>Base ${entry.basePoints}</span>
             <span>Score ${Number(entry.awardedDelta || 0)}</span>
           </div>
@@ -4621,7 +4621,7 @@ function bindEvents() {
         } else if (action === "start-roulette") {
           const result = startRoulettePhase();
           if (result?.ok === false) {
-            setBuzzNotice(result.reason || "Could not start roulette.");
+            setBuzzNotice(result.reason || "Could not start pick-a-value.");
             render();
           } else if (result?.message) {
             setBuzzNotice(result.message);
@@ -4944,12 +4944,12 @@ function submitRouletteStop() {
     return;
   }
   if (!isRoulettePlayerAllowed(roulette, me().id)) {
-    setBuzzNotice("You cannot stop this roulette.");
+    setBuzzNotice("You cannot stop this pick-a-value.");
     render();
     return;
   }
   if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(me().id)) {
-    setBuzzNotice("You already locked in your roulette value.");
+    setBuzzNotice("You already locked in your value.");
     render();
     return;
   }
@@ -4957,16 +4957,16 @@ function submitRouletteStop() {
   RPC.call("roulette-stop", {}, RPC.Mode.HOST)
     .then((result) => {
       if (result?.ok === false) {
-        setBuzzNotice(result.reason || "Roulette stop blocked.");
+        setBuzzNotice(result.reason || "Pick-a-value stop blocked.");
       } else if (result?.message) {
         setBuzzNotice(result.message);
       } else {
-        setBuzzNotice("Roulette locked in.");
+        setBuzzNotice("Pick-a-value locked in.");
       }
       render();
     })
     .catch(() => {
-      setBuzzNotice("Could not send roulette stop. Check connection/room.");
+      setBuzzNotice("Could not send pick-a-value stop. Check connection/room.");
       render();
     });
 }
@@ -5375,10 +5375,10 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     const round = getRound();
     const roulette = round.roulette;
     if (round.status !== ROUND_STATUSES.ROULETTE || !roulette?.active) {
-      return { ok: false, reason: "Roulette is not active." };
+      return { ok: false, reason: "Pick-a-value is not active." };
     }
     if (!isRoulettePlayerAllowed(roulette, senderPlayer.id)) {
-      return { ok: false, reason: "You cannot stop this roulette." };
+      return { ok: false, reason: "You cannot stop this pick-a-value." };
     }
     if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(senderPlayer.id)) {
       return { ok: false, reason: "You already locked in." };
