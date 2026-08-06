@@ -12,9 +12,11 @@ const DEFAULT_SETTINGS = {
   timeOpen: 20,
   lockAfterBuzz: false,
   rebuzzAllowed: false,
+  maxBuzzesPerOption: 1,
   closeBuzzersOnPointsGiven: false,
   showScoresToPlayers: false,
   showScoresToAudience: true,
+  uiAnimationsEnabled: true,
   inputMode: "buttons",
   optionCount: 4,
   disabledOptions: [],
@@ -268,6 +270,36 @@ function isPlayerBuzzerEnabled(settings, playerId) {
   return !disabledPlayerIds.includes(playerId);
 }
 
+function getEligibleBuzzerPlayerIds(settings) {
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  return currentParticipants()
+    .filter(
+      (p) =>
+        p.id !== controllerId &&
+        !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) &&
+        isPlayerBuzzerEnabled(settings, p.id)
+    )
+    .map((p) => p.id);
+}
+
+function isAllEligibleBuzzed(buzzedPlayerIds, settings) {
+  const eligible = getEligibleBuzzerPlayerIds(settings);
+  return eligible.length > 0 && eligible.every((id) => (buzzedPlayerIds || []).includes(id));
+}
+
+function getPlayerOptionBuzzCount(round, playerId, option) {
+  return Number((round.buzzCounts || {})?.[playerId]?.[option] || 0);
+}
+
+function isPlayerAtOptionLimit(round, settings, playerId, option) {
+  const limit = Number(settings.maxBuzzesPerOption);
+  if (!settings.rebuzzAllowed || !Number.isInteger(limit) || limit < 1 || option === null || option === undefined) {
+    return false;
+  }
+  return getPlayerOptionBuzzCount(round, playerId, option) >= limit;
+}
+
 // =============================================================================
 // Returns the full round state with defaults for every sub-field
 // =============================================================================
@@ -283,6 +315,7 @@ function getRound() {
     winnerAnswer: null,
     winnerName: null,
     buzzedPlayerIds: [],
+    buzzCounts: {},
     roulette: {
       active: false,
       startedAt: null,
@@ -345,6 +378,12 @@ function isWenDitHapnMode() {
 
 function isDisOrDatMode() {
   return getSettings().inputMode === "disordat";
+}
+
+function isBuzzersOpenFlash(settings, round) {
+  return round?.status === ROUND_STATUSES.OPEN
+    && settings.inputMode === "buttons"
+    && !round.screw?.active;
 }
 
 function freshDisOrDatState() {
@@ -492,6 +531,9 @@ function canBuzz(playerId, option) {
   }
   if (option !== undefined) {
     if (!isOptionEnabled(settings, option)) {
+      return false;
+    }
+    if (isPlayerAtOptionLimit(round, settings, playerId, option)) {
       return false;
     }
   }
@@ -828,6 +870,7 @@ function startRoulettePhase() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      buzzCounts: {},
       roulette: {
         active: true,
         startedAt: now(),
@@ -1121,6 +1164,27 @@ function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeft
   return entry;
 }
 
+// Auto-award points when the host pre-set a correct answer for this round.
+// Wrong answers are left unresolved so the host can rule them manually.
+function autoEvaluatePresetAnswer(logEntry, answerText, validOption) {
+  const currentRound = getRound();
+  const settings = getSettings();
+  let isCorrect = false;
+  if (settings.inputMode === "text" && currentRound.correctAnswer) {
+    const correct = normalizeAnswerForCompare(currentRound.correctAnswer);
+    if (answerText && normalizeAnswerForCompare(answerText) === correct) {
+      isCorrect = true;
+    }
+  } else if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
+    if (validOption !== null && currentRound.correctOptions.map(Number).includes(Number(validOption))) {
+      isCorrect = true;
+    }
+  }
+  if (isCorrect) {
+    updateScoresForLogEntry(logEntry.id, logEntry.basePoints);
+  }
+}
+
 // =============================================================================
 // Host RPC handler — validate and record a player's buzz, auto-evaluate if
 // the host pre-set a correct answer
@@ -1174,12 +1238,30 @@ function hostHandleBuzz(player, payload) {
     : [player.id];
   const buzzedPlayerIds = [...new Set([...(round.buzzedPlayerIds || []), ...newlyBuzzedIds])];
 
+  const nextRound = {
+    ...round,
+    buzzedPlayerIds,
+    ...(validOption !== null && settings.rebuzzAllowed
+      ? {
+          buzzCounts: {
+            ...(round.buzzCounts || {}),
+            [player.id]: {
+              ...((round.buzzCounts || {})[player.id] || {}),
+              [validOption]: getPlayerOptionBuzzCount(round, player.id, validOption) + 1,
+            },
+          },
+        }
+      : {}),
+  };
+
+  const allEligibleBuzzed = !settings.rebuzzAllowed && isAllEligibleBuzzed(buzzedPlayerIds, settings);
+
   if (usingTextEntry && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
       setState(
         "round",
         {
-          ...round,
+          ...nextRound,
           status: ROUND_STATUSES.LOCKED,
           winnerId: player.id,
           winnerTeam: playerTeamColor,
@@ -1187,7 +1269,6 @@ function hostHandleBuzz(player, payload) {
           winnerAnswer: answerText,
           winnerName: getPlayerName(player),
           remainingCs: timeLeftCs,
-          buzzedPlayerIds,
           screw: { ...round.screw, screwTimerMs: 0 },
         },
         true,
@@ -1197,9 +1278,11 @@ function hostHandleBuzz(player, payload) {
       setState(
         "round",
         {
-          ...round,
+          ...nextRound,
+          status: allEligibleBuzzed ? ROUND_STATUSES.CLOSED : round.status,
+          remainingCs: allEligibleBuzzed ? timeLeftCs : round.remainingCs,
+          closesAt: allEligibleBuzzed ? null : round.closesAt,
           winnerTeam: null,
-          buzzedPlayerIds,
         },
         true,
       );
@@ -1219,7 +1302,7 @@ function hostHandleBuzz(player, payload) {
     setState(
       "round",
       {
-        ...round,
+        ...nextRound,
         status: ROUND_STATUSES.LOCKED,
         winnerId: player.id,
         winnerTeam: playerTeamColor,
@@ -1227,44 +1310,35 @@ function hostHandleBuzz(player, payload) {
         winnerAnswer: answerText,
         winnerName: getPlayerName(player),
         remainingCs: timeLeftCs,
-        buzzedPlayerIds,
         screw: { ...round.screw, screwTimerMs: 0 },
       },
       true,
     );
     setState("pendingLogId", logEntry.id, true);
-      // If the Host pre-set a correct answer for this round, auto-evaluate immediately
-      try {
-        const currentRound = getRound();
-        let isCorrect = false;
-        if (settings.inputMode === "text" && currentRound.correctAnswer) {
-          const correct = String(currentRound.correctAnswer || "").trim().toLowerCase();
-          if (answerText && String(answerText).trim().toLowerCase() === correct) {
-            isCorrect = true;
-          }
-        } else if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
-          if (validOption !== null && currentRound.correctOptions.map(Number).includes(Number(validOption))) {
-            isCorrect = true;
-          }
-        }
-
-          if (isCorrect) {
-            // award base points automatically
-            updateScoresForLogEntry(logEntry.id, logEntry.basePoints);
-        }
-      } catch (e) {
-        // ignore auto-eval errors
-      }
+    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    try {
+      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+    } catch (e) {
+      // ignore auto-eval errors
+    }
   } else {
     setState(
       "round",
       {
-        ...round,
-          winnerTeam: null,
-        buzzedPlayerIds,
+        ...nextRound,
+        status: allEligibleBuzzed ? ROUND_STATUSES.CLOSED : round.status,
+        remainingCs: allEligibleBuzzed ? timeLeftCs : round.remainingCs,
+        closesAt: allEligibleBuzzed ? null : round.closesAt,
+        winnerTeam: null,
       },
       true,
     );
+    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    try {
+      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+    } catch (e) {
+      // ignore auto-eval errors
+    }
   }
 
   render();
@@ -1349,6 +1423,7 @@ function openBuzzers() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      buzzCounts: {},
       roulette: {
         ...round.roulette,
         active: false,
@@ -1870,6 +1945,7 @@ function resetRound() {
       winnerAnswer: null,
       winnerName: null,
       buzzedPlayerIds: [],
+      buzzCounts: {},
       roulette: {
         active: false,
         startedAt: null,
@@ -2288,6 +2364,7 @@ function setHostSetting(key, value) {
         remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null,
         buzzedPlayerIds: [],
+        buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
         screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null },
       };
@@ -2300,6 +2377,7 @@ function setHostSetting(key, value) {
         remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null,
         buzzedPlayerIds: [],
+        buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
         screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null },
       };
@@ -3246,7 +3324,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   }
 
   if (settings.optionCount === 1) {
-    const optionDisabled = !isOptionEnabled(settings, 1);
+    const optionDisabled = !isOptionEnabled(settings, 1) || isPlayerAtOptionLimit(round, settings, mePlayer.id, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
 const screwBtn = settings.allowScrewing
     ? (screwUsedByMe
@@ -3274,7 +3352,7 @@ const screwBtn = settings.allowScrewing
   if (settings.optionCount === 6) {
     const buttons = [1, 2, 3, 4, 5, 6]
       .map((opt) => {
-        const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
+        const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
         return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
       })
       .join("");
@@ -3304,7 +3382,7 @@ const screwBtn = settings.allowScrewing
   if (settings.optionCount === 4) {
     const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
     const button = (opt, cls) => {
-      const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
+      const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
       const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
       return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
@@ -3343,7 +3421,7 @@ const screwBtn = settings.allowScrewing
   const buttons = [1, 2, 3, 4]
     .filter((opt) => opt <= max)
     .map((opt) => {
-      const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) ? "disabled" : "";
+      const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
       return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     })
     .join("");
@@ -3634,7 +3712,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
     : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
 
   return `
-    <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""}>
+    <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
       <header class="hero audience-hero">
         <div>
           <p class="prejoin-kicker">Audience display</p>
@@ -3847,6 +3925,15 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 ${toggleSwitch("rebuzzAllowed", settings.rebuzzAllowed)}
                 <p class="setting-helper">Let the same player buzz multiple times per round.</p>
               </label>
+              ${
+                settings.rebuzzAllowed
+                  ? `<label>
+                      Max buzzes per option
+                      <input type="number" min="1" max="50" step="1" value="${settings.maxBuzzesPerOption}" data-setting="maxBuzzesPerOption" ${settingDisabledAttr} />
+                      <p class="setting-helper">How many times a player can buzz the same choice while re-buzz is on.</p>
+                    </label>`
+                  : ""
+              }
             </div>
           </div>
         </details>
@@ -4049,6 +4136,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 Show scores on audience display
                 ${toggleSwitch("showScoresToAudience", settings.showScoresToAudience)}
                 <p class="setting-helper">Show scores on the audience/projection screen.</p>
+              </label>
+              <label>
+                UI animations
+                ${toggleSwitch("uiAnimationsEnabled", settings.uiAnimationsEnabled)}
+                <p class="setting-helper">Animated backgrounds and effects while buzzers are open.</p>
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
@@ -4378,6 +4470,11 @@ function render() {
     delete document.body.dataset.team;
   }
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
+  if (settings.uiAnimationsEnabled) {
+    document.body.dataset.uiAnims = "on";
+  } else {
+    document.body.dataset.uiAnims = "off";
+  }
 
   if (isAudienceDisplayClient()) {
     const buzzedCount = (round.buzzedPlayerIds || []).length;
@@ -4471,7 +4568,7 @@ function render() {
   }
 
   app.innerHTML = `
-    <main class="layout"${round.screw.active ? ' data-screw-active="true"' : ""}>
+    <main class="layout"${round.screw.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
       <header class="hero">
         <div>
           <h1>Instant Buzzers</h1>
@@ -4588,6 +4685,11 @@ function bindEvents() {
         }
         if (setting === "teamScoringMode") {
           setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance");
+          return;
+        }
+        if (setting === "maxBuzzesPerOption") {
+          const value = clamp(parseInt(input.value, 10) || 1, 1, 50);
+          setHostSetting("maxBuzzesPerOption", value);
           return;
         }
       });
