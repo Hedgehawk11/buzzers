@@ -45,7 +45,7 @@ play a few episodes of the [re-ride](thereri.de) (use the unlock all feature and
 I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually
 
 ### Complete feature list?
-(breathes in)\
+(breathes in) \
 - 1,2,4,6 response multiple choice questions with the ability to toggle specific answers on and off
 - Text response mode for gibberish/anagram questions (or lame fill in the blanks)
 - Dis or Dats
