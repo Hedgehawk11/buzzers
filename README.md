@@ -39,7 +39,7 @@ Whatever I decide to add, gets added, if there is a second branch, usually the n
 Soon!
 
 ### How much experience with JACK would you recommend to understand this
-play a few episodes of the [re-ride](thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation
+play a few episodes of the [re-ride](https://thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation
 
 ### Speaking of themes... what would you recommend
 I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually
