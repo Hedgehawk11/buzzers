@@ -1164,6 +1164,27 @@ function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeft
   return entry;
 }
 
+// Auto-award points when the host pre-set a correct answer for this round.
+// Wrong answers are left unresolved so the host can rule them manually.
+function autoEvaluatePresetAnswer(logEntry, answerText, validOption) {
+  const currentRound = getRound();
+  const settings = getSettings();
+  let isCorrect = false;
+  if (settings.inputMode === "text" && currentRound.correctAnswer) {
+    const correct = normalizeAnswerForCompare(currentRound.correctAnswer);
+    if (answerText && normalizeAnswerForCompare(answerText) === correct) {
+      isCorrect = true;
+    }
+  } else if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
+    if (validOption !== null && currentRound.correctOptions.map(Number).includes(Number(validOption))) {
+      isCorrect = true;
+    }
+  }
+  if (isCorrect) {
+    updateScoresForLogEntry(logEntry.id, logEntry.basePoints);
+  }
+}
+
 // =============================================================================
 // Host RPC handler — validate and record a player's buzz, auto-evaluate if
 // the host pre-set a correct answer
@@ -1294,28 +1315,12 @@ function hostHandleBuzz(player, payload) {
       true,
     );
     setState("pendingLogId", logEntry.id, true);
-      // If the Host pre-set a correct answer for this round, auto-evaluate immediately
-      try {
-        const currentRound = getRound();
-        let isCorrect = false;
-        if (settings.inputMode === "text" && currentRound.correctAnswer) {
-          const correct = String(currentRound.correctAnswer || "").trim().toLowerCase();
-          if (answerText && String(answerText).trim().toLowerCase() === correct) {
-            isCorrect = true;
-          }
-        } else if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
-          if (validOption !== null && currentRound.correctOptions.map(Number).includes(Number(validOption))) {
-            isCorrect = true;
-          }
-        }
-
-          if (isCorrect) {
-            // award base points automatically
-            updateScoresForLogEntry(logEntry.id, logEntry.basePoints);
-        }
-      } catch (e) {
-        // ignore auto-eval errors
-      }
+    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    try {
+      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+    } catch (e) {
+      // ignore auto-eval errors
+    }
   } else {
     setState(
       "round",
@@ -1328,6 +1333,12 @@ function hostHandleBuzz(player, payload) {
       },
       true,
     );
+    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    try {
+      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+    } catch (e) {
+      // ignore auto-eval errors
+    }
   }
 
   render();
