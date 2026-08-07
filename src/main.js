@@ -4238,7 +4238,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   <option value="1" ${settings.snarkMode === "1" ? "selected" : ""}>Snark Level 1</option>
                   <option value="2" ${settings.snarkMode === "2" ? "selected" : ""}>Snark Level 2</option>
                 </select>
-                <p class="setting-helper">Swap player-facing text for snarky variants from src/snark.json.</p>
+                <p class="setting-helper">Swap player-facing text for snarky variants.</p>
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
@@ -4253,7 +4253,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <div style="margin-top:0.3rem">
                   ${renderCohostList(players)}
                 </div>
-                <p class="setting-helper">Players with host privileges.</p>
               </label>
             </div>
           </div>
