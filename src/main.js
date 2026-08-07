@@ -3778,7 +3778,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
-  const flash = isTabletTimerFlashing(timerCs);
+  const flash = !isScrewActive && isTabletTimerFlashing(timerCs);
 
   return `
     <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""}>
