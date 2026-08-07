@@ -30,7 +30,7 @@ No. at least not now, I do see the idea of one in the distant future, but thats 
 I ~~might~~ probably will add a snark mode in the future, until then, you yourself, yes you, must bring the snark
 
 ### What's coming?
-Better UI, roadkill, and more round types.
+Better UI, roadkill, fibbage mode, and more round types.
 
 ### How do you decide what to add?
 Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a suite of random qol changes added in as well
