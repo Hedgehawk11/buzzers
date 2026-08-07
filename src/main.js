@@ -372,6 +372,8 @@ function getRound() {
       screweeId: null,
       screeeName: null,
       screwTimerMs: null,
+      frozenCs: null,
+      frozenPoints: null,
     },
     screwsUsedBy: [],
   });
@@ -577,6 +579,9 @@ function canBuzz(playerId, option) {
 }
 
 function getTimeLeftCs(round, settings) {
+  if (round?.screw?.active && round.screw.frozenCs != null) {
+    return round.screw.frozenCs;
+  }
   if (!round || round.status === ROUND_STATUSES.IDLE) {
     return settings.timeOpen * 100;
   }
@@ -2056,6 +2061,8 @@ function initiateScrew(screwerId) {
   if (!screwer) {
     return { ok: false, reason: getSnark("player.screw.invalidScrewer", "Invalid screwer.") };
   }
+  const frozenCs = getTimeLeftCs(round, settings);
+  const frozenPoints = computeBasePoints(settings, frozenCs, round);
   
   setState(
     "round",
@@ -2069,6 +2076,8 @@ function initiateScrew(screwerId) {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs,
+        frozenPoints,
       },
     },
     true,
@@ -2099,6 +2108,8 @@ function hostInitiateScrew() {
     return;
   }
   const mePlayer = me();
+  const frozenCs = getTimeLeftCs(round, getSettings());
+  const frozenPoints = computeBasePoints(getSettings(), frozenCs, round);
   setState("round", {
     ...round,
     screw: {
@@ -2109,6 +2120,8 @@ function hostInitiateScrew() {
       screweeId: null,
       screeeName: null,
       screwTimerMs: null,
+      frozenCs,
+      frozenPoints,
     },
   }, true);
   setBuzzNotice("Select a player to screw.");
@@ -2211,22 +2224,28 @@ function closeScrewMode() {
     return;
   }
   const round = getRound();
-  setState(
-    "round",
-    {
-      ...round,
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-      },
-      screwsUsedBy: [...(round.screwsUsedBy || []), round.screw.screwerId],
+  const frozenCs = round.screw?.frozenCs;
+  const resumeOpen = round.status === ROUND_STATUSES.OPEN && Number.isFinite(frozenCs);
+  const nextRound = {
+    ...round,
+    screw: {
+      active: false,
+      screwerId: null,
+      screwerName: null,
+      screweeId: null,
+      screeeName: null,
+      screwTimerMs: null,
+      frozenCs: null,
+      frozenPoints: null,
     },
-    true,
-  );
+    screwsUsedBy: [...(round.screwsUsedBy || []), round.screw.screwerId],
+  };
+  if (resumeOpen) {
+    // Main timer was paused during the screw; resume it from the frozen value.
+    nextRound.closesAt = now() + frozenCs * 10;
+    nextRound.remainingCs = frozenCs;
+  }
+  setState("round", nextRound, true);
   render();
 }
 
@@ -2420,7 +2439,7 @@ function setHostSetting(key, value) {
         buzzedPlayerIds: [],
         buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null },
+        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
       };
       setState("round", idleRound, true);
       setState("pendingLogId", null, true);
@@ -2433,7 +2452,7 @@ function setHostSetting(key, value) {
         buzzedPlayerIds: [],
         buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null },
+        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
       };
       setState("round", idleRound, true);
       setState("pendingLogId", null, true);
