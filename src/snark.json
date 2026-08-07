@@ -1,0 +1,931 @@
+{
+  "player": {
+    "buzzer": {
+      "buzzersClosed": {
+        "en": "Buzzers are currently closed.",
+        "snark1": "Buzzers are currently closed. Round must be over.",
+        "snark2": "Buzzers are currently closed. Hands off."
+      },
+      "buzzNow": {
+        "en": "Buzz now.",
+        "snark1": "Buzz now or forever hold your peace.",
+        "snark2": "Buzz now, or else."
+      },
+      "alreadyBuzzed": {
+        "en": "You already buzzed this round.",
+        "snark1": "You already buzzed this round. No Second Attempts!",
+        "snark2": "You already buzzed this round. No Really, you did. Stop trying to cheat."
+      },
+      "teamAlreadyBuzzed": {
+        "en": "Your team already buzzed this round.",
+        "snark1": "Your team already buzzed this round. No Second Attempts!",
+        "snark2": "Your team already buzzed this round. No Really, they did. Stop trying to cheat."
+      },
+      "buzzerDisabledByHost": {
+        "en": "Your buzzer is disabled by the Host.",
+        "snark1": "Your buzzer is disabled by the Host. No luck there.",
+        "snark2": "Your buzzer is disabled by the Host. No points for you."
+      },
+      "singleBuzzerDisabled": {
+        "en": "This buzzer is disabled by the Host.",
+        "snark1": "This buzzer is disabled by the Host. No luck there.",
+        "snark2": "This buzzer is disabled by the Host. No points for you."
+      },
+      "answerDisabledByHost": {
+        "en": "Your answer input is disabled by the Host.",
+        "snark1": "Your answer input is disabled by the Host. No luck there.",
+        "snark2": "Your answer input is disabled by the Host. No points for you."
+      },
+      "answersClosed": {
+        "en": "Answers are currently closed.",
+        "snark1": "Answers are currently closed. Better luck next time.",
+        "snark2": "Answers are currently closed. You snooze, you lose."
+      },
+      "alreadyAnswered": {
+        "en": "You already submitted an answer this round.",
+        "snark1": "You already submitted an answer this round. No Second Attempts!",
+        "snark2": "You already submitted an answer this round. No Really, you did. Stop trying to cheat."
+      },
+      "teamAlreadyAnswered": {
+        "en": "Your team already answered this round.",
+        "snark1": "Your team already answered this round. No Second Attempts!",
+        "snark2": "Your team already answered this round. No Really, they did. Stop trying to cheat."
+      },
+      "typeAnswerSubmit": {
+        "en": "Type your answer and submit.",
+        "snark1": "Type your answer and submit. Don't be shy.",
+        "snark2": "Type your answer and submit. but please put some effort into it."
+      },
+      "screwInProgress": {
+        "en": "A screw is in progress.",
+        "snark1": "A screw is in progress. Be patient.",
+        "snark2": "A screw is in progress. Take a deep breath and wait."
+      },
+      "waitingTeamAssignment": {
+        "en": "Waiting For Team Assignment",
+        "snark1": "Please wait while the Host picks a team for you, or you can just sit here and stare at the screen.",
+        "snark2": "Please wait while the Host forces you into a box of other people"
+      },
+      "waitingTeamAssignmentBody": {
+        "en": "The Host must assign you to an alliance before your buzzer appears.",
+        "snark1": "The Host must assign you to an alliance before your buzzer appears. You can also just stare at the screen.",
+        "snark2": "The Host must assign you to an alliance before your buzzer appears, or you can just sit here and complain."
+      },
+      "buzzSent": {
+        "en": "Buzz sent.",
+        "snark1": "Buzz sent. Confident one arn't you?",
+        "snark2": "Buzz sent. Impressive color coordination."
+      },
+      "buzzBlocked": {
+        "en": "Buzz blocked.",
+        "snark1": "Buzz blocked, time to rethink your timer attentiveness.",
+        "snark2": "Buzz blocked, maybe you should have paid more attention to the timer."
+      },
+      "buzzSendFailed": {
+        "en": "Could not send buzz. Check connection/room.",
+        "snark1": "Could not send buzz. Check connection/room. Your internet is probably bad.",
+        "snark2": "Could not send buzz. Check connection/room. I shot the messenger."
+      },
+      "buzzSendFailedShort": {
+        "en": "Could not send buzz.",
+        "snark1": "Could not send buzz. Check connection/room.",
+        "snark2": "Could not send buzz. Check connection/room. I shot the messenger."
+      },
+      "answerEmpty": {
+        "en": "Answer cannot be empty.",
+        "snark1": "Blank answers are not allowed. Please type something.",
+        "snark2": "I like not reading, but I don't think that's a good excuse."
+      },
+      "answerTooLong": {
+        "en": "Answer is too long.",
+        "snark1": "This is too much to read. Please shorten your answer.",
+        "snark2": "This needs to be shorter. I don't have all day."
+      },
+      "invalidOption": {
+        "en": "Invalid option.",
+        "snark1": "Invalid option. What is that even supposed to mean?",
+        "snark2": "Invalid option. Please choose a valid option."
+      },
+      "buzzNotAllowed": {
+        "en": "Buzzers are not open, disabled, or you already buzzed.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notAssignedToTeam": {
+        "en": "Host has not assigned you to a team yet.",
+        "snark1": "Host has not assigned you to a team yet. Please wait.",
+        "snark2": "Host has not assigned you to a team yet. Sit tight and wait for the Host to sort you."
+      },
+      "buzzersNotOpen": {
+        "en": "Buzzers are not open.",
+        "snark1": "Buzzers are not open, please wait for the opening.",
+        "snark2": "Buzzers are not open, so you'll have to wait a bit longer."
+      },
+      "lockedInAnswer": {
+        "en": "{player} locked in an answer.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "lockedInOption": {
+        "en": "{player} locked in option {option}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "submittedAnswer": {
+        "en": "{player} submitted an answer.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "buzzedOption": {
+        "en": "{player} buzzed option {option}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "answerPlaceholder": {
+        "en": "Type your answer",
+        "snark1": "Type your answer right here",
+        "snark2": "Type your answer in this box right here"
+      },
+      "submitAnswerButton": {
+        "en": "Submit Answer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "yourAnswerTitle": {
+        "en": "Your Answer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "yourBuzzerTitle": {
+        "en": "Your Buzzer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "scoreLabel": {
+        "en": "Score",
+        "snark1": "",
+        "snark2": ""
+      },
+      "timeLeftLabel": {
+        "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "outcome": {
+      "bingoCorrect": {
+        "en": "Correct! +500",
+        "snark1": "Correct! +500. Shocking.",
+        "snark2": "Correct! +500. Cool."
+      },
+      "bingoIncorrect": {
+        "en": "Incorrect! -500",
+        "snark1": "",
+        "snark2": ""
+      },
+      "disdatCorrect": {
+        "en": "Correct! +300",
+        "snark1": "",
+        "snark2": ""
+      },
+      "disdatIncorrect": {
+        "en": "Incorrect.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "timeUp": {
+        "en": "Time's up.",
+        "snark1": "Time's up. Better luck next time.",
+        "snark2": "Time's up. That means you're out of time."
+      }
+    },
+    "screw": {
+      "selectTitle": {
+        "en": "Select Who to Screw",
+        "snark1": "Select who gets it.",
+        "snark2": "Choose your victim"
+      },
+      "selectPrompt": {
+        "en": "Choose another player to screw over:",
+        "snark1": "",
+        "snark2": ""
+      },
+      "holdUp": {
+        "en": "Hold Up!",
+        "snark1": "Hold your horses! Screwing is in progress.",
+        "snark2": "Hold Up! Someone is about to get screwed."
+      },
+      "inUseOn": {
+        "en": "A screw is being used by {screwer} on {screwee}.",
+        "snark1": "{screwer} is screwing over {screwee}. Break out the popcorn.",
+        "snark2": "{screwee} is being screwed by {screwer}. Get ready for a new war between them."
+      },
+      "youreScrewed": {
+        "en": "You're Being Screwed!",
+        "snark1": "You're in for a world of hurt! Better start running.",
+        "snark2": "Oh you've been screwed. Might I offer an idea for later, its called revenge."
+      },
+      "timerLabel": {
+        "en": "Screw timer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "answerQuickly": {
+        "en": "Answer quickly!",
+        "snark1": "",
+        "snark2": ""
+      },
+      "waiting": {
+        "en": "waiting",
+        "snark1": "",
+        "snark2": ""
+      },
+      "usedByMe": {
+        "en": "Your screw has been used.",
+        "snark1": "Your screw has been used. Was it worth it?",
+        "snark2": "Your screw has been used. You should have held on to it."
+      },
+      "available": {
+        "en": "Screw available.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "failed": {
+        "en": "Screw failed.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "sendFailed": {
+        "en": "Could not send screw. Check connection/room.",
+        "snark1": "Could not send screw. Check connection/room. Your internet is probably bad.",
+        "snark2": "Could not send screw. Check connection/room. I shot the messenger."
+      },
+      "selectFailed": {
+        "en": "Screw selection failed.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "selectSendFailed": {
+        "en": "Could not send screw selection. Check connection/room.",
+        "snark1": "Could not send screw selection. Check connection/room. Your internet is probably bad.",
+        "snark2": "Could not send screw selection. Check connection/room. I shot the messenger."
+      },
+      "notEnabled": {
+        "en": "Screwing is not enabled.",
+        "snark1": "Screwing is not enabled. Maybe next time.",
+        "snark2": "Screwing is not enabled. Don't worry, there will be other opportunities."
+      },
+      "alreadyActive": {
+        "en": "A screw is already in progress.",
+        "snark1": "A screw is already in progress. You should have been faster.",
+        "snark2": "A screw is already in progress. You snooze, you lose."
+      },
+      "alreadyUsed": {
+        "en": "You have already used your screw.",
+        "snark1": "You have already used your screw. Was it worth it?",
+        "snark2": "You have already used your screw. You should have held on to it."
+      },
+      "invalidScrewer": {
+        "en": "Invalid screwer.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "initiated": {
+        "en": "{player} initiated a screw.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noScrewInProgress": {
+        "en": "No screw in progress.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "screweeAlreadySelected": {
+        "en": "Screwee already selected.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "invalidScrewee": {
+        "en": "Invalid screwee.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "cannotHost": {
+        "en": "Cannot screw the host.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "cannotSelf": {
+        "en": "Cannot screw yourself.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "cannotOwnTeam": {
+        "en": "Cannot screw your own team in shared team mode.",
+        "snark1": "Cannot screw your own team in shared team mode. That's just mean.",
+        "snark2": "Cannot screw your own team in shared team mode. That's a new low, even for you."
+      },
+      "over": {
+        "en": "{screwer} is screwing over {screwee}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noScrewee": {
+        "en": "No screw in progress or screwee not selected.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "timerStarted": {
+        "en": "Screw timer started.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noSpecial": {
+        "en": "Cannot screw during special questions.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "timeLabel": {
+        "en": "Time",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "roulette": {
+      "title": {
+        "en": "Pick a Value",
+        "snark1": "Please take a number",
+        "snark2": "Pick a value, any value"
+      },
+      "stopButton": {
+        "en": "STOP",
+        "snark1": "",
+        "snark2": ""
+      },
+      "lockedIn": {
+        "en": "Pick-a-value locked in.",
+        "snark1": "Pick-a-value locked in. Happy with your choice?",
+        "snark2": "Pick-a-value locked in. I hope you like your number."
+      },
+      "cannotStop": {
+        "en": "You cannot stop this pick-a-value.",
+        "snark1": "You can't stop this, bug your host for permission if you want to.",
+        "snark2": "You can't stop this, sorry."
+      },
+      "alreadyLocked": {
+        "en": "You already locked in your value.",
+        "snark1": "You already locked in your value. No backsies.",
+        "snark2": "You already locked in your value. You should have thought about that before you locked it in."
+      },
+      "alreadyLockedShort": {
+        "en": "You already locked in.",
+        "snark1": "No backsies.",
+        "snark2": ""
+      },
+      "stopBlocked": {
+        "en": "Pick-a-value stop blocked.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "sendFailed": {
+        "en": "Could not send pick-a-value stop. Check connection/room.",
+        "snark1": "Could not send pick-a-value stop. Check connection/room. Your internet is probably bad.",
+        "snark2": "Could not send pick-a-value stop. Check connection/room. I shot the messenger."
+      },
+      "notActive": {
+        "en": "Pick-a-value is not active.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "lockedValue": {
+        "en": "{player} locked in {value}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "youLocked": {
+        "en": "You locked in {value}.",
+        "snark1": "You locked in {value}. Thats... interesting.",
+        "snark2": "You locked in {value}. I hope you're happy with that decision."
+      },
+      "lockedLabel": {
+        "en": "Locked",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "bingo": {
+      "waitingHost": {
+        "en": "Waiting for the host to start...",
+        "snark1": "Waiting for the host to start... any day now...",
+        "snark2": "Waiting on the host... gently. They're trying their best."
+      },
+      "collectedLabel": {
+        "en": "Collected",
+        "snark1": "",
+        "snark2": ""
+      },
+      "winnerMsg": {
+        "en": "{winner} wins!",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notActive": {
+        "en": "Not active.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "invalid": {
+        "en": "Invalid.",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "disdat": {
+      "waitingHost": {
+        "en": "Waiting for the host to start...",
+        "snark1": "Waiting for the host to start... any day now...",
+        "snark2": "Waiting on the host... gently. They're trying their best."
+      },
+      "watchTeam": {
+        "en": "Team {team} is playing this round. Sit back and watch!",
+        "snark1": "Team {team} is playing this round. Sit back and watch! You're not doing anything right now.",
+        "snark2": "Team {team} is playing this round. Sit back and watch! You can do literally anything else right now."
+      },
+      "watchPlayer": {
+        "en": "{player} is playing this round. Sit back and watch!",
+        "snark1": "You're watching {player} play this round. Sit back and watch! You're not doing anything right now.",
+        "snark2": "{player} is playing this round. Sit back and watch! You can do literally anything else right now."
+      },
+      "resultsTitle": {
+        "en": "Results",
+        "snark1": "",
+        "snark2": ""
+      },
+      "correctCount": {
+        "en": "{correct}/{total} correct",
+        "snark1": "",
+        "snark2": ""
+      },
+      "bonusHint": {
+        "en": "Finish with {min}+ correct to claim the time bonus.",
+        "snark1": "You need {min} or more correct to claim the time bonus. Better luck next time.",
+        "snark2": "You didn't get {min}, no bonus for you."
+      },
+      "waitingHostContinue": {
+        "en": "Waiting for the host to continue...",
+        "snark1": "Waiting for the host to start... any day now...",
+        "snark2": "Waiting on the host... gently. They're trying their best... I hope."
+      },
+      "questionTimed": {
+        "en": "Question {current} of {total}. Answer before the timer ends.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "questionHostPaced": {
+        "en": "Question {current} of {total}. The host advances when ready.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "allAnswered": {
+        "en": "All answered! Wait for results.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notActive": {
+        "en": "Dis or Dat isn't active.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badQuestion": {
+        "en": "Bad question.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badAnswer": {
+        "en": "Bad answer.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notActivePlayer": {
+        "en": "You're not the active player.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notLiveYet": {
+        "en": "That question isn't live yet.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "alreadyAnswered": {
+        "en": "Already answered.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "answerCurrentFirst": {
+        "en": "Answer the current question first.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "answerSendFailed": {
+        "en": "Could not send answer.",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "scores": {
+      "scoresHidden": {
+        "en": "Only the Host can view scores right now.",
+        "snark1": "Scores are the Host's secret. Bribe them.",
+        "snark2": "Scores hidden. We wouldn't want to hurt anyone's feelings now would we? (we would)"
+      },
+      "scoresHiddenLong": {
+        "en": "Only the Host can view scores right now, if you want to see them, ask the Host to enable.",
+        "snark1": "Only the Host can view scores right now. If you want to see them, you'll have to bribe the Host",
+        "snark2": "Only the Host can view scores right now. We wouldn't want to hurt anyone's feelings now would we? (we totally would)"
+      },
+      "logTitle": {
+        "en": "Game Log",
+        "snark1": "",
+        "snark2": ""
+      },
+      "logHidden": {
+        "en": "Only the Host can view the game log.",
+        "snark1": "Only the Host can view the game log, why it's here, I don't know.",
+        "snark2": "Only the Host can view the game log, but I guess you can ask them to enable it, they can't enable it, but you can ask."
+      }
+    },
+    "misc": {
+      "youLabel": {
+        "en": "You: {name}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "hostLabel": {
+        "en": "Host: {name}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "allianceLabel": {
+        "en": "Alliance: {team}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "unassigned": {
+        "en": "Unassigned",
+        "snark1": "Unaffiliated",
+        "snark2": "Divorced"
+      },
+      "cohostBadge": {
+        "en": "Co-host",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roundLabel": {
+        "en": "Round:",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "easteregg": {
+      "heading": {
+        "en": "Congratulations! You typed F*** You!",
+        "snark1": "Congratulations! You typed Fuck You!",
+        "snark2": ""
+      },
+      "closeButton": {
+        "en": "Let me play again",
+        "snark1": "",
+        "snark2": ""
+      }
+    }
+  },
+  "audience": {
+    "buzzer": {
+      "statusIdle": {
+        "en": "Waiting for the round to start",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusOpen": {
+        "en": "Buzzers open",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusRoulette": {
+        "en": "Pick-a-value in progress",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusLocked": {
+        "en": "Buzz locked",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusClosed": {
+        "en": "Round closed",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "outcome": {
+      "noBuzzYet": {
+        "en": "No one has buzzed yet.",
+        "snark1": "No one has buzzed yet. Should I be worried?",
+        "snark2": "No one has buzzed yet. Maybe the question is too hard?"
+      },
+      "noBuzzesYet": {
+        "en": "No buzzes yet.",
+        "snark1": "No buzzes yet. Shy?",
+        "snark2": "No buzzes yet. Question hard?"
+      },
+      "waitingForBuzz": {
+        "en": "Waiting for a buzz",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "screw": {
+      "audienceEnabled": {
+        "en": "Enabled",
+        "snark1": "Screws are on!",
+        "snark2": "Screws are enabled, use them wisely. Or not, i'm not your parent."
+      },
+      "audienceNoneActive": {
+        "en": "No screw is active right now.",
+        "snark1": "No screw is active right now. Possibly for the better",
+        "snark2": ""
+      },
+      "audienceTargetChoosing": {
+        "en": "Target being chosen",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceSelectingWho": {
+        "en": "{screwer} is selecting who to screw.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceActiveTitle": {
+        "en": "Active screw",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceActiveOver": {
+        "en": "{screwer} is screwing over {screwee}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceTimerLabel": {
+        "en": "Timer",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "roulette": {
+      "audienceTotalLabel": {
+        "en": "Accumulated total",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceFinalValue": {
+        "en": "Final value: {value}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceNoLocked": {
+        "en": "No one has locked in yet.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "topAmountLabel": {
+        "en": "Top amount {amount}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "ceilingLabel": {
+        "en": "Ceiling {ceiling}",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "bingo": {
+      "waitingGame": {
+        "en": "Waiting for the game to start...",
+        "snark1": "",
+        "snark2": ""
+      },
+      "lettersScore": {
+        "en": "{collected}/{items} letters — {points}pts",
+        "snark1": "",
+        "snark2": ""
+      },
+      "winnerBanner": {
+        "en": "{winner} WINS!",
+        "snark1": "",
+        "snark2": ""
+      },
+      "standings": {
+        "en": "Standings",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "disdat": {
+      "waitingGame": {
+        "en": "Waiting for the game to start...",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceQuestionTitle": {
+        "en": "Question {number}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "audienceQuestionPrompt": {
+        "en": "{dis} or {dat}?",
+        "snark1": "",
+        "snark2": ""
+      },
+      "finalStandings": {
+        "en": "Final Standings",
+        "snark1": "",
+        "snark2": ""
+      },
+      "standings": {
+        "en": "Standings",
+        "snark1": "",
+        "snark2": ""
+      },
+      "modeOnePlay": {
+        "en": "One Play — Timed",
+        "snark1": "",
+        "snark2": ""
+      },
+      "modeAllPlay": {
+        "en": "All Play — Timed",
+        "snark1": "",
+        "snark2": ""
+      },
+      "modeHostPaced": {
+        "en": "All Play — Host Paced",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "misc": {
+      "roomFallback": {
+        "en": "....",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusLabel": {
+        "en": "Status:",
+        "snark1": "",
+        "snark2": ""
+      },
+      "awaitingRuling": {
+        "en": "Awaiting ruling on {player}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "liveBuzzTracking": {
+        "en": "Live buzz tracking",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomPrefix": {
+        "en": "Room {code}",
+        "snark1": "",
+        "snark2": ""
+      }
+    }
+  },
+  "tablet": {
+    "misc": {
+      "tabletNotUseful": {
+        "en": "This screen is not useful right now, so stop reading, don't you have a game to be playing or hosting.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "tabletAnswered": {
+        "en": "{buzzed}/{total} players answered",
+        "snark1": "",
+        "snark2": ""
+      }
+    }
+  },
+  "shared": {
+    "screw": {
+      "pending": {
+        "en": "pending",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "roulette": {
+      "onlyTarget": {
+        "en": "Only {player} can stop this round.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "waitingTarget": {
+        "en": "Waiting to choose a player.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "everyoneStops": {
+        "en": "Everyone can stop when they want to lock in their number.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "playersLocked": {
+        "en": "{completed}/{expected} players locked in.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "waitingPlayers": {
+        "en": "Waiting for players.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "modeAdditive": {
+        "en": "Additive",
+        "snark1": "",
+        "snark2": ""
+      },
+      "modeHighest": {
+        "en": "Highest value",
+        "snark1": "",
+        "snark2": ""
+      },
+      "modeSingle": {
+        "en": "Single-player",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "bingo": {
+      "score": {
+        "en": "Score: {points}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noPlayersYet": {
+        "en": "No players yet.",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "disdat": {
+      "timeLeftLabel": {
+        "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "scores": {
+      "scoresTitle": {
+        "en": "Scores",
+        "snark1": "",
+        "snark2": ""
+      },
+      "playerScoresTitle": {
+        "en": "Player Scores",
+        "snark1": "",
+        "snark2": ""
+      },
+      "teamScoresTitle": {
+        "en": "Team Scores",
+        "snark1": "",
+        "snark2": ""
+      },
+      "allianceTotalsTitle": {
+        "en": "Alliance totals",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTeamsYet": {
+        "en": "No teams assigned yet.",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "misc": {
+      "appTitle": {
+        "en": "Instant Buzzers",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomCodeLabel": {
+        "en": "Room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusUnknown": {
+        "en": "unknown",
+        "snark1": "",
+        "snark2": ""
+      }
+    }
+  }
+}

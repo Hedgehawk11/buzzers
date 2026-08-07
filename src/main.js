@@ -4,6 +4,7 @@
 
 import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
+import SNARK from "./snark.json";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -31,6 +32,7 @@ const DEFAULT_SETTINGS = {
   rouletteSinglePlayerTarget: "random",
   teamModeEnabled: false,
   teamScoringMode: "alliance",
+  snarkMode: "off",
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "magenta", "brown"];
@@ -173,6 +175,40 @@ function getPlayerName(player) {
 // =============================================================================
 function getSettings() {
   return { ...DEFAULT_SETTINGS, ...getSafeState("settings", {}) };
+}
+
+// =============================================================================
+// Snark mode — swaps player-facing strings for snarky variants from snark.json.
+// Section keys are dot-paths like "player.buzzer.buzzSent" (screen.group.section).
+// Strings rendered on a single screen live under that screen; strings reused
+// across screens live once under the "shared" screen and are found by fallback.
+// When snark is off, or a level line is blank, falls back to the English line,
+// then to the fallback. {token} placeholders are replaced with the vars object.
+// =============================================================================
+function getSnark(section, fallbackEn = "", vars = {}) {
+  const mode = getSettings().snarkMode;
+  if (mode === "off") {
+    return fallbackEn;
+  }
+  const [screen, group, ...rest] = section.split(".");
+  const key = rest.join(".");
+  let entry = SNARK[screen]?.[group]?.[key];
+  if (!entry && screen !== "shared") {
+    entry = SNARK.shared?.[group]?.[key];
+  }
+  const candidates = [entry?.snark2, entry?.snark1, entry?.en];
+  const startIndex = mode === "2" ? 0 : 1;
+  let out = "";
+  for (let i = startIndex; i < candidates.length; i++) {
+    if (typeof candidates[i] === "string" && candidates[i].trim()) {
+      out = candidates[i];
+      break;
+    }
+  }
+  if (!out) {
+    out = fallbackEn;
+  }
+  return out.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? vars[key] : match));
 }
 
 function getTeamAssignments() {
@@ -508,7 +544,7 @@ function canBuzz(playerId, option) {
   }
   
   // If screw is active with a timer running, only screwee can buzz
-  if (round.screw.active && round.screw.screwTimerMs !== null && round.screw.screwTimerMs > 0) {
+  if (round.screw.active && getScrewTimerMs(round) !== null && getScrewTimerMs(round) > 0) {
     return playerId === round.screw.screweeId;
   }
   
@@ -555,6 +591,18 @@ function getTimeLeftCs(round, settings) {
     return Math.ceil(msLeft / 10);
   }
   return settings.timeOpen * 100;
+}
+
+// Screw timer remaining in ms. When the timer has a wall-clock end timestamp
+// (set at start), compute locally so smooth 25ms audience/tablet renders tick
+// it down instead of waiting for the host's once-per-second broadcast.
+function getScrewTimerMs(round) {
+  const screw = round?.screw || {};
+  if (screw.screwTimerMs === null) return null;
+  if (screw.active && typeof screw.screwTimerEndsAt === "number") {
+    return Math.max(0, screw.screwTimerEndsAt - now());
+  }
+  return screw.screwTimerMs;
 }
 
 function formatSeconds(cs) {
@@ -916,22 +964,24 @@ function renderRoulettePanel(settings, round, mePlayer) {
   const expectedCount = getRouletteExpectedCount(roulette);
   const canStop = isRoulettePlayerAllowed(roulette, mePlayer.id) && !playerSelection;
   const modeLabel = {
-    additive: "Additive",
-    highest: "Highest value",
-    "single-player": "Single-player",
-  }[roulette.mode || settings.rouletteMode] || "Additive";
+    additive: getSnark("player.roulette.modeAdditive", "Additive"),
+    highest: getSnark("player.roulette.modeHighest", "Highest value"),
+    "single-player": getSnark("player.roulette.modeSingle", "Single-player"),
+  }[roulette.mode || settings.rouletteMode] || getSnark("player.roulette.modeAdditive", "Additive");
   const targetText = roulette.mode === "single-player"
     ? roulette.targetPlayerName
-      ? `Only ${roulette.targetPlayerName} can stop this round.`
-      : "Waiting to choose a player."
-    : "Everyone can stop when they want to lock in their number.";
+      ? getSnark("player.roulette.onlyTarget", `Only ${roulette.targetPlayerName} can stop this round.`, { player: roulette.targetPlayerName })
+      : getSnark("player.roulette.waitingTarget", "Waiting to choose a player.")
+    : getSnark("player.roulette.everyoneStops", "Everyone can stop when they want to lock in their number.");
   const displayedValue = playerSelection ? Number(playerSelection.value || 0) : currentFrame.value;
-  const displayedLabel = playerSelection ? "Locked" : currentFrame.label;
-  const completedLabel = expectedCount > 0 ? `${completedCount}/${expectedCount} players locked in.` : "Waiting for players.";
+  const displayedLabel = playerSelection ? getSnark("player.roulette.lockedLabel", "Locked") : currentFrame.label;
+  const completedLabel = expectedCount > 0
+    ? getSnark("player.roulette.playersLocked", `${completedCount}/${expectedCount} players locked in.`, { completed: completedCount, expected: expectedCount })
+    : getSnark("player.roulette.waitingPlayers", "Waiting for players.");
 
   return `
     <section class="card player-card roulette-card">
-      <h2>Pick a Value</h2>
+      <h2>${getSnark("player.roulette.title", "Pick a Value")}</h2>
       <p class="muted">${modeLabel} mode · Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)} · Ceiling ${roulette.ceiling || 0}</p>
       <div class="roulette-display" aria-live="polite">
         <span class="roulette-value">${displayedValue}</span>
@@ -940,8 +990,8 @@ function renderRoulettePanel(settings, round, mePlayer) {
       <p class="muted">${targetText}</p>
       <p class="muted">${completedLabel}</p>
       ${playerSelection
-        ? `<p class="roulette-locked-note">You locked in ${Number(playerSelection.value || 0)}.</p>`
-        : `<button type="button" class="roulette-stop" data-roulette-stop ${canStop ? "" : "disabled"}>STOP</button>`}
+        ? `<p class="roulette-locked-note">${getSnark("player.roulette.youLocked", `You locked in ${Number(playerSelection.value || 0)}.`, { value: Number(playerSelection.value || 0) })}</p>`
+        : `<button type="button" class="roulette-stop" data-roulette-stop ${canStop ? "" : "disabled"}>${getSnark("player.roulette.stopButton", "STOP")}</button>`}
     </section>
   `;
 }
@@ -1204,24 +1254,24 @@ function hostHandleBuzz(player, payload) {
   if (usingTextEntry) {
     answerText = String(payload?.answerText || "").trim();
     if (!answerText) {
-      return { ok: false, reason: "Answer cannot be empty." };
+      return { ok: false, reason: getSnark("player.buzzer.answerEmpty", "Answer cannot be empty.") };
     }
     if (answerText.length > 120) {
-      return { ok: false, reason: "Answer is too long." };
+      return { ok: false, reason: getSnark("player.buzzer.answerTooLong", "Answer is too long.") };
     }
   } else {
     validOption = Number(payload?.option);
     if (!Number.isInteger(validOption) || validOption < 1 || validOption > settings.optionCount) {
-      return { ok: false, reason: "Invalid option." };
+      return { ok: false, reason: getSnark("player.buzzer.invalidOption", "Invalid option.") };
     }
   }
 
   if (settings.teamModeEnabled && !playerTeamColor) {
-    return { ok: false, reason: "Host has not assigned you to a team yet." };
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   }
 
   if (!canBuzz(player.id, validOption === null ? undefined : validOption)) {
-    return { ok: false, reason: "Buzzers are not open, disabled, or you already buzzed." };
+    return { ok: false, reason: getSnark("player.buzzer.buzzNotAllowed", "Buzzers are not open, disabled, or you already buzzed.") };
   }
 
   const timeLeftCs = round.screw.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
@@ -1291,7 +1341,7 @@ function hostHandleBuzz(player, payload) {
     resolveLogEntryWithForcedDelta(logEntry.id, -(logEntry.basePoints * 2));
     return {
       ok: true,
-      message: F_YOU_EASTER_EGG_H2,
+      message: getSnark("player.easteregg.heading", F_YOU_EASTER_EGG_H2),
       easterEgg: {
         id: "f-you",
       },
@@ -1347,11 +1397,11 @@ function hostHandleBuzz(player, payload) {
     ok: true,
     message: shouldLockAfterBuzz
       ? usingTextEntry
-        ? `${getPlayerName(player)} locked in an answer.`
-        : `${getPlayerName(player)} locked in option ${validOption}.`
+        ? getSnark("player.buzzer.lockedInAnswer", `${getPlayerName(player)} locked in an answer.`, { player: getPlayerName(player) })
+        : getSnark("player.buzzer.lockedInOption", `${getPlayerName(player)} locked in option ${validOption}.`, { player: getPlayerName(player), option: validOption })
       : usingTextEntry
-        ? `${getPlayerName(player)} submitted an answer.`
-        : `${getPlayerName(player)} buzzed option ${validOption}.`,
+        ? getSnark("player.buzzer.submittedAnswer", `${getPlayerName(player)} submitted an answer.`, { player: getPlayerName(player) })
+        : getSnark("player.buzzer.buzzedOption", `${getPlayerName(player)} buzzed option ${validOption}.`, { player: getPlayerName(player), option: validOption }),
   };
 }
 
@@ -1365,7 +1415,7 @@ async function submitResponse(payload) {
   try {
     const result = await RPC.call("buzz", payload, RPC.Mode.HOST);
     if (result?.ok === false) {
-      setBuzzNotice(result.reason || "Buzz blocked.");
+      setBuzzNotice(result.reason || getSnark("player.buzzer.buzzBlocked", "Buzz blocked."));
       render();
       return;
     }
@@ -1375,11 +1425,11 @@ async function submitResponse(payload) {
     if (result?.message) {
       setBuzzNotice(result.message);
     } else {
-      setBuzzNotice("Buzz sent.");
+      setBuzzNotice(getSnark("player.buzzer.buzzSent", "Buzz sent."));
     }
     render();
   } catch {
-    setBuzzNotice("Could not send buzz. Check connection/room.");
+    setBuzzNotice(getSnark("player.buzzer.buzzSendFailed", "Could not send buzz. Check connection/room."));
     render();
   }
 }
@@ -1593,19 +1643,19 @@ function stopBingoCycling() {
 function handleBingoBuzz(player, payload) {
   const bingo = getBingo();
   if (!bingo.active || !bingo.cycling) {
-    return { ok: false, reason: "Not active." };
+    return { ok: false, reason: getSnark("player.bingo.notActive", "Not active.") };
   }
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const teamColor = getPlayerTeamColor(player.id, assignments);
   if (settings.teamModeEnabled && !teamColor) {
-    return { ok: false, reason: "Host has not assigned you to a team yet." };
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   }
   const trackKey = getTeamTrackKey(player.id, settings, assignments);
   const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
   const observedIndex = payload?.litIndex;
   if (observedIndex === undefined || observedIndex < 0) {
-    return { ok: false, reason: "Invalid." };
+    return { ok: false, reason: getSnark("player.bingo.invalid", "Invalid.") };
   }
   const targetIndex = bingo.targetIndex;
   const playerItems = bingo.playerItems || {};
@@ -1643,7 +1693,7 @@ function handleBingoBuzz(player, payload) {
       collectedCounts, winner, cycling: false, currentLitIndex: -1,
     }, true);
     render();
-    return { ok: true, message: "Correct! +500" };
+    return { ok: true, message: getSnark("player.outcome.bingoCorrect", "Correct! +500") };
   } else {
     const scores = { ...getScores() };
     scores[scoreKey] = (scores[scoreKey] || 0) + BINGO_INCORRECT_POINTS;
@@ -1659,7 +1709,7 @@ function handleBingoBuzz(player, payload) {
       result: "incorrect", points: BINGO_INCORRECT_POINTS,
     }], true);
     render();
-    return { ok: true, message: "Incorrect! -500" };
+    return { ok: true, message: getSnark("player.outcome.bingoIncorrect", "Incorrect! -500") };
   }
 }
 
@@ -1691,42 +1741,42 @@ function startDisOrDat(mode, playerId) {
 function handleDisOrDatAnswer(player, payload) {
   const dd = getDisOrDat();
   if (!dd.active || dd.phase !== "playing") {
-    return { ok: false, reason: "Dis or Dat isn't active." };
+    return { ok: false, reason: getSnark("player.disdat.notActive", "Dis or Dat isn't active.") };
   }
   const q = Number(payload?.q);
   const answer = payload?.answer;
   if (!Number.isInteger(q) || q < 0 || q >= DIS_OR_DAT_QUESTION_COUNT) {
-    return { ok: false, reason: "Bad question." };
+    return { ok: false, reason: getSnark("player.disdat.badQuestion", "Bad question.") };
   }
   if (answer !== "dis" && answer !== "dat" && answer !== "both") {
-    return { ok: false, reason: "Bad answer." };
+    return { ok: false, reason: getSnark("player.disdat.badAnswer", "Bad answer.") };
   }
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const trackKey = getTeamTrackKey(player.id, settings, assignments);
   const isSharedTeam = trackKey !== player.id;
   if (settings.teamModeEnabled && !getPlayerTeamColor(player.id, assignments)) {
-    return { ok: false, reason: "Host has not assigned you to a team yet." };
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   }
   if (dd.mode === "onePlayTimed") {
     const activeTrackKey = isSharedTeam ? getTeamTrackKey(dd.activePlayerId, settings, assignments) : dd.activePlayerId;
     if (player.id !== dd.activePlayerId && trackKey !== activeTrackKey) {
-      return { ok: false, reason: "You're not the active player." };
+      return { ok: false, reason: getSnark("player.disdat.notActivePlayer", "You're not the active player.") };
     }
   }
   if (dd.mode === "allPlayHostPaced" && q !== dd.currentQuestion) {
-    return { ok: false, reason: "That question isn't live yet." };
+    return { ok: false, reason: getSnark("player.disdat.notLiveYet", "That question isn't live yet.") };
   }
   if (dd.timeEndsAt && now() > dd.timeEndsAt) {
-    return { ok: false, reason: "Time's up." };
+    return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
   }
   const resps = dd.responses[trackKey] || [];
   if (resps[q] === "dis" || resps[q] === "dat" || resps[q] === "both" || resps[q] === "none") {
-    return { ok: false, reason: "Already answered." };
+    return { ok: false, reason: getSnark("player.disdat.alreadyAnswered", "Already answered.") };
   }
   if ((dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed") &&
     q !== resps.filter(a => a === "dis" || a === "dat" || a === "both").length) {
-    return { ok: false, reason: "Answer the current question first." };
+    return { ok: false, reason: getSnark("player.disdat.answerCurrentFirst", "Answer the current question first.") };
   }
 
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
@@ -1773,11 +1823,11 @@ function handleDisOrDatAnswer(player, payload) {
   if (isTimed && activeTracks.length > 0 && activeTracks.every(track =>
     (nextResponses[track] || []).filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT)) {
     finalizeDisOrDat();
-    return { ok: true, message: isCorrect ? "Correct! +300" : "Incorrect." };
+    return { ok: true, message: isCorrect ? getSnark("player.outcome.disdatCorrect", "Correct! +300") : getSnark("player.outcome.disdatIncorrect", "Incorrect.") };
   }
 
   render();
-  return { ok: true, message: isCorrect ? "Correct! +300" : "Incorrect." };
+  return { ok: true, message: isCorrect ? getSnark("player.outcome.disdatCorrect", "Correct! +300") : getSnark("player.outcome.disdatIncorrect", "Incorrect.") };
 }
 
 function nextDisOrDatQuestion() {
@@ -1987,24 +2037,24 @@ function initiateScrew(screwerId) {
   const settings = getSettings();
   
   if (isBingoMode()) {
-    return { ok: false, reason: "Cannot screw during special questions." };
+    return { ok: false, reason: getSnark("player.screw.noSpecial", "Cannot screw during special questions.") };
   }
   if (!settings.allowScrewing) {
-    return { ok: false, reason: "Screwing is not enabled." };
+    return { ok: false, reason: getSnark("player.screw.notEnabled", "Screwing is not enabled.") };
   }
   if (round.status !== ROUND_STATUSES.OPEN) {
-    return { ok: false, reason: "Buzzers are not open." };
+    return { ok: false, reason: getSnark("player.buzzer.buzzersNotOpen", "Buzzers are not open.") };
   }
   if (round.screw.active) {
-    return { ok: false, reason: "A screw is already in progress." };
+    return { ok: false, reason: getSnark("player.screw.alreadyActive", "A screw is already in progress.") };
   }
   if (round.screwsUsedBy?.includes(screwerId)) {
-    return { ok: false, reason: "You have already used your screw." };
+    return { ok: false, reason: getSnark("player.screw.alreadyUsed", "You have already used your screw.") };
   }
   
   const screwer = currentParticipants().find((p) => p.id === screwerId);
   if (!screwer) {
-    return { ok: false, reason: "Invalid screwer." };
+    return { ok: false, reason: getSnark("player.screw.invalidScrewer", "Invalid screwer.") };
   }
   
   setState(
@@ -2026,7 +2076,7 @@ function initiateScrew(screwerId) {
   
   setBuzzNotice("A screw is being used...");
   render();
-  return { ok: true, message: `${getPlayerName(screwer)} initiated a screw.` };
+  return { ok: true, message: getSnark("player.screw.initiated", `${getPlayerName(screwer)} initiated a screw.`, { player: getPlayerName(screwer) }) };
 }
 
 // Host/co-host initiates a screw without needing allowScrewing or screw cap
@@ -2074,21 +2124,21 @@ function selectScrewee(screweeId) {
   const round = getRound();
   
   if (!round.screw.active) {
-    return { ok: false, reason: "No screw in progress." };
+    return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress.") };
   }
   if (round.screw.screweeId !== null) {
-    return { ok: false, reason: "Screwee already selected." };
+    return { ok: false, reason: getSnark("player.screw.screweeAlreadySelected", "Screwee already selected.") };
   }
   
   const screwee = currentParticipants().find((p) => p.id === screweeId);
   if (!screwee) {
-    return { ok: false, reason: "Invalid screwee." };
+    return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
   }
   if (screwee.id === getControllerId()) {
-    return { ok: false, reason: "Cannot screw the host." };
+    return { ok: false, reason: getSnark("player.screw.cannotHost", "Cannot screw the host.") };
   }
   if (screwee.id === round.screw.screwerId) {
-    return { ok: false, reason: "Cannot screw yourself." };
+    return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
   }
 
   const settings = getSettings();
@@ -2097,7 +2147,7 @@ function selectScrewee(screweeId) {
     const screwerTeam = getPlayerTeamColor(round.screw.screwerId, assignments);
     const screweeTeam = getPlayerTeamColor(screweeId, assignments);
     if (screwerTeam && screwerTeam === screweeTeam) {
-      return { ok: false, reason: "Cannot screw your own team in shared team mode." };
+      return { ok: false, reason: getSnark("player.screw.cannotOwnTeam", "Cannot screw your own team in shared team mode.") };
     }
   }
   
@@ -2116,7 +2166,7 @@ function selectScrewee(screweeId) {
   );
   
   render();
-  return { ok: true, message: `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.` };
+  return { ok: true, message: getSnark("player.screw.over", `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.`, { screwer: round.screw.screwerName, screwee: getPlayerName(screwee) }) };
 }
 
 // Start the 5-second screw countdown — only screwee can buzz during this window
@@ -2128,7 +2178,7 @@ function startScrewTimer() {
   const round = getRound();
   
   if (!round.screw.active || !round.screw.screweeId) {
-    return { ok: false, reason: "No screw in progress or screwee not selected." };
+    return { ok: false, reason: getSnark("player.screw.noScrewee", "No screw in progress or screwee not selected.") };
   }
   
   const settings = getSettings();
@@ -2142,6 +2192,7 @@ function startScrewTimer() {
       screw: {
         ...round.screw,
         screwTimerMs: 5000,
+        screwTimerEndsAt: now() + 5000,
         frozenCs: timeLeftCs,
         frozenPoints: frozenPoints,
       },
@@ -2231,7 +2282,10 @@ function hostTick() {
   
   // Handle screw timer
   if (round.screw.active && round.screw.screwTimerMs !== null && round.screw.screwTimerMs > 0) {
-    const nextMs = Math.max(0, round.screw.screwTimerMs - 100);
+    const remainingMs = typeof round.screw.screwTimerEndsAt === "number"
+      ? Math.max(0, round.screw.screwTimerEndsAt - now())
+      : Math.max(0, round.screw.screwTimerMs - 1000);
+    const nextMs = Math.max(0, remainingMs);
     setState(
       "round",
       {
@@ -2736,7 +2790,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   const bingo = getBingo();
   const isWen = isWenDitHapnMode();
   if (!bingo.active) {
-    return `<section class="card player-card"><h2>${isWen ? "Wen Dit Happn" : "Bingo"}</h2><p class="muted">Waiting for the host to start...</p></section>`;
+    return `<section class="card player-card"><h2>${isWen ? "Wen Dit Happn" : "Bingo"}</h2><p class="muted">${getSnark("player.bingo.waitingHost", "Waiting for the host to start...")}</p></section>`;
   }
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
@@ -2764,13 +2818,13 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   return `
     <section class="card player-card bingo-player-card">
       <h2>${isWen ? "Wen Dit Happn" : "Bingo"} ${teamPill}</h2>
-      ${isWen ? "" : `<p class="muted">Collected: ${collected.length}/${items.length}</p>`}
+      ${isWen ? "" : `<p class="muted">${getSnark("player.bingo.collectedLabel", "Collected")}: ${collected.length}/${items.length}</p>`}
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
       </div>
-      <p class="muted">Score: <strong>${myScore}</strong></p>
-      ${winnerLabel ? `<p class="bingo-winner-msg">${winnerLabel} wins!</p>` : ""}
+      <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: `<strong>${myScore}</strong>` })}</p>
+      ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
     </section>`;
 }
 
@@ -2782,7 +2836,7 @@ function renderBingoAudienceDisplay(settings, players) {
     return `
     <main class="layout audience-layout"${round.screw.active ? ' data-screw-active="true"' : ""} data-bingo-active="true">
       <header class="hero audience-hero">
-          <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Waiting for the game to start...</p></div>
+          <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">${getSnark("audience.bingo.waitingGame", "Waiting for the game to start...")}</p></div>
         </header>
       </main>`;
   }
@@ -2807,7 +2861,7 @@ function renderBingoAudienceDisplay(settings, players) {
         const c = (bingo.collectedCounts?.[teamColor] || 0);
         const s = scores[getTeamScoreKey(teamColor)] || 0;
         const names = members.map(m => getPlayerName(m)).join(", ");
-        return `<li><strong>Team ${teamColor}</strong> <small>(${names})</small> ${isWen ? `Score: ${s}` : `${c}/${items.length} letters — ${s}pts`}</li>`;
+        return `<li><strong>Team ${teamColor}</strong> <small>(${names})</small> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
       }).filter(Boolean).join("");
   } else {
     const sorted = visible
@@ -2815,7 +2869,7 @@ function renderBingoAudienceDisplay(settings, players) {
     standings = sorted.map(p => {
       const c = (bingo.collectedCounts?.[p.id] || 0);
       const s = scores[p.id] || 0;
-      return `<li><strong>${getPlayerName(p)}</strong> ${isWen ? `Score: ${s}` : `${c}/${items.length} letters — ${s}pts`}</li>`;
+      return `<li><strong>${getPlayerName(p)}</strong> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
     }).join("");
   }
   const winnerLabel = bingo.winner
@@ -2826,11 +2880,11 @@ function renderBingoAudienceDisplay(settings, players) {
   return `
     <main class="layout audience-layout" data-bingo-active="true">
       <header class="hero audience-hero">
-        <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
+        <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
       </header>
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
-      ${winnerLabel ? `<div class="bingo-winner-banner">${winnerLabel} WINS!</div>` : ""}
-      <section class="card"><h2>Standings</h2><ul class="bingo-standings">${standings || "<li class='muted'>No players yet.</li>"}</ul></section>
+      ${winnerLabel ? `<div class="bingo-winner-banner">${getSnark("audience.bingo.winnerBanner", `${winnerLabel} WINS!`, { winner: winnerLabel })}</div>` : ""}
+      <section class="card"><h2>${getSnark("audience.bingo.standings", "Standings")}</h2><ul class="bingo-standings">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
     </main>`;
 }
 
@@ -2981,7 +3035,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
   const isOnePlay = dd.mode === "onePlayTimed";
 
   if (!dd.active) {
-    return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">Waiting for the host to start...</p></section>`;
+    return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${getSnark("player.disdat.waitingHost", "Waiting for the host to start...")}</p></section>`;
   }
 
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -2994,10 +3048,10 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     const activeTrackKey = getTeamTrackKey(dd.activePlayerId, settings, assignments);
     if (trackKey !== activeTrackKey) {
       if (isSharedTeam && TEAM_COLORS.includes(activeTrackKey)) {
-        return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">Team ${activeTrackKey} is playing this round. Sit back and watch!</p></section>`;
+        return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${getSnark("player.disdat.watchTeam", `Team ${activeTrackKey} is playing this round. Sit back and watch!`, { team: activeTrackKey })}</p></section>`;
       }
       const activePlayer = currentParticipants().find(p => p.id === dd.activePlayerId);
-      return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${activePlayer ? escapeHtml(getPlayerName(activePlayer)) : "A player"} is playing this round. Sit back and watch!</p></section>`;
+      return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${getSnark("player.disdat.watchPlayer", `${activePlayer ? escapeHtml(getPlayerName(activePlayer)) : "A player"} is playing this round. Sit back and watch!`, { player: activePlayer ? escapeHtml(getPlayerName(activePlayer)) : "A player" })}</p></section>`;
     }
   }
 
@@ -3042,21 +3096,21 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     const correctCount = myResponses.filter((a, i) => a === dd.answers[i]).length;
     body = `
       <div class="disordat-results">
-        <h3>Results</h3>
-        <p class="muted">${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct</p>
+        <h3>${getSnark("player.disdat.resultsTitle", "Results")}</h3>
+        <p class="muted">${getSnark("player.disdat.correctCount", `${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct`, { correct: correctCount, total: DIS_OR_DAT_QUESTION_COUNT })}</p>
         <p>Base: <strong>${points}</strong>${isTimed ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${points + bonus}</strong> pts</p>
-        ${isTimed && answeredAll && bonus === 0 ? `<p class="muted">Finish with ${DIS_OR_DAT_BONUS_MIN_CORRECT}+ correct to claim the time bonus.</p>` : ""}
-        <p class="muted">Waiting for the host to continue...</p>
+        ${isTimed && answeredAll && bonus === 0 ? `<p class="muted">${getSnark("player.disdat.bonusHint", `Finish with ${DIS_OR_DAT_BONUS_MIN_CORRECT}+ correct to claim the time bonus.`, { min: DIS_OR_DAT_BONUS_MIN_CORRECT })}</p>` : ""}
+        <p class="muted">${getSnark("player.disdat.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </div>
     `;
   } else {
     body = `
       ${isTimed
-        ? `<div class="disordat-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
-           ${answeredAll && !revealShowing ? "" : `<p class="muted">Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.</p>`}`
-        : `<p class="muted">Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.</p>`}
+        ? `<div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+           ${answeredAll && !revealShowing ? "" : `<p class="muted">${getSnark("player.disdat.questionTimed", `Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.`, { current: currentQ + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>`}`
+        : `<p class="muted">${getSnark("player.disdat.questionHostPaced", `Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.`, { current: dd.currentQuestion + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>`}
       <div class="disordat-diamond-wrap">${diamond}</div>
-      ${answeredAll && isTimed && !revealShowing ? `<p class="disordat-done">All answered! Wait for results.</p>` : ""}
+      ${answeredAll && isTimed && !revealShowing ? `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>` : ""}
     `;
   }
 
@@ -3078,16 +3132,16 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
   const modeLabel = {
-    onePlayTimed: "One Play — Timed",
-    allPlayTimed: "All Play — Timed",
-    allPlayHostPaced: "All Play — Host Paced",
+    onePlayTimed: getSnark("audience.disdat.modeOnePlay", "One Play — Timed"),
+    allPlayTimed: getSnark("audience.disdat.modeAllPlay", "All Play — Timed"),
+    allPlayHostPaced: getSnark("audience.disdat.modeHostPaced", "All Play — Host Paced"),
   }[dd.mode] || "Dis or Dat";
 
   if (!dd.active) {
     return `
       <main class="layout audience-layout" data-disordat-active="true">
         <header class="hero audience-hero">
-          <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">Waiting for the game to start...</p></div>
+          <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">${getSnark("audience.disdat.waitingGame", "Waiting for the game to start...")}</p></div>
         </header>
       </main>`;
   }
@@ -3112,20 +3166,20 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   }).join("");
 
   const timerHtml = isTimed && dd.phase === "playing"
-    ? `<div class="audience-timer">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>`
+    ? `<div class="audience-timer">${getSnark("audience.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>`
     : "";
   const questionHtml = !isTimed && dd.phase === "playing"
-    ? `<div class="disordat-audience-question"><h2>Question ${dd.currentQuestion + 1}</h2><p>${escapeHtml(dd.disLabel || "Dis")} or ${escapeHtml(dd.datLabel || "Dat")}?</p></div>`
+    ? `<div class="disordat-audience-question"><h2>${getSnark("audience.disdat.audienceQuestionTitle", `Question ${dd.currentQuestion + 1}`, { number: dd.currentQuestion + 1 })}</h2><p>${escapeHtml(dd.disLabel || "Dis")} or ${escapeHtml(dd.datLabel || "Dat")}?</p></div>`
     : "";
 
   return `
     <main class="layout audience-layout" data-disordat-active="true">
       <header class="hero audience-hero">
-        <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">Room ${getRoomCode() || "..."}</p></div>
+        <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
       </header>
       ${timerHtml}
       ${questionHtml}
-      <section class="card"><h2>${dd.phase === "results" ? "Final Standings" : "Standings"} — ${modeLabel}</h2><ul class="bingo-standings">${standings || "<li class='muted'>No players yet.</li>"}</ul></section>
+      <section class="card"><h2>${getSnark("audience.disdat.finalStandings", dd.phase === "results" ? "Final Standings" : "Standings")} — ${modeLabel}</h2><ul class="bingo-standings">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
     </main>`;
 }
 
@@ -3156,12 +3210,12 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return baseClass ? `${baseClass} ${teamButtonClass}` : teamButtonClass;
   };
   const myScore = Number(getScores()[getScoreKeyForPlayer(mePlayer.id, settings, teamAssignments)] || 0);
-  const myScoreLine = `<p class="muted">Score: <strong>${myScore}</strong></p>`;
+  const myScoreLine = `<p class="muted">${getSnark("player.buzzer.scoreLabel", "Score")}: <strong>${myScore}</strong></p>`;
   if (settings.teamModeEnabled && !myTeamColor) {
     return `
       <section class="card player-card">
-        <h2>Waiting For Team Assignment</h2>
-        <p class="muted">The Host must assign you to an alliance before your buzzer appears.</p>
+        <h2>${getSnark("player.buzzer.waitingTeamAssignment", "Waiting For Team Assignment")}</h2>
+        <p class="muted">${getSnark("player.buzzer.waitingTeamAssignmentBody", "The Host must assign you to an alliance before your buzzer appears.")}</p>
       </section>
     `;
   }
@@ -3181,8 +3235,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     
     return `
       <section class="card player-card">
-        <h2>Select Who to Screw</h2>
-        <p class="muted">Choose another player to screw over:</p>
+        <h2>${getSnark("player.screw.selectTitle", "Select Who to Screw")}</h2>
+        <p class="muted">${getSnark("player.screw.selectPrompt", "Choose another player to screw over:")}</p>
         <div class="screw-player-list">${playerButtons}</div>
       </section>
     `;
@@ -3190,32 +3244,32 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
 
   // Show "hold up, a screw is getting used" message for other players during screw
   if (round.screw.active && mePlayer.id !== round.screw.screwerId && mePlayer.id !== round.screw.screweeId) {
-    const timeText = round.screw.screwTimerMs !== null
-      ? formatSeconds(Math.ceil(round.screw.screwTimerMs / 10))
-      : "pending";
+    const timeText = getScrewTimerMs(round) !== null
+      ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10))
+      : getSnark("player.screw.pending", "pending");
     
     return `
       <section class="card player-card">
-        <h2>Hold Up!</h2>
-        <p class="muted">A screw is being used by <strong>${round.screw.screwerName}</strong> on <strong>${round.screw.screeeName}</strong>.</p>
-        <p class="muted">Time: <strong>${timeText}s</strong></p>
+        <h2>${getSnark("player.screw.holdUp", "Hold Up!")}</h2>
+        <p class="muted">${getSnark("player.screw.inUseOn", `A screw is being used by <strong>${round.screw.screwerName}</strong> on <strong>${round.screw.screeeName}</strong>.`, { screwer: `<strong>${round.screw.screwerName}</strong>`, screwee: `<strong>${round.screw.screeeName}</strong>` })}</p>
+        <p class="muted">${getSnark("player.screw.timeLabel", "Time")}: <strong>${timeText}s</strong></p>
       </section>
     `;
   }
 
   // Show screw timer UI for the screwee
   if (round.screw.active && mePlayer.id === round.screw.screweeId) {
-    const timeText = round.screw.screwTimerMs !== null
-      ? formatSeconds(Math.ceil(round.screw.screwTimerMs / 10))
-      : "waiting";
-    const buzzerDisabled = round.screw.screwTimerMs === null || round.screw.screwTimerMs <= 0;
+    const timeText = getScrewTimerMs(round) !== null
+      ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10))
+      : getSnark("player.screw.waiting", "waiting");
+    const buzzerDisabled = getScrewTimerMs(round) === null || getScrewTimerMs(round) <= 0;
     
     if (settings.optionCount === 1) {
       return `
         <section class="card player-card">
-          <h2>You're Being Screwed!</h2>
-          <p class="muted">Screw timer: <strong>${timeText}s</strong></p>
-          <p class="muted">Answer quickly!</p>
+          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
+          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong>${timeText}s</strong></p>
+          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
           <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>BUZZ</button>
         </section>
       `;
@@ -3236,9 +3290,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         : "";
       return `
         <section class="card player-card">
-          <h2>You're Being Screwed!</h2>
-          <p class="muted">Screw timer: <strong>${timeText}s</strong></p>
-          <p class="muted">Answer quickly!</p>
+          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
+          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong>${timeText}s</strong></p>
+          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
           <div class="abxy-diamond">
             ${button(4, "pos-y")}
             ${button(3, "pos-x")}
@@ -3263,16 +3317,16 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwInProgress;
   const globalDisabled = disabled || (!rebuzzAllowed && (alreadyBuzzed || teamAlreadyBuzzed)) || playerDisabled || screwInProgress;
   const helperText = playerDisabled
-    ? "Your buzzer is disabled by the Host."
+    ? getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.")
     : disabled
-    ? "Buzzers are currently closed."
+    ? getSnark("player.buzzer.buzzersClosed", "Buzzers are currently closed.")
     : teamAlreadyBuzzed
-      ? "Your team already buzzed this round."
+      ? getSnark("player.buzzer.teamAlreadyBuzzed", "Your team already buzzed this round.")
     : !rebuzzAllowed && alreadyBuzzed
-      ? "You already buzzed this round."
+      ? getSnark("player.buzzer.alreadyBuzzed", "You already buzzed this round.")
       : screwInProgress
-      ? "A screw is in progress."
-      : "Buzz now.";
+      ? getSnark("player.buzzer.screwInProgress", "A screw is in progress.")
+      : getSnark("player.buzzer.buzzNow", "Buzz now.");
   const notice = getRecentBuzzNotice();
   const timeText = formatSeconds(timeLeftCs);
   const usingTextEntry = settings.inputMode === "text";
@@ -3281,7 +3335,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     if (fYouEasterEggUnlocked) {
       return `
         <section class="card player-card easter-egg-card">
-          <h2>${escapeHtml(F_YOU_EASTER_EGG_H2)}</h2>
+          <h2>${escapeHtml(getSnark("player.easteregg.heading", F_YOU_EASTER_EGG_H2))}</h2>
           <p class="muted">
             This F You easter egg comes about by the fact that in the series "You Don't Know Jack" which this buzzer system is designed to allow for the recreation of games of, if you were to type "Fuck You" in a text field you would get scolded by the host (something like "F*** me? no F*** you") and lose some points the first time, the second time you would get told how unoriginal you are, and the third time the game would just end, I am here to emulate that, Your score has been decreased, and im sure your scolding will come in a moment or two, I guess you are either a fan of jack and just curious if I did something like this, a programmer who found this in the README, or most likely, a 30 year old degenerate living in the basement of your parents home (or your name is either SomeNightYT, fullwizard, or Psych82, hi guys!) whichever way you found yourself here, welcome! Consider this your entry into a club you will want out of right away
             <br /><br />-- Hedgehawk11 <3
@@ -3289,7 +3343,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
             <a href="https://www.youtube.com/watch?v=xEDIkKXPIHs" target="_blank" rel="noopener noreferrer">https://www.youtube.com/watch?v=xEDIkKXPIHs</a>
           </p>
           <div class="easter-egg-actions">
-            <button type="button" data-f-you-close>Let me play again</button>
+            <button type="button" data-f-you-close>${getSnark("player.easteregg.closeButton", "Let me play again")}</button>
           </div>
         </section>
       `;
@@ -3297,27 +3351,27 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
 
     const disabledAttr = globalDisabled ? "disabled" : "";
     const textHelper = playerDisabled
-      ? "Your answer input is disabled by the Host."
+      ? getSnark("player.buzzer.answerDisabledByHost", "Your answer input is disabled by the Host.")
       : disabled
-      ? "Answers are currently closed."
+      ? getSnark("player.buzzer.answersClosed", "Answers are currently closed.")
       : teamAlreadyBuzzed
-        ? "Your team already answered this round."
+        ? getSnark("player.buzzer.teamAlreadyAnswered", "Your team already answered this round.")
       : !rebuzzAllowed && alreadyBuzzed
-        ? "You already submitted an answer this round."
+        ? getSnark("player.buzzer.alreadyAnswered", "You already submitted an answer this round.")
         : screwInProgress
-        ? "A screw is in progress."
-        : "Type your answer and submit.";
+        ? getSnark("player.buzzer.screwInProgress", "A screw is in progress.")
+        : getSnark("player.buzzer.typeAnswerSubmit", "Type your answer and submit.");
 
     return `
       <section class="card player-card">
-        <h2>Your Answer</h2>
+        <h2>${getSnark("player.buzzer.yourAnswerTitle", "Your Answer")}</h2>
         <p class="muted">${textHelper}</p>
         ${myScoreLine}
-        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
-          <input id="answer-entry" type="text" maxlength="120" placeholder="Type your answer" ${disabledAttr} />
-          <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>Submit Answer</button>
+          <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
+          <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>${getSnark("player.buzzer.submitAnswerButton", "Submit Answer")}</button>
         </div>
       </section>
     `;
@@ -3328,20 +3382,20 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
 const screwBtn = settings.allowScrewing
     ? (screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">Your screw has been used.</p>`
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
             : screwAvailable && !disabled && !playerDisabled
                 ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">Screw available.</p>`)
+                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
     : "";
     
     return `
       <section class="card player-card">
-        <h2>Your Buzzer</h2>
-        <p class="muted">${optionDisabled ? "This buzzer is disabled by the Host." : helperText}</p>
+        <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+        <p class="muted">${optionDisabled ? getSnark("player.buzzer.singleBuzzerDisabled", "This buzzer is disabled by the Host.") : helperText}</p>
         ${myScoreLine}
-        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>BUZZ</button>
         ${screwBtn}
@@ -3358,20 +3412,20 @@ const screwBtn = settings.allowScrewing
       .join("");
 const screwBtn = settings.allowScrewing
     ? (screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">Your screw has been used.</p>`
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
             : screwAvailable && !disabled && !playerDisabled
                 ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">Screw available.</p>`)
+                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
     : "";
     
     return `
       <section class="card player-card">
-        <h2>Your Buzzer</h2>
+        <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
         ${screwBtn}
@@ -3400,10 +3454,10 @@ const screwBtn = settings.allowScrewing
 
     return `
       <section class="card player-card">
-        <h2>Your Buzzer</h2>
+        <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">Time left: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="abxy-diamond">
           ${button(4, "pos-y")}
@@ -3427,17 +3481,17 @@ const screwBtn = settings.allowScrewing
     .join("");
   const screwBtn = settings.allowScrewing
     ? (screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">Your screw has been used.</p>`
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
             : screwAvailable && !disabled && !playerDisabled
                 ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
-                : `<p class="muted" style="margin-top:0.5rem">Screw available.</p>`)
+                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
     : "";
 
   return `
     <section class="card player-card">
-      <h2>Your Buzzer</h2>
+      <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         ${myScoreLine}
       <p class="muted">${helperText}</p>
       <p class="muted">${timeText}</p>
@@ -3459,6 +3513,20 @@ function getBuzzedParticipants(round, players) {
 // Audience/projection display — shows round status, buzz leaderboard
 // =============================================================================
 function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
+  const isScrewActive = round.screw.active;
+  const screwTimerMs = getScrewTimerMs(round);
+  let timerCs;
+  let timerDisplay;
+  if (isScrewActive && screwTimerMs !== null) {
+    timerCs = Math.ceil(screwTimerMs / 10);
+    timerDisplay = `${formatSeconds(timerCs)}s`;
+  } else if (isScrewActive) {
+    timerCs = null;
+    timerDisplay = "SCREW";
+  } else {
+    timerCs = timeLeftCs;
+    timerDisplay = `${formatSeconds(timeLeftCs)}s`;
+  }
   const buzzedPlayers = getBuzzedParticipants(round, players);
   const cohostIds = getSafeState("cohostIds", []);
   const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
@@ -3468,11 +3536,11 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     : buzzedPlayers[0] || null;
 
   const statusLabel = {
-    [ROUND_STATUSES.IDLE]: "Waiting for the round to start",
-    [ROUND_STATUSES.OPEN]: "Buzzers open",
-    [ROUND_STATUSES.ROULETTE]: "Pick-a-value in progress",
-    [ROUND_STATUSES.LOCKED]: "Buzz locked",
-    [ROUND_STATUSES.CLOSED]: "Round closed",
+    [ROUND_STATUSES.IDLE]: getSnark("audience.buzzer.statusIdle", "Waiting for the round to start"),
+    [ROUND_STATUSES.OPEN]: getSnark("audience.buzzer.statusOpen", "Buzzers open"),
+    [ROUND_STATUSES.ROULETTE]: getSnark("audience.buzzer.statusRoulette", "Pick-a-value in progress"),
+    [ROUND_STATUSES.LOCKED]: getSnark("audience.buzzer.statusLocked", "Buzz locked"),
+    [ROUND_STATUSES.CLOSED]: getSnark("audience.buzzer.statusClosed", "Round closed"),
   }[round.status];
 
   const pointsUpForGrabs = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED
@@ -3486,15 +3554,15 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   const buzzSection = useSingleLeader
     ? `<div class="audience-leader">
         <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
-        <strong>${leader ? escapeHtml(getPlayerName(leader)) : "Waiting for a buzz"}</strong>
-        <span class="muted">${leader ? `Time left: <strong>${formatSeconds(timeLeftCs)}s</strong>` : "No one has buzzed yet."}</span>
+        <strong>${leader ? escapeHtml(getPlayerName(leader)) : getSnark("audience.outcome.waitingForBuzz", "Waiting for a buzz")}</strong>
+        <span class="muted">${leader ? `Time left: <strong>${timerDisplay}</strong>` : getSnark("audience.outcome.noBuzzYet", "No one has buzzed yet.")}</span>
       </div>`
     : `<ul class="audience-buzz-list">
         ${buzzedPlayers.length
           ? buzzedPlayers
               .map((player, index) => `<li><span>${index + 1}</span><strong>${escapeHtml(getPlayerName(player))}</strong></li>`)
               .join("")
-          : `<li class="audience-empty">No buzzes yet.</li>`}
+          : `<li class="audience-empty">${getSnark("audience.outcome.noBuzzesYet", "No buzzes yet.")}</li>`}
       </ul>`;
 
   return `
@@ -3505,7 +3573,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
           <h2>${statusLabel}</h2>
         </div>
         <div class="audience-meta">
-          <span class="audience-timer">${formatSeconds(timeLeftCs)}s</span>
+          <span class="audience-timer">${timerDisplay}</span>
           ${pointsUpForGrabs !== null ? `<span class="audience-points">${pointsLabel}</span>` : ""}
         </div>
       </div>
@@ -3520,16 +3588,18 @@ function renderAudienceRoulettePanel(settings, round, players) {
   const completedCount = Array.isArray(roulette.completedPlayerIds) ? roulette.completedPlayerIds.length : 0;
   const expectedCount = getRouletteExpectedCount(roulette);
   const modeLabel = {
-    additive: "Additive",
-    highest: "Highest value",
-    "single-player": "Single-player",
-  }[roulette.mode || settings.rouletteMode] || "Additive";
+    additive: getSnark("audience.roulette.modeAdditive", "Additive"),
+    highest: getSnark("audience.roulette.modeHighest", "Highest value"),
+    "single-player": getSnark("audience.roulette.modeSingle", "Single-player"),
+  }[roulette.mode || settings.rouletteMode] || getSnark("audience.roulette.modeAdditive", "Additive");
   const targetLabel = roulette.mode === "single-player"
     ? roulette.targetPlayerName
-      ? `Only ${roulette.targetPlayerName} can stop this round.`
-      : "Waiting to choose a player."
-    : "Everyone can stop when they want to lock in their number.";
-  const selectionCountLabel = expectedCount > 0 ? `${completedCount}/${expectedCount} players locked in.` : "Waiting for players.";
+      ? getSnark("audience.roulette.onlyTarget", `Only ${roulette.targetPlayerName} can stop this round.`, { player: roulette.targetPlayerName })
+      : getSnark("audience.roulette.waitingTarget", "Waiting to choose a player.")
+    : getSnark("audience.roulette.everyoneStops", "Everyone can stop when they want to lock in their number.");
+  const selectionCountLabel = expectedCount > 0
+    ? getSnark("audience.roulette.playersLocked", `${completedCount}/${expectedCount} players locked in.`, { completed: completedCount, expected: expectedCount })
+    : getSnark("audience.roulette.waitingPlayers", "Waiting for players.");
   const playerSelections = Object.values(roulette.selections || {});
   const accumulatedValue = playerSelections.reduce((total, selection) => total + (Number(selection.value) || 0), 0);
   const selections = playerSelections.length
@@ -3538,7 +3608,7 @@ function renderAudienceRoulettePanel(settings, round, players) {
         .sort((a, b) => Number(a.stoppedAt || 0) - Number(b.stoppedAt || 0))
         .map((selection) => `<li><span>${escapeHtml(selection.playerName || "Player")}</span><strong>${Number(selection.value || 0)}</strong></li>`)
         .join("")
-    : `<li class="audience-empty">No one has locked in yet.</li>`;
+    : `<li class="audience-empty">${getSnark("audience.roulette.audienceNoLocked", "No one has locked in yet.")}</li>`;
   const finalValue = round.roulette?.finalValue;
 
   return `
@@ -3549,8 +3619,8 @@ function renderAudienceRoulettePanel(settings, round, players) {
           <h2>${modeLabel} mode</h2>
         </div>
         <div class="audience-meta muted">
-          <span>Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)}</span>
-          <span>Ceiling ${roulette.ceiling || 0}</span>
+          <span>${getSnark("audience.roulette.topAmountLabel", `Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)}`, { amount: roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount) })}</span>
+          <span>${getSnark("audience.roulette.ceilingLabel", `Ceiling ${roulette.ceiling || 0}`, { ceiling: roulette.ceiling || 0 })}</span>
         </div>
       </div>
 
@@ -3559,10 +3629,10 @@ function renderAudienceRoulettePanel(settings, round, players) {
         <span class="roulette-label">${currentFrame.label}</span>
       </div>
 
-      <p class="audience-roulette-total">Accumulated total: <strong>${accumulatedValue}</strong></p>
+      <p class="audience-roulette-total">${getSnark("audience.roulette.audienceTotalLabel", "Accumulated total")}: <strong>${accumulatedValue}</strong></p>
       <p class="muted">${targetLabel}</p>
       <p class="muted">${selectionCountLabel}</p>
-      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">Final value: <strong>${Number(finalValue)}</strong></p>` : ""}
+      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">${getSnark("audience.roulette.audienceFinalValue", `Final value: <strong>${Number(finalValue)}</strong>`, { value: `<strong>${Number(finalValue)}</strong>` })}</p>` : ""}
       <ul class="audience-roulette-list">${selections}</ul>
     </section>
   `;
@@ -3575,14 +3645,14 @@ function renderAudienceScrewPanel(round) {
   }
 
   const screw = round.screw || {};
-  const timeText = screw.screwTimerMs !== null ? formatSeconds(Math.ceil(screw.screwTimerMs / 10)) : "pending";
+  const timeText = getScrewTimerMs(round) !== null ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10)) : getSnark("audience.screw.pending", "pending");
 
   if (!screw.active) {
     return `
       <section class="card audience-card audience-screw-card">
         <p class="prejoin-kicker">Screws</p>
-        <h2>Enabled</h2>
-        <p class="muted">No screw is active right now.</p>
+        <h2>${getSnark("audience.screw.audienceEnabled", "Enabled")}</h2>
+        <p class="muted">${getSnark("audience.screw.audienceNoneActive", "No screw is active right now.")}</p>
       </section>
     `;
   }
@@ -3591,8 +3661,8 @@ function renderAudienceScrewPanel(round) {
     return `
       <section class="card audience-card audience-screw-card">
         <p class="prejoin-kicker">Screws</p>
-        <h2>Target being chosen</h2>
-        <p><strong>${escapeHtml(screw.screwerName || "A player")}</strong> is selecting who to screw.</p>
+        <h2>${getSnark("audience.screw.audienceTargetChoosing", "Target being chosen")}</h2>
+        <p>${getSnark("audience.screw.audienceSelectingWho", `<strong>${escapeHtml(screw.screwerName || "A player")}</strong> is selecting who to screw.`, { screwer: `<strong>${escapeHtml(screw.screwerName || "A player")}</strong>` })}</p>
       </section>
     `;
   }
@@ -3600,9 +3670,9 @@ function renderAudienceScrewPanel(round) {
   return `
     <section class="card audience-card audience-screw-card">
       <p class="prejoin-kicker">Screws</p>
-      <h2>Active screw</h2>
-      <p><strong>${escapeHtml(screw.screwerName || "A player")}</strong> is screwing over <strong>${escapeHtml(screw.screeeName || "another player")}</strong>.</p>
-      <p class="muted">Timer: <strong>${timeText}s</strong></p>
+      <h2>${getSnark("audience.screw.audienceActiveTitle", "Active screw")}</h2>
+      <p>${getSnark("audience.screw.audienceActiveOver", `<strong>${escapeHtml(screw.screwerName || "A player")}</strong> is screwing over <strong>${escapeHtml(screw.screeeName || "another player")}</strong>.`, { screwer: `<strong>${escapeHtml(screw.screwerName || "A player")}</strong>`, screwee: `<strong>${escapeHtml(screw.screeeName || "another player")}</strong>` })}</p>
+      <p class="muted">${getSnark("audience.screw.audienceTimerLabel", "Timer")}: <strong>${timeText}s</strong></p>
     </section>
   `;
 }
@@ -3617,7 +3687,7 @@ function renderTabletTimerNotUseful() {
   return `
     <main class="tablet-timer-layout" data-notuseful="true">
       <div class="tablet-timer-container">
-        <div class="tablet-timer-value">This screen is not useful right now, so stop reading, don't you have a game to be playing or hosting.</div>
+        <div class="tablet-timer-value">${getSnark("tablet.misc.tabletNotUseful", "This screen is not useful right now, so stop reading, don't you have a game to be playing or hosting.")}</div>
       </div>
     </main>
   `;
@@ -3666,7 +3736,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
       <main class="tablet-timer-layout">
         <div class="tablet-timer-container">
           <div class="tablet-timer-value roulette-total">${accumulatedValue}</div>
-          <div class="tablet-timer-players">${completedCount}/${expectedCount} players locked in</div>
+          <div class="tablet-timer-players">${getSnark("tablet.roulette.playersLocked", `${completedCount}/${expectedCount} players locked in`, { completed: completedCount, expected: expectedCount })}</div>
         </div>
       </main>
     `;
@@ -3675,7 +3745,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   const buzzedCount = (round.buzzedPlayerIds || []).length;
   const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
   const isScrewActive = round.screw.active;
-  const screwTimerMs = round.screw.screwTimerMs;
+  const screwTimerMs = getScrewTimerMs(round);
 
   let timerDisplay;
   let timerCs;
@@ -3695,7 +3765,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""}>
       <div class="tablet-timer-container">
         <div class="tablet-timer-value">${timerDisplay}</div>
-        <div class="tablet-timer-players">${buzzedCount}/${totalPlayers} players answered</div>
+        <div class="tablet-timer-players">${getSnark("tablet.misc.tabletAnswered", `${buzzedCount}/${totalPlayers} players answered`, { buzzed: buzzedCount, total: totalPlayers })}</div>
       </div>
     </main>
   `;
@@ -3716,13 +3786,13 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
       <header class="hero audience-hero">
         <div>
           <p class="prejoin-kicker">Audience display</p>
-          <h1>Instant Buzzers</h1>
-          <p class="muted">Room code</p>
-          <div class="room-code-badge">${escapeHtml(getRoomCode() || "....")}</div>
+          <h1>${getSnark("audience.misc.appTitle", "Instant Buzzers")}</h1>
+          <p class="muted">${getSnark("audience.misc.roomCodeLabel", "Room code")}</p>
+          <div class="room-code-badge">${escapeHtml(getRoomCode() || getSnark("audience.misc.roomFallback", "...."))}</div>
         </div>
         <div class="hero-meta">
-          <span>Status: <strong>${escapeHtml(round.status || "unknown")}</strong></span>
-          <span>${pendingEntry ? `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>` : "Live buzz tracking"}</span>
+          <span>${getSnark("audience.misc.statusLabel", "Status")}: <strong>${escapeHtml(round.status || getSnark("shared.misc.statusUnknown", "unknown"))}</strong></span>
+          <span>${pendingEntry ? getSnark("audience.misc.awaitingRuling", `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>`, { player: `<strong>${escapeHtml(pendingEntry.playerName)}</strong>` }) : getSnark("audience.misc.liveBuzzTracking", "Live buzz tracking")}</span>
         </div>
       </header>
 
@@ -4142,6 +4212,15 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 ${toggleSwitch("uiAnimationsEnabled", settings.uiAnimationsEnabled)}
                 <p class="setting-helper">Animated backgrounds and effects while buzzers are open.</p>
               </label>
+              <label>
+                Snark mode
+                <select data-setting="snarkMode" ${settingDisabledAttr}>
+                  <option value="off" ${settings.snarkMode === "off" ? "selected" : ""}>Off</option>
+                  <option value="1" ${settings.snarkMode === "1" ? "selected" : ""}>Snark Level 1</option>
+                  <option value="2" ${settings.snarkMode === "2" ? "selected" : ""}>Snark Level 2</option>
+                </select>
+                <p class="setting-helper">Swap player-facing text for snarky variants from src/snark.json.</p>
+              </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
@@ -4279,7 +4358,7 @@ function renderScrewNotice(round) {
   }
 
   // Timer is running
-  const timeText = formatSeconds(Math.ceil(round.screw.screwTimerMs / 10));
+  const timeText = formatSeconds(Math.ceil(getScrewTimerMs(round) / 10));
   return `
     <section class="card screw-card">
       <h3>Screw Timer</h3>
@@ -4345,8 +4424,8 @@ function renderScores(players, scores) {
 
     return `
       <section class="card score-card">
-        <h2>Team Scores</h2>
-        <ul>${teamItems || "<li>No teams assigned yet.</li>"}</ul>
+        <h2>${getSnark("shared.scores.teamScoresTitle", "Team Scores")}</h2>
+        <ul>${teamItems || `<li>${getSnark("shared.scores.noTeamsYet", "No teams assigned yet.")}</li>`}</ul>
       </section>
     `;
   }
@@ -4376,9 +4455,9 @@ function renderScores(players, scores) {
 
   return `
     <section class="card score-card">
-      <h2>${settings.teamModeEnabled ? "Player Scores" : "Scores"}</h2>
-      <ul>${items || "<li>No players yet.</li>"}</ul>
-      ${teamTotals ? `<h3>Alliance totals</h3><ul>${teamTotals}</ul>` : ""}
+      <h2>${settings.teamModeEnabled ? getSnark("shared.scores.playerScoresTitle", "Player Scores") : getSnark("shared.scores.scoresTitle", "Scores")}</h2>
+      <ul>${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
+      ${teamTotals ? `<h3>${getSnark("shared.scores.allianceTotalsTitle", "Alliance totals")}</h3><ul>${teamTotals}</ul>` : ""}
     </section>
   `;
 }
@@ -4512,19 +4591,19 @@ function render() {
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores right now.")}
+        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
     app.innerHTML = `
       <main class="layout" data-bingo-active="true">
         <header class="hero">
           <div>
             <h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1>
-            <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
             <div class="room-code-badge">${getRoomCode() || "..."}</div>
           </div>
           <div class="hero-meta">
-            <span>You: ${getPlayerName(mePlayer)}</span>
-            <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
           </div>
         </header>
         ${bingoBody}
@@ -4544,19 +4623,19 @@ function render() {
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel("Scores", "Only the Host can view scores right now.")}
+        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
     app.innerHTML = `
       <main class="layout" data-disordat-active="true">
         <header class="hero">
           <div>
             <h1>Dis or Dat</h1>
-            <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
             <div class="room-code-badge">${getRoomCode() || "..."}</div>
           </div>
           <div class="hero-meta">
-            <span>You: ${getPlayerName(mePlayer)}</span>
-            <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
           </div>
         </header>
         ${ddBody}
@@ -4571,16 +4650,16 @@ function render() {
     <main class="layout"${round.screw.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
       <header class="hero">
         <div>
-          <h1>Instant Buzzers</h1>
-          <p class="muted" style="margin-bottom:0.15rem">Room code</p>
+          <h1>${getSnark("player.misc.appTitle", "Instant Buzzers")}</h1>
+          <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
           <div class="room-code-badge">${getRoomCode() || "..."}</div>
         </div>
         <div class="hero-meta">
-          <span>You: ${getPlayerName(mePlayer)}</span>
-          ${isCohost() ? `<span class="cohost-badge">Co-host</span>` : ""}
-          ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>Alliance: <strong>${myTeamColor || "Unassigned"}</strong></span>` : ""}
-          <span>Host: ${controller ? getPlayerName(controller) : "-"}</span>
-          <span>Round: <strong data-round-status>${escapeHtml(round.status || "unknown")}</strong></span>
+          <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+          ${isCohost() ? `<span class="cohost-badge">${getSnark("player.misc.cohostBadge", "Co-host")}</span>` : ""}
+          ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
+          <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
+          <span>${getSnark("player.misc.roundLabel", "Round")}: <strong data-round-status>${escapeHtml(round.status || getSnark("shared.misc.statusUnknown", "unknown"))}</strong></span>
         </div>
       </header>
       
@@ -4589,11 +4668,11 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores)
-          : renderHiddenPanel("Scores", "Only the Host can view scores right now, if you want to see them, ask the Host to enable.")}
+          : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable."))}
       </section>
 
       ${renderLockedRuling(settings, pendingEntry)}
-      ${showAdminData ? renderLog(gameLog, settings) : renderHiddenPanel("Game Log", "Only the Host can view the game log.")}
+      ${showAdminData ? renderLog(gameLog, settings) : renderHiddenPanel(getSnark("player.scores.logTitle", "Game Log"), getSnark("player.scores.logHidden", "Only the Host can view the game log."))}
     </main>
   `;
 
@@ -4685,6 +4764,10 @@ function bindEvents() {
         }
         if (setting === "teamScoringMode") {
           setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance");
+          return;
+        }
+        if (setting === "snarkMode") {
+          setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off");
           return;
         }
         if (setting === "maxBuzzesPerOption") {
@@ -4917,7 +5000,7 @@ function bindEvents() {
           else if (result?.message) setBuzzNotice(result.message);
           render();
         } catch {
-          setBuzzNotice("Could not send buzz.");
+          setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz."));
           render();
         }
       });
@@ -5000,7 +5083,7 @@ function bindEvents() {
           render();
           setTimeout(() => render(), DIS_OR_DAT_REVEAL_MS + 30);
         } catch {
-          setBuzzNotice("Could not send answer.");
+          setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer."));
           render();
         }
       });
@@ -5048,12 +5131,12 @@ function submitRouletteStop() {
     return;
   }
   if (!isRoulettePlayerAllowed(roulette, me().id)) {
-    setBuzzNotice("You cannot stop this pick-a-value.");
+    setBuzzNotice(getSnark("player.roulette.cannotStop", "You cannot stop this pick-a-value."));
     render();
     return;
   }
   if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(me().id)) {
-    setBuzzNotice("You already locked in your value.");
+    setBuzzNotice(getSnark("player.roulette.alreadyLocked", "You already locked in your value."));
     render();
     return;
   }
@@ -5061,16 +5144,16 @@ function submitRouletteStop() {
   RPC.call("roulette-stop", {}, RPC.Mode.HOST)
     .then((result) => {
       if (result?.ok === false) {
-        setBuzzNotice(result.reason || "Pick-a-value stop blocked.");
+        setBuzzNotice(result.reason || getSnark("player.roulette.stopBlocked", "Pick-a-value stop blocked."));
       } else if (result?.message) {
         setBuzzNotice(result.message);
       } else {
-        setBuzzNotice("Pick-a-value locked in.");
+        setBuzzNotice(getSnark("player.roulette.lockedIn", "Pick-a-value locked in."));
       }
       render();
     })
     .catch(() => {
-      setBuzzNotice("Could not send pick-a-value stop. Check connection/room.");
+      setBuzzNotice(getSnark("player.roulette.sendFailed", "Could not send pick-a-value stop. Check connection/room."));
       render();
     });
 }
@@ -5479,13 +5562,13 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     const round = getRound();
     const roulette = round.roulette;
     if (round.status !== ROUND_STATUSES.ROULETTE || !roulette?.active) {
-      return { ok: false, reason: "Pick-a-value is not active." };
+      return { ok: false, reason: getSnark("player.roulette.notActive", "Pick-a-value is not active.") };
     }
     if (!isRoulettePlayerAllowed(roulette, senderPlayer.id)) {
-      return { ok: false, reason: "You cannot stop this pick-a-value." };
+      return { ok: false, reason: getSnark("player.roulette.cannotStop", "You cannot stop this pick-a-value.") };
     }
     if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(senderPlayer.id)) {
-      return { ok: false, reason: "You already locked in." };
+      return { ok: false, reason: getSnark("player.roulette.alreadyLockedShort", "You already locked in.") };
     }
 
     const frame = getRouletteFrame(roulette);
@@ -5518,11 +5601,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     );
 
     if (maybeFinalizeRoulettePhase()) {
-      return { ok: true, message: `${getPlayerName(senderPlayer)} locked in ${frame.value}.` };
+      return { ok: true, message: getSnark("player.roulette.lockedValue", `${getPlayerName(senderPlayer)} locked in ${frame.value}.`, { player: getPlayerName(senderPlayer), value: frame.value }) };
     }
 
     render();
-    return { ok: true, message: `${getPlayerName(senderPlayer)} locked in ${frame.value}.` };
+    return { ok: true, message: getSnark("player.roulette.lockedValue", `${getPlayerName(senderPlayer)} locked in ${frame.value}.`, { player: getPlayerName(senderPlayer), value: frame.value }) };
   });
 
   RPC.register("bingo-buzz", async (payload, senderPlayer) => {
@@ -5549,7 +5632,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 
     // Otherwise, they're selecting a screwee
     if (!round.screw.active) {
-      return { ok: false, reason: "No screw in progress" };
+      return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress") };
     }
     return selectScrewee(screweeId);
   });
