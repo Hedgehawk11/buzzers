@@ -61,6 +61,7 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 - 42 Player cap
 - Three separate scoring modes (Uniform, JACK, and Pick-a-value)
 - Organized labeled menu
+- Handwritten snark
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use
 - and probably more 
 
