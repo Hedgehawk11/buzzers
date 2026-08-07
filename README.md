@@ -50,7 +50,7 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 - Text response mode for gibberish/anagram questions (or lame fill in the blanks)
 - Dis or Dats
 - Bingo
-- Wen dit happn
+- Wen dit happ'n
 - Audience display
 - Timer display for host companion devices
 - Co-hosting
