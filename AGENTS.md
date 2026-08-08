@@ -13,7 +13,8 @@ npm run preview    # vite preview
 CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`). No typecheck, formatter, or pre-commit hooks.
 
 ## Key structure
-- `src/main.js` (~5600 lines) — entire app: render, state machine, event binding, prejoin UI
+- `src/main.js` (~5800 lines) — entire app: render, state machine, event binding, prejoin UI
+- `src/snark.json` (~930 lines) — player-facing string dictionary (see Snark mode)
 - `src/style.css` (~1630 lines) — flat CSS, custom properties for theming
 - `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
 
@@ -32,6 +33,7 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 
 ## Team modes
 - `teamModeEnabled` + `teamScoringMode`: `"alliance"` (individual buzzers, summed team score) or `"shared"` (shared team buzzer, team score). Chosen on host prejoin screen; `teamAssignments` maps players → `TEAM_COLORS`.
+- Player-led team assignment is always available while teams are on: host opens it via `openTeamSelect()` (`teamSelect` shared state: `{active, enabledTeams, locked, maxPerTeam}`). It starts **locked**; the host unlocks it so players can pick/leave via the `select-team` RPC, then re-locks (`setTeamSelectLocked`/`setTeamSelectTeams`/`setTeamSelectLimit`/`setPlayerTeam`). `maxPerTeam` (0 = unlimited) blocks players from joining full teams but host overrides bypass it. Full-screen host/player/audience panels (`renderTeamSelect*`) route via `isTeamSelectActive()` before the bingo/disordat branches. Requires `round.status === IDLE`; disabling `teamModeEnabled` force-closes it.
 
 ## Scoring modes
 - **Uniform**: fixed `uniformPoints` (500–3000, default 1000).
@@ -53,9 +55,9 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - **Scoring**: screwee gets normal ±1000 (correct → +1000 extra, wrong → −1000 extra), screwer gets ∓1000 (opposite transfer).
 - **Timeout** (no buzz): screwee loses `basePoints + 1000`, screwer gains +1000.
 - Buzz freezes question value (`screw.frozenCs`/`screw.frozenPoints`) for JACK scoring.
-- Main timer pauses during screw.
+- Main timer pauses during screw; `closeScrewMode()` resumes it from the frozen value.
 - Red background (`body:has([data-screw-active])`) on all screens during screw.
-- Round always closes after screw ruling (never re-opens).
+- **Round normally closes after screw ruling (never re-opens)** — unless `reopenBuzzersAfterScrew` (default off, shown only when `allowScrewing` on) is set, in which case the round reopens with the remaining time. Screw mode is closed via `closeScrewMode()` in both paths.
 - Disabled during bingo / Wen Dit Happn / Dis or Dat modes (`allowScrewing` setting).
 
 ## Input modes
@@ -70,6 +72,12 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - With `lockAfterBuzz` **off** and `rebuzzAllowed` **off**, buzzers stay open and host rules each entry from the Game Log — **but the round auto-closes to `CLOSED` as soon as every eligible player has buzzed** (`isAllEligibleBuzzed`; eligible = non-host, non-cohost, buzzer enabled). Re-buzz on → no auto-close.
 - **Rebuzz per-option cap**: with `rebuzzAllowed` on, each player can buzz each option at most `maxBuzzesPerOption` (default 1, host-adjustable 1–50). Counts live in `round.buzzCounts` (`{playerId: {option: n}}`), reset in `openBuzzers`/`resetRound`; enforced in `canBuzz()` and by disabling the matching buzzer buttons. Text entry is uncapped.
 - `round.buzzedPlayerIds` = who has answered this round (resets each open). For shared-team scoring, all team members are appended together.
+
+## Snark mode
+- `src/snark.json` maps player-facing strings to snarky variants. Keys are dot-paths `screen.group.section` (e.g. `player.buzzer.buzzSent`); each entry is `{ en, snark1, snark2 }` with `{token}` placeholders.
+- Host setting `snarkMode`: `"off"` | `"1"` | `"2"`. Level 2 prefers `snark2`, level 1 prefers `snark1`; a blank line falls back to `en`, then to the English fallback passed to `getSnark()`.
+- `getSnark(section, fallbackEn, vars)` replaces all player-facing strings. Strings reused across screens live once under the `"shared"` screen and are found by fallback.
+- **Convention**: any new/changed player-facing string should route through `getSnark()` with keys added to `snark.json` — otherwise snark mode silently leaves it in English.
 
 ## UI animations
 - Buzzers-open flash: `data-buzzers-open` on `<main>` when `isBuzzersOpenFlash()` (round `OPEN`, `inputMode === "buttons"`, no active screw). CSS `buzzersOpenFlash` animates `background-color` — **not** `background-image` gradients, which Chrome/Safari snap rather than interpolate. The tablet timer is excluded.

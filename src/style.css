@@ -1027,6 +1027,112 @@ button.red {
 }
 
 /* =============================================================================
+   Player-led team selection
+   ============================================================================= */
+.full-width-btn {
+  width: 100%;
+  max-width: 68.75rem;
+}
+
+.teamselect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.teamselect-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.85rem;
+  border-radius: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  transition: border-color 120ms, transform 120ms, box-shadow 120ms;
+}
+
+.teamselect-card.is-mine {
+  border-color: var(--green);
+  box-shadow: 0 0 16px rgba(29, 185, 84, 0.25);
+}
+
+.teamselect-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.teamselect-count {
+  font-size: 0.85rem;
+  font-weight: 900;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+}
+
+.teamselect-members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.teamselect-members li {
+  padding: 0.1rem 0;
+}
+
+.teamselect-pick {
+  margin-top: auto;
+}
+
+.teamselect-status.is-locked {
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.teamselect-enables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.teamselect-enable {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition: opacity 120ms;
+}
+
+.teamselect-enable.is-disabled {
+  opacity: 0.4;
+}
+
+.teamselect-enable input {
+  accent-color: var(--amber);
+}
+
+.audience-teams-grid {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.9rem;
+}
+
+.audience-team-card h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+
+/* =============================================================================
    Collapsible settings sections
    ============================================================================= */
 .settings-section details {

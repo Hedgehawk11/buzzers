@@ -216,6 +216,23 @@ function getTeamAssignments() {
   return getSafeState("teamAssignments", {});
 }
 
+function freshTeamSelect() {
+  return {
+    active: false,
+    enabledTeams: [...TEAM_COLORS],
+    locked: false,
+    maxPerTeam: 0,
+  };
+}
+
+function getTeamSelect() {
+  return getSafeState("teamSelect", freshTeamSelect());
+}
+
+function isTeamSelectActive() {
+  return getTeamSelect()?.active;
+}
+
 // Prune stale/deleted players from team assignment map
 function normalizeTeamAssignments(assignments, players, controllerId) {
   const cohostIds = getSafeState("cohostIds", []);
@@ -509,6 +526,7 @@ async function cohostDispatch(fnName, ...args) {
       startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
       setHostSetting, toggleBuzzerOption, togglePlayerBuzzer,
       setPlayerTeam, randomizeTeams,
+      openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
       updateScoresForLogEntry,
     };
     dispatch[fnName]?.(...args);
@@ -672,6 +690,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
       teamScoringMode: settings.teamScoringMode,
     },
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
+    teamSelect: getTeamSelect(),
     pendingLogId,
     controllerId: getControllerId(),
     cohostIds: getSafeState("cohostIds", []),
@@ -1459,6 +1478,11 @@ function openBuzzers() {
   const round = getRound();
   const players = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  if (isTeamSelectActive()) {
+    setBuzzNotice("Close team selection before opening buzzers.");
+    render();
+    return;
+  }
   if (hasUnassignedTeamPlayers(settings, players, assignments)) {
     setBuzzNotice("Assign every player to a team before opening buzzers.");
     render();
@@ -2484,6 +2508,9 @@ function setHostSetting(key, value) {
   }
   if (key === "teamModeEnabled" && !value) {
     next.teamScoringMode = "alliance";
+    if (getTeamSelect()?.active) {
+      setState("teamSelect", { ...getTeamSelect(), active: false, locked: false }, true);
+    }
   }
   if (key === "teamScoringMode") {
     next.teamScoringMode = value === "shared" ? "shared" : "alliance";
@@ -2597,12 +2624,8 @@ function togglePlayerBuzzer(playerId) {
 // =============================================================================
 // Team management — assign a player to a color team
 // =============================================================================
-function setPlayerTeam(playerId, teamColor) {
-  if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerTeam", args: [playerId, teamColor] }, RPC.Mode.HOST);
-    return;
-  }
-
+// Host-side write: validates the player, prunes stale assignments, applies the change.
+function applyTeamAssignment(playerId, teamColor) {
   const players = currentParticipants();
   const controllerId = getControllerId();
   if (!players.some((player) => player.id === playerId) || playerId === controllerId) {
@@ -2620,6 +2643,15 @@ function setPlayerTeam(playerId, teamColor) {
   }
 
   setState("teamAssignments", nextAssignments, true);
+}
+
+function setPlayerTeam(playerId, teamColor) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerTeam", args: [playerId, teamColor] }, RPC.Mode.HOST);
+    return;
+  }
+
+  applyTeamAssignment(playerId, teamColor);
   render();
 }
 
@@ -2655,6 +2687,121 @@ function randomizeTeams() {
 
   setState("teamAssignments", nextAssignments, true);
   render();
+}
+
+// =============================================================================
+// Player-led team selection — host controls the phase; players pick via RPC.
+// =============================================================================
+function openTeamSelect() {
+  if (!hasHostPrivileges()) {
+    return;
+  }
+  if (!isHost()) {
+    cohostDispatch("openTeamSelect");
+    return;
+  }
+  if (getRound().status !== ROUND_STATUSES.IDLE) {
+    setBuzzNotice("Reset the round before opening team selection.");
+    render();
+    return;
+  }
+  const current = getTeamSelect();
+  setState("teamSelect", { active: true, enabledTeams: [...TEAM_COLORS], locked: true, maxPerTeam: current.maxPerTeam || 0 }, true);
+  render();
+}
+
+function closeTeamSelect() {
+  if (!hasHostPrivileges()) {
+    return;
+  }
+  if (!isHost()) {
+    cohostDispatch("closeTeamSelect");
+    return;
+  }
+  setState("teamSelect", { ...getTeamSelect(), active: false, locked: false }, true);
+  render();
+}
+
+function setTeamSelectLocked(locked) {
+  if (!hasHostPrivileges()) {
+    return;
+  }
+  if (!isHost()) {
+    cohostDispatch("setTeamSelectLocked", locked);
+    return;
+  }
+  setState("teamSelect", { ...getTeamSelect(), locked: Boolean(locked) }, true);
+  render();
+}
+
+function setTeamSelectTeams(teamColors) {
+  if (!hasHostPrivileges()) {
+    return;
+  }
+  if (!isHost()) {
+    cohostDispatch("setTeamSelectTeams", teamColors);
+    return;
+  }
+  const enabledTeams = (Array.isArray(teamColors) ? teamColors : []).filter((c) => TEAM_COLORS.includes(String(c)));
+  const disabledTeams = TEAM_COLORS.filter((c) => !enabledTeams.includes(c));
+  setState("teamSelect", { ...getTeamSelect(), enabledTeams }, true);
+  if (disabledTeams.length > 0) {
+    const players = currentParticipants();
+    const controllerId = getControllerId();
+    const nextAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+    players
+      .filter((player) => player.id !== controllerId && disabledTeams.includes(nextAssignments[player.id]))
+      .forEach((player) => delete nextAssignments[player.id]);
+    setState("teamAssignments", nextAssignments, true);
+  }
+  render();
+}
+
+function setTeamSelectLimit(value) {
+  if (!hasHostPrivileges()) {
+    return;
+  }
+  if (!isHost()) {
+    cohostDispatch("setTeamSelectLimit", value);
+    return;
+  }
+  const maxPerTeam = Math.max(0, Math.min(42, parseInt(value, 10) || 0));
+  setState("teamSelect", { ...getTeamSelect(), maxPerTeam }, true);
+  render();
+}
+
+// Player-facing: select/change/leave a team while selection is open.
+function handleSelectTeam(senderPlayer, teamColor) {
+  const settings = getSettings();
+  const teamSelect = getTeamSelect();
+  const cohostIds = getSafeState("cohostIds", []);
+  if (senderPlayer.id === getControllerId() || (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id))) {
+    return { ok: false, reason: getSnark("player.teamSelect.notOpen", "Team selection is not open.") };
+  }
+  if (!settings.teamModeEnabled || !teamSelect.active) {
+    return { ok: false, reason: getSnark("player.teamSelect.notOpen", "Team selection is not open.") };
+  }
+  if (teamSelect.locked) {
+    return { ok: false, reason: getSnark("player.teamSelect.locked", "Teams are locked. Ask the Host to unlock them.") };
+  }
+  if (teamColor && !TEAM_COLORS.includes(teamColor)) {
+    return { ok: false, reason: getSnark("player.teamSelect.invalidTeam", "That team does not exist.") };
+  }
+  if (teamColor && !teamSelect.enabledTeams.includes(teamColor)) {
+    return { ok: false, reason: getSnark("player.teamSelect.teamDisabled", "That team is not available to join.") };
+  }
+  if (teamColor && teamSelect.maxPerTeam > 0) {
+    const alreadyOnTarget = getPlayerTeamColor(senderPlayer.id) === teamColor;
+    if (!alreadyOnTarget && getTeamMembers(teamColor).length >= teamSelect.maxPerTeam) {
+      return { ok: false, reason: getSnark("player.teamSelect.teamFull", "That team is full.") };
+    }
+  }
+  applyTeamAssignment(senderPlayer.id, teamColor || null);
+  render();
+  if (teamColor) {
+    return { ok: true, message: getSnark("player.teamSelect.joined", `Joined Team ${teamColor}.`, { team: teamColor }) };
+  }
+  return { ok: true, message: getSnark("player.teamSelect.left", "Left your team.") };
 }
 
 // =============================================================================
@@ -2703,6 +2850,9 @@ function ensureHostInit() {
   }
   if (!getState("bingo")) {
     setState("bingo", getBingo(), true);
+  }
+  if (!getState("teamSelect")) {
+    setState("teamSelect", freshTeamSelect(), true);
   }
   if (!getState("cohostPassword")) {
     const password = String(Math.floor(10000 + Math.random() * 90000));
@@ -2887,7 +3037,7 @@ function renderBingoAudienceDisplay(settings, players) {
         const c = (bingo.collectedCounts?.[teamColor] || 0);
         const s = scores[getTeamScoreKey(teamColor)] || 0;
         const names = members.map(m => getPlayerName(m)).join(", ");
-        return `<li><strong>Team ${teamColor}</strong> <small>(${names})</small> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
+        return `<li><span class="team-pill team-${teamColor}">${teamColor}</span> <small>(${names})</small> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
       }).filter(Boolean).join("");
   } else {
     const sorted = visible
@@ -3206,6 +3356,184 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       ${timerHtml}
       ${questionHtml}
       <section class="card"><h2>${getSnark("audience.disdat.finalStandings", dd.phase === "results" ? "Final Standings" : "Standings")} — ${modeLabel}</h2><ul class="bingo-standings">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+    </main>`;
+}
+
+// =============================================================================
+// Player-led team selection — dedicated screens for host, players, audience
+// =============================================================================
+function renderTeamSelectPlayerPanel(settings, players, mePlayer) {
+  const teamSelect = getTeamSelect();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  const cohostIds = getSafeState("cohostIds", []);
+  const controllerId = getControllerId();
+  const myTeam = getPlayerTeamColor(mePlayer.id, assignments);
+  const maxPerTeam = Number(teamSelect.maxPerTeam) || 0;
+  const teamCards = teamSelect.enabledTeams
+    .map((teamColor) => {
+      const members = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
+      const memberNames = members.length > 0
+        ? members.map((p) => `<li>${escapeHtml(getPlayerName(p))}</li>`).join("")
+        : `<li class="muted">${getSnark("player.teamSelect.emptyTeam", "No one here yet.")}</li>`;
+      const isMine = myTeam === teamColor;
+      const isFull = maxPerTeam > 0 && !isMine && members.length >= maxPerTeam;
+      const countLabel = maxPerTeam > 0 ? `${members.length}/${maxPerTeam}` : `${members.length}`;
+      const pickDisabled = teamSelect.locked || isFull;
+      const pickLabel = isFull
+        ? getSnark("player.teamSelect.fullBtn", "Full")
+        : isMine ? getSnark("player.teamSelect.leaveBtn", "Leave") : getSnark("player.teamSelect.joinBtn", "Join");
+      return `
+        <div class="teamselect-card team-${teamColor} ${isMine ? "is-mine" : ""}">
+          <div class="teamselect-card-head">
+            <span class="team-pill team-${teamColor}">${teamColor}</span>
+            <span class="teamselect-count">${countLabel}</span>
+          </div>
+          <ul class="teamselect-members">${memberNames}</ul>
+          <button type="button" class="teamselect-pick" data-pick-team="${isMine ? "" : teamColor}" ${pickDisabled ? "disabled" : ""}>
+            ${pickLabel}
+          </button>
+        </div>`;
+    })
+    .join("");
+
+  return `
+    <section class="card player-card">
+      <h2>${getSnark("player.teamSelect.title", "Choose Your Team")}</h2>
+      ${teamSelect.locked
+        ? `<p class="teamselect-status is-locked">${getSnark("player.teamSelect.locked", "Teams are locked. Ask the Host to unlock them.")}</p>`
+        : `<p class="muted">${getSnark("player.teamSelect.instruction", "Pick a team, see who's on it, and change whenever you like. Selections lock when the Host locks teams.")}</p>`}
+      <div class="teamselect-grid">${teamCards}</div>
+      <p class="muted" style="margin-top:0.7rem">${getSnark("player.teamSelect.youLabel", `You: <strong>${myTeam || getSnark("player.misc.unassigned", "Unassigned")}</strong>`, { team: myTeam || getSnark("player.misc.unassigned", "Unassigned") })}</p>
+    </section>`;
+}
+
+function renderTeamSelectHostPanel(settings, round, players, controllerId) {
+  const teamSelect = getTeamSelect();
+  const maxPerTeam = Number(teamSelect.maxPerTeam) || 0;
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const cohostIds = getSafeState("cohostIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const unassigned = nonControllerPlayers.filter((player) => !getPlayerTeamColor(player.id, assignments));
+  const teamToggles = TEAM_COLORS
+    .map((teamColor) => {
+      const enabled = teamSelect.enabledTeams.includes(teamColor);
+      const count = nonControllerPlayers.filter((player) => assignments[player.id] === teamColor).length;
+      const countLabel = maxPerTeam > 0 ? `${count}/${maxPerTeam}` : `${count}`;
+      return `
+        <label class="teamselect-enable ${enabled ? "is-enabled" : "is-disabled"} team-${teamColor}">
+          <input type="checkbox" data-teamselect-enable="${teamColor}" ${enabled ? "checked" : ""} />
+          <span class="team-pill team-${teamColor}">${teamColor}</span>
+          <span class="teamselect-count">${countLabel}</span>
+        </label>`;
+    })
+    .join("");
+
+  const rosterRows = nonControllerPlayers
+    .map((player) => {
+      const selected = assignments[player.id] || "";
+      return `
+        <div class="team-assignment-row">
+          <strong>${escapeHtml(getPlayerName(player))}</strong>
+          <span class="team-pill ${selected ? `team-${selected}` : "team-none"}">${selected || "unassigned"}</span>
+          <select data-team-player="${player.id}">
+            <option value="">Unassigned</option>
+            ${TEAM_COLORS.map((color) => `<option value="${color}" ${selected === color ? "selected" : ""}>${color}</option>`).join("")}
+          </select>
+        </div>`;
+    })
+    .join("");
+
+  return `
+    <section class="card host-panel">
+      <h2>Team Selection</h2>
+      <p class="muted" style="font-size:0.85rem">Players are choosing their own teams. Lock to stop changes, then close this screen.</p>
+
+      <div class="settings-section">
+        <details open>
+          <summary>Enabled teams</summary>
+          <div class="section-body">
+            <div class="teamselect-enables">${teamToggles}</div>
+            <p class="setting-helper">Unchecked teams are not joinable; players already on them are moved back to unassigned.</p>
+          </div>
+        </details>
+      </div>
+
+      <div class="settings-section">
+        <details open>
+          <summary>Team size limit</summary>
+          <div class="section-body">
+            <label>
+              Max players per team
+              <input type="number" min="0" max="42" step="1" value="${teamSelect.maxPerTeam || 0}" data-teamselect-limit />
+            </label>
+            <p class="setting-helper">0 = no limit. When set, players can't join a full team (switching between teams is still allowed while there's room). Host overrides below still work.</p>
+          </div>
+        </details>
+      </div>
+
+      <div class="settings-section">
+        <details open>
+          <summary>Move players (host override)</summary>
+          <div class="section-body">
+            ${nonControllerPlayers.length === 0
+              ? `<p class="muted">No non-Host participants connected yet.</p>`
+              : `<div class="team-assignment-list">${rosterRows}</div>`}
+            ${unassigned.length > 0
+              ? `<p class="setting-helper" style="margin-top:0.4rem">${unassigned.length} player(s) unassigned — assign them before opening buzzers.</p>`
+              : ""}
+          </div>
+        </details>
+      </div>
+
+      <div class="host-actions">
+        ${teamSelect.locked
+          ? `<button type="button" data-teamselect-lock="false">Unlock Teams</button>`
+          : `<button type="button" data-teamselect-lock="true">Lock Teams</button>`}
+        <button type="button" data-teamselect-close>Close Team Selection</button>
+      </div>
+
+      <div class="status-strip">
+        <span>Status: <strong>${teamSelect.locked ? "Locked" : "Open"}</strong></span>
+        <span>Teams enabled: <strong>${teamSelect.enabledTeams.length}</strong></span>
+        <span>Unassigned: <strong>${unassigned.length}</strong></span>
+      </div>
+    </section>`;
+}
+
+function renderTeamSelectAudienceDisplay(settings, players) {
+  const teamSelect = getTeamSelect();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  const cohostIds = getSafeState("cohostIds", []);
+  const controllerId = getControllerId();
+  const maxPerTeam = Number(teamSelect.maxPerTeam) || 0;
+  const teamColumns = teamSelect.enabledTeams
+    .map((teamColor) => {
+      const members = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
+      const memberNames = members.length > 0
+        ? members.map((p) => `<li>${escapeHtml(getPlayerName(p))}</li>`).join("")
+        : `<li class="muted">${getSnark("audience.teamSelect.empty", "No one here yet.")}</li>`;
+      const countLabel = maxPerTeam > 0 ? `${members.length}/${maxPerTeam}` : `${members.length}`;
+      return `
+        <section class="card audience-team-card team-${teamColor}">
+          <h2><span class="team-pill team-${teamColor}">${teamColor}</span> <span class="teamselect-count">${countLabel}</span></h2>
+          <ul class="bingo-standings">${memberNames}</ul>
+        </section>`;
+    })
+    .join("");
+
+  return `
+    <main class="layout audience-layout" data-teamselect-active="true">
+      <header class="hero audience-hero">
+        <div>
+          <p class="prejoin-kicker">Audience display</p>
+          <h1>${getSnark("audience.teamSelect.title", "Team Selection")}</h1>
+          <p class="muted">${getSnark("audience.teamSelect.subtitle", "Players are picking their teams.")}</p>
+        </div>
+        <div class="hero-meta">
+          <span>${getSnark("audience.teamSelect.statusLabel", "Status")}: <strong>${teamSelect.locked ? "Locked" : "Open"}</strong></span>
+        </div>
+      </header>
+      <section class="audience-grid audience-teams-grid">${teamColumns}</section>
     </main>`;
 }
 
@@ -3798,6 +4126,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
 }
 
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
+  if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
   if (isDisOrDatMode()) return renderDisOrDatAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
@@ -4208,6 +4537,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 : ""}
             </div>
             ${settings.teamModeEnabled ? renderTeamAssignmentControls(settings, players, controllerId, settingDisabledAttr) : ""}
+            ${
+              settings.teamModeEnabled && !isTeamSelectActive()
+                ? `<div style="margin-top:0.6rem">
+                    <button type="button" class="full-width-btn" data-teamselect-open ${round.status === ROUND_STATUSES.IDLE ? "" : "disabled"}>Open Team Selection</button>
+                    <p class="setting-helper">Players pick their own teams on a full-screen selection. Starts locked; unlock it to let players choose. Requires an Idle round.</p>
+                  </div>`
+                : ""
+            }
           </div>
         </details>
       </div>
@@ -4453,7 +4790,7 @@ function renderScores(players, scores) {
         }
         const teamScore = Number(scores[getTeamScoreKey(teamColor)] || 0);
         const memberNames = members.map((player) => escapeHtml(getPlayerName(player))).join(", ");
-        return `<li class="team-score-row team-${teamColor}"><span><strong>${teamColor}</strong> <small>${memberNames}</small></span><strong>${teamScore}</strong></li>`;
+        return `<li class="team-score-row"><span><span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong>${teamScore}</strong></li>`;
       })
       .filter(Boolean)
       .join("");
@@ -4483,7 +4820,7 @@ function renderScores(players, scores) {
             return "";
           }
           const total = members.reduce((sum, member) => sum + Number(scores[member.id] || 0), 0);
-          return `<li class="team-score-row team-${teamColor}"><span><strong>${teamColor}</strong></span><strong>${total}</strong></li>`;
+          return `<li class="team-score-row"><span><span class="team-pill team-${teamColor}">${teamColor}</span></span><strong>${total}</strong></li>`;
         })
         .filter(Boolean)
         .join("")
@@ -4617,6 +4954,39 @@ function render() {
     return;
   }
 
+  if (isTeamSelectActive()) {
+    const tsBody = showAdminData ? `
+      ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
+      <section class="grid">
+        ${renderScores(players, scores)}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderTeamSelectPlayerPanel(settings, players, mePlayer)}
+        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+      </section>` ;
+    app.innerHTML = `
+      <main class="layout" data-teamselect-active="true">
+        <header class="hero">
+          <div>
+            <h1>${getSnark("player.teamSelect.title", "Choose Your Teams")}</h1>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
+          </div>
+          <div class="hero-meta">
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
+          </div>
+        </header>
+        ${tsBody}
+      </main>
+    `;
+    lastUiSignature = getUiSignature();
+    bindEvents();
+    return;
+  }
+
   if (isBingoMode()) {
     const isWen = isWenDitHapnMode();
     const bingoBody = showAdminData ? `
@@ -4744,6 +5114,19 @@ function bindEvents() {
     });
   });
 
+  app.querySelectorAll("[data-pick-team]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const teamColor = button.dataset.pickTeam;
+      const result = await RPC.call("select-team", { teamColor }, RPC.Mode.HOST);
+      if (result?.ok === false) {
+        setBuzzNotice(result.reason || "Could not join that team.");
+      } else if (result?.message) {
+        setBuzzNotice(result.message);
+      }
+      render();
+    });
+  });
+
   const answerInput = app.querySelector("#answer-entry");
   if (answerInput) {
     answerInput.addEventListener("keydown", (event) => {
@@ -4862,6 +5245,35 @@ function bindEvents() {
 
     app.querySelectorAll("[data-host-screw]").forEach((button) => {
       button.addEventListener("click", () => hostInitiateScrew());
+    });
+
+    app.querySelectorAll("[data-teamselect-open]").forEach((button) => {
+      button.addEventListener("click", () => openTeamSelect());
+    });
+
+    app.querySelectorAll("[data-teamselect-close]").forEach((button) => {
+      button.addEventListener("click", () => closeTeamSelect());
+    });
+
+    app.querySelectorAll("[data-teamselect-lock]").forEach((button) => {
+      button.addEventListener("click", () => setTeamSelectLocked(button.dataset.teamselectLock === "true"));
+    });
+
+    app.querySelectorAll("[data-teamselect-enable]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const current = getTeamSelect().enabledTeams || [];
+        const teamColor = input.dataset.teamselectEnable;
+        const next = input.checked
+          ? [...new Set([...current, teamColor])]
+          : current.filter((color) => color !== teamColor);
+        setTeamSelectTeams(next);
+      });
+    });
+
+    app.querySelectorAll("[data-teamselect-limit]").forEach((input) => {
+      input.addEventListener("change", () => {
+        setTeamSelectLimit(input.value);
+      });
     });
 
     app.querySelectorAll("[data-set-mode]").forEach((button) => {
@@ -5654,6 +6066,14 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return handleDisOrDatAnswer(senderPlayer, payload);
   });
 
+  RPC.register("select-team", async (payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+    const teamColor = payload?.teamColor ? String(payload.teamColor) : "";
+    return handleSelectTeam(senderPlayer, teamColor || null);
+  });
+
   RPC.register("screw", async (payload, senderPlayer) => {
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
@@ -5696,6 +6116,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
     setHostSetting, toggleBuzzerOption, togglePlayerBuzzer,
     setPlayerTeam, randomizeTeams,
+    openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
     updateScoresForLogEntry,
     setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
   };

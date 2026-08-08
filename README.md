@@ -27,7 +27,7 @@ Thanks captain obvious, I was mainly on the configurability of everything (serio
 No. at least not now, I do see the idea of one in the distant future, but thats when I decide, it would probably look like a question creator menu in a separate area (another main menu button) which lets you make a set there, then you import when creating a lobby.
 
 ### Alright, where is the snark in the messages
-I ~~might~~ probably will add a snark mode in the future, until then, you yourself, yes you, must bring the snark
+You need to enable it in the settings, please read [This file](/src/snark.json) before turning on snark
 
 ### What's coming?
 Better UI, roadkill, fibbage mode, and more round types.
