@@ -566,7 +566,7 @@
         "snark2": ""
       },
       "allianceLabel": {
-        "en": "Alliance: {team}",
+        "en": "Alliance",
         "snark1": "",
         "snark2": ""
       },
@@ -590,12 +590,84 @@
       "heading": {
         "en": "Congratulations! You typed F*** You!",
         "snark1": "Congratulations! You typed Fuck You!",
-        "snark2": ""
+        "snark2": "Congratulations! You typed \"Fuck You!\" and you're not sorry about it."
       },
       "closeButton": {
         "en": "Let me play again",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "I regret nothing",
+        "snark2": "Yeah yeah yeah I know, I typed \"Fuck You\" and I stand by it."
+      }
+    },
+    "teamSelect": {
+      "title": {
+        "en": "Choose Your Team",
+        "snark1": "Pick a side.",
+        "snark2": "Choose your team. No pressure or anything."
+      },
+      "instruction": {
+        "en": "Pick a team, see who's on it, and change whenever you like. Selections lock when the Host locks teams.",
+        "snark1": "Pick a team, check who you're stuck with, and swap while you still can.",
+        "snark2": "Choose wisely. You'll be stuck with these people."
+      },
+      "joinBtn": {
+        "en": "Join",
+        "snark1": "This one",
+        "snark2": "Stick me with these nerds"
+      },
+      "fullBtn": {
+        "en": "Full",
+        "snark1": "Full. No room.",
+        "snark2": "Full. Come back never."
+      },
+      "teamFull": {
+        "en": "That team is full.",
+        "snark1": "That team is full. Too slow.",
+        "snark2": "That team is full. The door's shut."
+      },
+      "leaveBtn": {
+        "en": "Leave",
+        "snark1": "Get me out",
+        "snark2": "I made a mistake"
+      },
+      "emptyTeam": {
+        "en": "No one here yet.",
+        "snark1": "Unpopular color.",
+        "snark2": "An empty team. Perfect for a loner (you?)."
+      },
+      "youLabel": {
+        "en": "You: <strong>{team}</strong>",
+        "snark1": "You: <strong>{team}</strong>",
+        "snark2": "You: <strong>{team}</strong>"
+      },
+      "locked": {
+        "en": "Teams are locked. Ask the Host to unlock them.",
+        "snark1": "Teams are locked. Remember, no take-backs.",
+        "snark2": "Teams are locked. Get used to it."
+      },
+      "notOpen": {
+        "en": "Team selection is not open.",
+        "snark1": "Team selection is not open. Calm down.",
+        "snark2": "Team selection is not open. No team for you."
+      },
+      "invalidTeam": {
+        "en": "That team does not exist.",
+        "snark1": "That team does not exist. Have you tried another?",
+        "snark2": "That team does not exist. Check your eyes."
+      },
+      "teamDisabled": {
+        "en": "That team is not available to join.",
+        "snark1": "That team is not available to join. The Host said no.",
+        "snark2": "That team is not available to join. Try another."
+      },
+      "joined": {
+        "en": "Joined Team {team}.",
+        "snark1": "Joined Team {team}. Hope you know what you're doing.",
+        "snark2": "Joined Team {team}. No refunds."
+      },
+      "left": {
+        "en": "Left your team.",
+        "snark1": "Left your team. Rude.",
+        "snark2": "Left your team. The grass is greener elsewhere, allegedly."
       }
     }
   },
@@ -653,7 +725,7 @@
       "audienceNoneActive": {
         "en": "No screw is active right now.",
         "snark1": "No screw is active right now. Possibly for the better",
-        "snark2": ""
+        "snark2": "No screw is active right now. Maybe it's a good thing."
       },
       "audienceTargetChoosing": {
         "en": "Target being chosen",
@@ -795,6 +867,28 @@
       },
       "roomPrefix": {
         "en": "Room {code}",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "teamSelect": {
+      "title": {
+        "en": "Team Selection",
+        "snark1": "",
+        "snark2": ""
+      },
+      "subtitle": {
+        "en": "Players are picking their teams.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "statusLabel": {
+        "en": "Status",
+        "snark1": "",
+        "snark2": ""
+      },
+      "empty": {
+        "en": "No one here yet.",
         "snark1": "",
         "snark2": ""
       }

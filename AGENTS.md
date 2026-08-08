@@ -33,6 +33,7 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 
 ## Team modes
 - `teamModeEnabled` + `teamScoringMode`: `"alliance"` (individual buzzers, summed team score) or `"shared"` (shared team buzzer, team score). Chosen on host prejoin screen; `teamAssignments` maps players → `TEAM_COLORS`.
+- Player-led team assignment is always available while teams are on: host opens it via `openTeamSelect()` (`teamSelect` shared state: `{active, enabledTeams, locked, maxPerTeam}`). It starts **locked**; the host unlocks it so players can pick/leave via the `select-team` RPC, then re-locks (`setTeamSelectLocked`/`setTeamSelectTeams`/`setTeamSelectLimit`/`setPlayerTeam`). `maxPerTeam` (0 = unlimited) blocks players from joining full teams but host overrides bypass it. Full-screen host/player/audience panels (`renderTeamSelect*`) route via `isTeamSelectActive()` before the bingo/disordat branches. Requires `round.status === IDLE`; disabling `teamModeEnabled` force-closes it.
 
 ## Scoring modes
 - **Uniform**: fixed `uniformPoints` (500–3000, default 1000).
