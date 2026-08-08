@@ -5,6 +5,7 @@
 import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
+import { injectSpeedInsights } from '@vercel/speed-insights';
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -6175,5 +6176,9 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 function boot() {
   renderPrejoinScreen();
 }
+
+
+// Initialize Vercel Speed Insights
+injectSpeedInsights();
 
 boot();
