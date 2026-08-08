@@ -13,6 +13,7 @@
     "vite": "^8.0.0"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "@vercel/speed-insights": "^2.0.0",
     "acorn": "^8.16.0",
     "playroomkit": "^0.0.95"
