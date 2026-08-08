@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = {
   uniformPoints: 1000,
   jackMultiplier: 1,
   allowScrewing: false,
+  reopenBuzzersAfterScrew: false,
   valueSelectionMethod: "standard",
   rouletteMode: "additive",
   rouletteTopAmount: 1000,
@@ -1057,8 +1058,9 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
+      const reopenAfterScrew = round.screw.active && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (round.screw.active || shouldCloseOnPointsGiven || remainingCs <= 0) {
+      if (((round.screw.active || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -1094,6 +1096,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
         },
         true,
       );
+      // Close screw mode (resumes the main timer from the frozen value)
+      closeScrewMode();
     }
   }
 
@@ -1143,8 +1147,9 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
+      const reopenAfterScrew = round.screw.active && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (round.screw.active || shouldCloseOnPointsGiven || remainingCs <= 0) {
+      if (((round.screw.active || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -1179,6 +1184,8 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
         },
         true,
       );
+      // Close screw mode (resumes the main timer from the frozen value)
+      closeScrewMode();
     }
   }
 
@@ -4216,6 +4223,15 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 ${toggleSwitch("allowScrewing", settings.allowScrewing)}
                 <p class="setting-helper">Players can force another player to answer under a 5s timer. Screwer gains 1000 if screwee gets it wrong, loses 1000 if they get it right.</p>
               </label>
+              ${
+                settings.allowScrewing
+                  ? `<label>
+                      Reopen buzzers after screw
+                      ${toggleSwitch("reopenBuzzersAfterScrew", settings.reopenBuzzersAfterScrew)}
+                      <p class="setting-helper">Instead of closing the round, reopen buzzers with the remaining time after a screw is ruled.</p>
+                    </label>`
+                  : ""
+              }
               <label>
                 Show scores to all
                 ${toggleSwitch("showScoresToPlayers", settings.showScoresToPlayers)}
@@ -4238,7 +4254,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   <option value="1" ${settings.snarkMode === "1" ? "selected" : ""}>Snark Level 1</option>
                   <option value="2" ${settings.snarkMode === "2" ? "selected" : ""}>Snark Level 2</option>
                 </select>
-                <p class="setting-helper">Swap player-facing text for snarky variants.</p>
+                <p class="setting-helper">Swap player-facing text for snarky variants from src/snark.json.</p>
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
@@ -4253,6 +4269,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <div style="margin-top:0.3rem">
                   ${renderCohostList(players)}
                 </div>
+                <p class="setting-helper">Players with host privileges.</p>
               </label>
             </div>
           </div>
@@ -4322,6 +4339,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           : ""}
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
+        ${settings.allowScrewing && settings.reopenBuzzersAfterScrew ? "<span>Buzzers reopen with the remaining time after a screw.</span>" : ""}
         ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Pick-a-value is running.</span>" : ""}
         ${settings.teamModeEnabled && missingTeamAssignments
           ? "<span>Assign every player to a team before opening buzzers.</span>"
