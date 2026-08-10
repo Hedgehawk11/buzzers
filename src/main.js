@@ -3012,7 +3012,7 @@ function renderBingoHostPanel(settings, players) {
     const wordInput = isWen ? "" : `
       <label>
         5-letter word
-        <input type="text" id="bingo-word" maxlength="5" value="${bingo.word || "HOUSE"}" style="text-transform:uppercase;font-weight:800;letter-spacing:0.3em;font-size:1.2rem" />
+        <input type="text" id="bingo-word" maxlength="5" value="${bingo.word || "BINGO"}" style="text-transform:uppercase;font-weight:800;letter-spacing:0.3em;font-size:1.2rem" />
       </label>`;
     return `
       <section class="card host-panel bingo-host-panel">
