@@ -1,7 +1,7 @@
 # Buzzers — Agent guide
 
 ## Project
-Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows.
+Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows. PWA-enabled via `vite-plugin-pwa`. Requires Node 20+ (README; CI matrix 20/22/24).
 
 ## Commands
 ```
@@ -13,10 +13,11 @@ npm run preview    # vite preview
 CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`). No typecheck, formatter, or pre-commit hooks.
 
 ## Key structure
-- `src/main.js` (~5800 lines) — entire app: render, state machine, event binding, prejoin UI
-- `src/snark.json` (~930 lines) — player-facing string dictionary (see Snark mode)
-- `src/style.css` (~1630 lines) — flat CSS, custom properties for theming
+- `src/main.js` (~6300 lines) — entire app: render, state machine, event binding, prejoin UI
+- `src/snark.json` (~1030 lines) — player-facing string dictionary (see Snark mode)
+- `src/style.css` (~1730 lines) — flat CSS, custom properties for theming
 - `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
+- `vite.config.js` — `VitePWA` plugin only (see PWA); `public/` holds PWA icons + favicons
 
 ## Architecture
 - **PlayroomKit** (`insertCoin`) — host is single source of truth via `setState`/`getState`. Players send buzzes via `RPC.call("buzz", ..., RPC.Mode.HOST)`.
@@ -89,9 +90,10 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - **Host tick**: `setInterval` ~1s in `insertCoin` callback — manages timers, screw countdown, roulette finalization. Extra fast loops: 25ms re-render for audience display, 50ms for bingo cycling.
 - **Roulette (Pick-a-Value) rendering** uses `getRouletteFrame()` deterministic pseudo-random based on `round.roulette.seed`.
 - `maxPlayersPerRoom: 42`; `skipLobby: true`.
+- **PWA caching**: `npm run build` emits a service worker + `manifest.webmanifest` (via `VitePWA`, `registerType: 'autoUpdate'`). The SW only exists in built output — `npm run dev` has no SW. Testing PWA features requires `build` + `preview`. `dist/` is gitignored.
 
 ## Conventions
 - DOM event binding via `data-*` attributes, re-bound on every `render()` call.
 - No CSS modules or CSS-in-JS. Flat CSS with custom properties for theming.
 - `ESM` only (`"type": "module"` in package.json).
-- No vite config file — all defaults.
+- `vite.config.js` exists solely for the `VitePWA` plugin — no other Vite customization.
