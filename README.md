@@ -43,7 +43,7 @@ Soon!
 Possibly.
 
 ### How much experience with JACK would you recommend to understand the lingo
-play a few episodes of the [re-ride](https://thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation.\
+play a few episodes of [The Re-Ride](https://thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation.\
 You can also just... not, your choice
 
 ### Speaking of themes... what would you recommend
