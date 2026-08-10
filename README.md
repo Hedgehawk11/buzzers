@@ -57,7 +57,7 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 - Bingo
 - Wen dit happ'n
 - Audience display
-- Timer display for host companion devices
+- Timer display for host companion devices (timer is shown on audience display too)
 - Co-hosting
 - SCREWS
 - F*** You easter egg
@@ -73,7 +73,7 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 - and probably more (soon!)
 
 ### Why?
-Because jackbox doesn't have a large player count easily moddable version of JACK that I could use, and kahoot & similar pissed me off with the free limits or lack of variety.
+Because jackbox doesn't have a large player count easily moddable version of JACK that I could use, and kahoot & similar pissed me off with the free limits or lack of question type variety (and screws).
 
 ### How can I ask for stuff?
 Right now? Just create an issue, I might set up some google form or something like that down the line
