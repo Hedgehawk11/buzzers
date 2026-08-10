@@ -5,8 +5,6 @@
 import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
-import { injectSpeedInsights } from '@vercel/speed-insights';
-import { inject } from '@vercel/analytics';
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -35,6 +33,8 @@ const DEFAULT_SETTINGS = {
   rouletteSinglePlayerTarget: "random",
   teamModeEnabled: false,
   teamScoringMode: "alliance",
+  bingoAlternateViewers: false,
+  bingoLessRandom: true,
   snarkMode: "off",
 };
 
@@ -85,6 +85,8 @@ let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
 let bingoCycleInterval = null;
+let bingoCycleQueue = [];
+let lastBingoRenderKey = "";
 let audienceTimerFrozenCs = null;
 let disOrDatRevealUntil = 0;
 
@@ -272,6 +274,21 @@ function getTeamTrackKey(playerId, settings = getSettings(), assignments = getTe
     return playerId;
   }
   return getPlayerTeamColor(playerId, assignments) || playerId;
+}
+
+// When bingoAlternateViewers is on in shared team mode, the lit letter is only
+// visible to one teammate per cycle. Which teammate is determined deterministically
+// from the shared state (same result on every client) via the cycling slot counter.
+function isBingoActiveViewer(bingo, litSlot, playerId, settings, assignments) {
+  if (!settings.bingoAlternateViewers) return true;
+  if (!settings.teamModeEnabled || settings.teamScoringMode !== "shared") return true;
+  const teamColor = getPlayerTeamColor(playerId, assignments);
+  if (!teamColor) return true;
+  const memberIds = getTeamMembers(teamColor, currentParticipants(), assignments).map((m) => m.id).sort();
+  const myIndex = memberIds.indexOf(playerId);
+  const teamSize = memberIds.length;
+  if (myIndex < 0 || teamSize <= 1) return true;
+  return (Math.floor(litSlot || 0) % teamSize) === myIndex;
 }
 
 function getTeamMembers(teamColor, players = currentParticipants(), assignments = getTeamAssignments()) {
@@ -481,6 +498,7 @@ function getBingo() {
     targetIndex: -1,
     cycling: false,
     currentLitIndex: -1,
+    currentLitSlot: 0,
     currentLitTs: 0,
     collectedCounts: {},
     winner: null,
@@ -690,6 +708,9 @@ showScoresToPlayers: settings.showScoresToPlayers,
       rouletteSinglePlayerTarget: settings.rouletteSinglePlayerTarget,
       teamModeEnabled: settings.teamModeEnabled,
       teamScoringMode: settings.teamScoringMode,
+      bingoAlternateViewers: settings.bingoAlternateViewers,
+      bingoLessRandom: settings.bingoLessRandom,
+      snarkMode: settings.snarkMode,
     },
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
@@ -697,6 +718,22 @@ showScoresToPlayers: settings.showScoresToPlayers,
     controllerId: getControllerId(),
     cohostIds: getSafeState("cohostIds", []),
     disordat: getDisOrDat(),
+    bingo: (() => {
+      const b = getBingo();
+      return {
+        active: b.active,
+        cycling: b.cycling,
+        currentLitIndex: b.currentLitIndex,
+        currentLitSlot: b.currentLitSlot,
+        targetIndex: b.targetIndex,
+        word: b.word,
+        items: b.items,
+        itemStates: b.itemStates,
+        playerItems: b.playerItems,
+        collectedCounts: b.collectedCounts,
+        winner: b.winner,
+      };
+    })(),
     participantCount: currentParticipants().length,
   });
 }
@@ -1606,6 +1643,7 @@ function startBingo() {
     targetIndex: -1,
     cycling: false,
     currentLitIndex: -1,
+    currentLitSlot: 0,
     currentLitTs: 0,
     collectedCounts: {},
     winner: null,
@@ -1622,7 +1660,8 @@ function endBingo() {
     clearInterval(bingoCycleInterval);
     bingoCycleInterval = null;
   }
-  setState("bingo", { ...getBingo(), active: false, cycling: false, currentLitIndex: -1 }, true);
+  bingoCycleQueue = [];
+  setState("bingo", { ...getBingo(), active: false, cycling: false, currentLitIndex: -1, currentLitSlot: 0 }, true);
   setBuzzNotice(`${isWenDitHapnMode() ? "Wen Dit Happn" : "Bingo"} stopped.`);
   render();
 }
@@ -1632,8 +1671,18 @@ function setBingoTarget(index) {
   if (!isHost()) return;
   const bingo = getBingo();
   if (index < 0 || index >= bingo.items.length) return;
-  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1 }, true);
+  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0 }, true);
   render();
+}
+
+// Fisher-Yates shuffle of indices 0..n-1, used by "Less random bingo" cycling
+function shuffledIndices(n) {
+  const arr = [...Array(n).keys()];
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
 }
 
 // Begin rapidly cycling through items so players must buzz at the right moment
@@ -1645,10 +1694,18 @@ function startBingoCycling() {
     render();
     return;
   }
+  let firstIndex;
+  if (getSettings().bingoLessRandom) {
+    bingoCycleQueue = shuffledIndices(bingo.items.length);
+    firstIndex = bingoCycleQueue.shift();
+  } else {
+    firstIndex = Math.floor(Math.random() * bingo.items.length);
+  }
   setState("bingo", {
     ...bingo,
     cycling: true,
-    currentLitIndex: Math.floor(Math.random() * bingo.items.length),
+    currentLitIndex: firstIndex,
+    currentLitSlot: 0,
     currentLitTs: now(),
   }, true);
   if (bingoCycleInterval) clearInterval(bingoCycleInterval);
@@ -1657,10 +1714,20 @@ function startBingoCycling() {
     const cur = getBingo();
     if (!cur.active || !cur.cycling) return;
     let nextIdx;
-    do {
-      nextIdx = Math.floor(Math.random() * cur.items.length);
-    } while (nextIdx === cur.currentLitIndex && cur.items.length > 1);
-    setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitTs: now() }, true);
+    if (getSettings().bingoLessRandom) {
+      if (bingoCycleQueue.length === 0) {
+        bingoCycleQueue = shuffledIndices(cur.items.length);
+        if (bingoCycleQueue.length > 1 && bingoCycleQueue[0] === cur.currentLitIndex) {
+          [bingoCycleQueue[0], bingoCycleQueue[1]] = [bingoCycleQueue[1], bingoCycleQueue[0]];
+        }
+      }
+      nextIdx = bingoCycleQueue.shift();
+    } else {
+      do {
+        nextIdx = Math.floor(Math.random() * cur.items.length);
+      } while (nextIdx === cur.currentLitIndex && cur.items.length > 1);
+    }
+    setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitSlot: (cur.currentLitSlot || 0) + 1, currentLitTs: now() }, true);
   }, BINGO_ITEM_CHANGE_INTERVAL_MS);
   render();
 }
@@ -1672,8 +1739,9 @@ function stopBingoCycling() {
     clearInterval(bingoCycleInterval);
     bingoCycleInterval = null;
   }
+  bingoCycleQueue = [];
   const bingo = getBingo();
-  setState("bingo", { ...bingo, cycling: false, currentLitIndex: -1, currentLitTs: 0 }, true);
+  setState("bingo", { ...bingo, cycling: false, currentLitIndex: -1, currentLitSlot: 0, currentLitTs: 0 }, true);
   render();
 }
 
@@ -1691,6 +1759,9 @@ function handleBingoBuzz(player, payload) {
   }
   const trackKey = getTeamTrackKey(player.id, settings, assignments);
   const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  if (!isBingoActiveViewer(bingo, payload?.litSlot, player.id, settings, assignments)) {
+    return { ok: false, reason: getSnark("player.bingo.notYourTurn", "Not your turn — wait for your teammate to call the letter!") };
+  }
   const observedIndex = payload?.litIndex;
   if (observedIndex === undefined || observedIndex < 0) {
     return { ok: false, reason: getSnark("player.bingo.invalid", "Invalid.") };
@@ -1726,9 +1797,10 @@ function handleBingoBuzz(player, payload) {
       result: "correct", points: BINGO_CORRECT_POINTS,
     }], true);
     if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+    bingoCycleQueue = [];
     setState("bingo", {
       ...bingo, playerItems: newPlayerItems,
-      collectedCounts, winner, cycling: false, currentLitIndex: -1,
+      collectedCounts, winner, cycling: false, currentLitIndex: -1, currentLitSlot: 0,
     }, true);
     render();
     return { ok: true, message: getSnark("player.outcome.bingoCorrect", "Correct! +500") };
@@ -2896,6 +2968,39 @@ function optionButtonLabel(option) {
 // =============================================================================
 // Bingo host panel — word entry, target selection, cycling controls
 // =============================================================================
+function renderBingoAlternateViewersToggle(settings) {
+  if (!settings.teamModeEnabled || settings.teamScoringMode !== "shared") {
+    return "";
+  }
+  const isOn = settings.bingoAlternateViewers === true;
+  const onCls = isOn ? "is-active" : "";
+  const offCls = !isOn ? "is-active is-off-val" : "";
+  return `
+    <div class="toggle-group">
+      <span class="muted">Alternate who sees the lit option</span>
+      <div class="toggle-switch">
+        <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="bingoAlternateViewers" data-value="true">On</button>
+        <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="bingoAlternateViewers" data-value="false">Off</button>
+      </div>
+      <p class="muted">When on, each lit option is shown to only one teammate at a time, rotating each cycle. Only that teammate can buzz.</p>
+    </div>`;
+}
+
+function renderBingoLessRandomToggle(settings) {
+  const isOn = settings.bingoLessRandom === true;
+  const onCls = isOn ? "is-active" : "";
+  const offCls = !isOn ? "is-active is-off-val" : "";
+  return `
+    <div class="toggle-group">
+      <span class="muted">Less random bingo</span>
+      <div class="toggle-switch">
+        <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="bingoLessRandom" data-value="true">On</button>
+        <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="bingoLessRandom" data-value="false">Off</button>
+      </div>
+      <p class="muted">When on, every option appears once per full cycle instead of being picked randomly, so no option waits long gaps.</p>
+    </div>`;
+}
+
 function renderBingoHostPanel(settings, players) {
   if (!hasHostPrivileges()) return "";
   const bingo = getBingo();
@@ -2914,6 +3019,8 @@ function renderBingoHostPanel(settings, players) {
         <h2>${isWen ? "Wen Dit Happn" : "Bingo Mode"}</h2>
         <p class="muted">${isWen ? "Players see Before, Never, After. Select the correct answer and cycle." : "Enter a 5-letter word. Select a target letter and cycle through letters."}</p>
         ${wordInput}
+        ${renderBingoAlternateViewersToggle(settings)}
+        ${renderBingoLessRandomToggle(settings)}
         <div class="host-actions"><button type="button" class="primary-action" data-bingo-init>Start ${isWen ? "Wen Dit Happn" : "Bingo"}</button><button type="button" data-bingo-exit>Return to buzzer mode</button></div>
       </section>`;
   }
@@ -2957,6 +3064,8 @@ function renderBingoHostPanel(settings, players) {
         <button type="button" data-bingo-cycle ${bingo.cycling ? "disabled" : ""}>${bingo.cycling ? "Cycling..." : "Start Cycling"}</button>
         <button type="button" data-bingo-stop-cycle ${bingo.cycling ? "" : "disabled"}>Stop Cycling</button>
       </div>
+      ${renderBingoAlternateViewersToggle(settings)}
+      ${renderBingoLessRandomToggle(settings)}
       ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
       <div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
@@ -2977,15 +3086,20 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
   const items = bingo.items;
   const collected = (bingo.playerItems?.[trackKey] || []);
+  const activeViewer = isBingoActiveViewer(bingo, bingo.currentLitSlot, mePlayer.id, settings, assignments);
   const tilesHtml = items.map((item, i) => {
-    const isLit = bingo.cycling && i === bingo.currentLitIndex;
+    const isLit = bingo.cycling && i === bingo.currentLitIndex && activeViewer;
     const isMine = collected.includes(i);
     let cls = "bingo-tile";
     if (isLit) cls += " is-lit";
     if (isMine) cls += " is-mine";
     return `<span class="${cls}">${item}</span>`;
   }).join("");
-  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isCohost();
+  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isCohost() && activeViewer;
+  const waitHint = bingo.active && bingo.cycling && settings.bingoAlternateViewers && isSharedTeam && !activeViewer
+    ? `<p class="muted bingo-wait-hint">${getSnark("player.bingo.waitForTeammate", "Wait for your teammate to call the letter!")}</p>`
+    : "";
+  const notice = getRecentBuzzNotice();
   const scores = getScores();
   const myScore = scores[getScoreKeyForPlayer(mePlayer.id, settings, assignments)] || 0;
   const winnerLabel = bingo.winner
@@ -3000,6 +3114,8 @@ function renderBingoPlayerPanel(settings, mePlayer) {
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
+        ${waitHint}
+        ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
       </div>
       <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: `<strong>${myScore}</strong>` })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
@@ -4593,7 +4709,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   <option value="1" ${settings.snarkMode === "1" ? "selected" : ""}>Snark Level 1</option>
                   <option value="2" ${settings.snarkMode === "2" ? "selected" : ""}>Snark Level 2</option>
                 </select>
-                <p class="setting-helper">Swap player-facing text for snarky variants from src/snark.json.</p>
+                <p class="setting-helper">Swap player-facing text for snarky variants.</p>
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
@@ -4601,14 +4717,13 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               <label>
                 Co-host password
                 <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${escapeHtml(getSafeState("cohostPassword", ""))}</div>
-                <p class="setting-helper">Share this 5-digit code with your co-host.</p>
+                <p class="setting-helper">Share this 5-digit code with your co-hosts (option to co-host under host menu).</p>
               </label>
               <label>
                 Co-hosts
                 <div style="margin-top:0.3rem">
                   ${renderCohostList(players)}
                 </div>
-                <p class="setting-helper">Players with host privileges.</p>
               </label>
             </div>
           </div>
@@ -5443,7 +5558,7 @@ function bindEvents() {
         event.preventDefault();
         if (isControllerPlayer() || isCohost()) return;
         const bState = getBingo();
-        const payload = { litIndex: bState.currentLitIndex };
+        const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
         try {
           const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
           if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
@@ -6163,11 +6278,15 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     render();
   }, 25);
 
-  // Fast re-render interval for bingo mode cycling animation
+  // Bingo mode re-render — only fires when the bingo state actually changes,
+  // so the host (and everyone else) stops re-rendering on a fixed 50ms tick.
   setInterval(() => {
     if (!isBingoMode()) return;
     const b = getBingo();
-    if (b.active && b.cycling) render();
+    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${b.winner || ""}`;
+    if (key === lastBingoRenderKey) return;
+    lastBingoRenderKey = key;
+    render();
   }, BINGO_RENDER_INTERVAL_MS);
 }
 
@@ -6178,9 +6297,5 @@ function boot() {
   renderPrejoinScreen();
 }
 
-
-// Initialize Vercel Speed Insights and Analytics
-injectSpeedInsights();
-inject();
 
 boot();

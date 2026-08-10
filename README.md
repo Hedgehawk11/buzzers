@@ -2,9 +2,9 @@
 Have you ever wanted to run a gameshow for up to 30 other people, but never had the buzzers? 
 Now you do.
 
-This is mainly built for running live You Dont Know Jack games, and I do think you *could* do jeopardy, but there are *way* better options for that, again, this is built for multiple choice option quiz games with a slide deck showing the questions and options or just as john buzzer.
+This is mainly built for running live You Dont Know Jack games, and I do think you *could* do jeopardy, but there are *way* better options for that, again, this is built for multiple choice option quiz games with a slide deck showing the questions and options or just as john buzzer if its in 1 buzzer mode.
 
-But wait! isnt this just kahoot? I hear you ask! yes and no, yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, again, this is built for live YDKJ games, where there is more comedy then questions, it also does require an external slide deck for showing questions, but now includes a score sheet/general display for the side of your slideshow.
+But wait! isnt this just kahoot? I hear you ask! yes and no (see "why?" in the FAQ), yes it does follow the same format on player's end, but this is SUPER customisable, scoring, disable certain players, maximum of 6 options, heck I have BINGO and wendithappn again, this is built for live YDKJ games, where there is more comedy then questions, it also does require an external slide deck for showing questions, but includes a score sheet/general display for the side of your slideshow.
 
 ## FAQ
 
@@ -30,19 +30,20 @@ No. at least not now, I do see the idea of one in the distant future, but thats 
 You need to enable it in the settings, please read [This file](/src/snark.json) before turning on snark
 
 ### What's coming?
-Better UI, roadkill, fibbage mode, and more round types.
+Better UI, fibbage mode, and more round types.
 
 ### How do you decide what to add?
-Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a suite of random qol changes added in as well
+Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a few random qol and bug fixes changes added in as well
 
-### Tutorial
+### Tutorial?
 Soon!
 
-### How much experience with JACK would you recommend to understand this
-play a few episodes of the [re-ride](https://thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation
+### How much experience with JACK would you recommend to understand the lingo
+play a few episodes of the [re-ride](https://thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation.\
+You can also just... not, your choice
 
 ### Speaking of themes... what would you recommend
-I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually
+I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually... probably...
 
 ### Complete feature list?
 (breathes in) 
@@ -58,14 +59,16 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 - F*** You easter egg
 - Team mode (share buzzer across multiple devices)
 - Alliance mode (lump scores together)
-- You or players can create the teams
-- 42 Player cap
+- You or players can create the teams (up to 8 teams, and you can add a player limit)
+- 42 Player cap.
 - Three separate scoring modes (Uniform, JACK, and Pick-a-value)
 - Organized labeled menu
 - Handwritten snark
-- ADHD stream-of-consciousness made README and eventual tutorial on how to use
-- Vercel analytics
-- and probably more 
+- ADHD stream-of-consciousness made README and eventual tutorial on how to use.
+- and probably more (soon!)
+
+### Why?
+Because jackbox doesn't have a large player count easily moddable version of JACK that I could use, and kahoot & similar pissed me off with the free limits or lack of variety.
 
 ### How make work?
 Just run the thing as you would a node app, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)

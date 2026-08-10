@@ -438,6 +438,16 @@
         "en": "Invalid.",
         "snark1": "",
         "snark2": ""
+      },
+      "notYourTurn": {
+        "en": "Not your turn — wait for your teammate to call the letter!",
+        "snark1": "Not your turn. Let your teammate do something for once attention hog!",
+        "snark2": "Not your turn! Your teammate is doing all the work. You're just sitting there being lazy."
+      },
+      "waitForTeammate": {
+        "en": "Wait for your teammate to call the letter!",
+        "snark1": "Wait for your teammate to call the letter! Look alive.",
+        "snark2": "Wait for your teammate to call the letter! They're doing all the work."
       }
     },
     "disdat": {
