@@ -69,6 +69,7 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 - Organized labeled menu
 - Handwritten snark
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
+- PWA support
 - and probably more (soon!)
 
 ### Why?
