@@ -6109,6 +6109,12 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       });
     });
   });
+
+  app.querySelector("#prejoin-room-code")?.addEventListener("input", (event) => {
+    const input = event.currentTarget;
+    const upper = input.value.toUpperCase();
+    if (input.value !== upper) input.value = upper;
+  });
 }
 
 // =============================================================================

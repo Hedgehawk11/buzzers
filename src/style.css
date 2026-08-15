@@ -121,6 +121,10 @@ body {
   gap: 0.9rem;
 }
 
+#prejoin-room-code {
+  text-transform: uppercase;
+}
+
 .prejoin-choice-grid {
   display: grid;
   gap: 0.9rem;
