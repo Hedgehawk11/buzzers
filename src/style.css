@@ -809,12 +809,12 @@ button.team-buzzer.team-orange:hover:enabled {
   background: linear-gradient(160deg, rgba(255, 158, 66, 0.98), rgba(238, 122, 22, 0.98));
 }
 
-button.team-buzzer.team-magenta {
-  background: linear-gradient(160deg, rgba(240, 0, 240, 0.95), rgba(180, 0, 180, 0.96));
+button.team-buzzer.team-pink {
+  background: linear-gradient(160deg, rgba(255, 105, 180, 0.95), rgba(214, 51, 132, 0.96));
 }
 
-button.team-buzzer.team-magenta:hover:enabled {
-  background: linear-gradient(160deg, rgba(250, 52, 250, 0.98), rgba(200, 28, 200, 0.98));
+button.team-buzzer.team-pink:hover:enabled {
+  background: linear-gradient(160deg, rgba(255, 137, 197, 0.98), rgba(233, 67, 152, 0.98));
 }
 
 button.team-buzzer.team-cyan {
@@ -1028,9 +1028,9 @@ button.red {
   color: #fff0dc;
 }
 
-.team-magenta {
-  background: rgba(240, 0, 240, 0.24);
-  color: #ffe2f2;
+.team-pink {
+  background: rgba(255, 105, 180, 0.24);
+  color: #ffe0ee;
 }
 
 .team-brown {
@@ -1725,7 +1725,7 @@ body[data-team="green"]:not(:has([data-screw-active])) { background-image: linea
 body[data-team="purple"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1b1130, #0b0618); }
 body[data-team="gray"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #16111c, #0a0a10); }
 body[data-team="orange"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2b1d06, #120d02); }
-body[data-team="magenta"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2a0b28, #140313); }
+body[data-team="pink"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2b0a1c, #150310); }
 body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #241709, #120b04); }
 body[data-team="cyan"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #062423, #031010); }
 body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1d2405, #0d1202); }

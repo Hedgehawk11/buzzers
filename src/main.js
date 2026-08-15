@@ -38,7 +38,7 @@ const DEFAULT_SETTINGS = {
   snarkMode: "off",
 };
 
-const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "magenta", "brown", "cyan", "lime"];
+const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
 
 // =============================================================================
 // Round state machine: IDLE -> OPEN -> LOCKED/ROULETTE -> CLOSED -> IDLE
