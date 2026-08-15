@@ -436,6 +436,43 @@ function getOrdinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+// =============================================================================
+// Rank badge images — if /public holds 1.png, 2.png, 3.png (or jpg/jpeg/webp/
+// gif/svg/avif), show them next to the top 3 entries on the scoreboard.
+// =============================================================================
+const RANK_BADGE_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "svg", "avif"];
+const rankBadgeUrls = { 1: null, 2: null, 3: null };
+let rankBadgesProbed = false;
+
+function probeRankBadges() {
+  if (rankBadgesProbed) {
+    return;
+  }
+  rankBadgesProbed = true;
+  [1, 2, 3].forEach((rank) => probeRankBadgeCandidates(rank, 0));
+}
+
+function probeRankBadgeCandidates(rank, index) {
+  if (index >= RANK_BADGE_EXTENSIONS.length) {
+    return;
+  }
+  const url = `/${rank}.${RANK_BADGE_EXTENSIONS[index]}`;
+  const img = new Image();
+  img.onload = () => {
+    rankBadgeUrls[rank] = url;
+    if (gameLaunched) {
+      render();
+    }
+  };
+  img.onerror = () => probeRankBadgeCandidates(rank, index + 1);
+  img.src = url;
+}
+
+function getRankBadgeHtml(rank) {
+  const url = rankBadgeUrls[rank];
+  return url ? `<img class="rank-badge" src="${url}" alt="${rank}" loading="lazy" />` : "";
+}
+
 function isBingoMode() {
   const mode = getSettings().inputMode;
   return mode === "bingo" || mode === "wendithapn";
@@ -4925,9 +4962,11 @@ function renderScores(players, scores) {
         }
         const teamScore = Number(scores[getTeamScoreKey(teamColor)] || 0);
         const memberNames = members.map((player) => escapeHtml(getPlayerName(player))).join(", ");
-        return `<li class="team-score-row"><span><span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong>${teamScore}</strong></li>`;
+        return { teamColor, members, teamScore, memberNames };
       })
       .filter(Boolean)
+      .sort((a, b) => b.teamScore - a.teamScore)
+      .map(({ teamColor, teamScore, memberNames }, index) => `<li class="team-score-row"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong>${teamScore}</strong></li>`)
       .join("");
 
     return `
@@ -4943,8 +4982,10 @@ function renderScores(players, scores) {
       const value = Number(scores[player.id] || 0);
       const teamColor = getPlayerTeamColor(player.id, assignments);
       const teamPill = teamColor ? `<span class="team-pill team-${teamColor}">${teamColor}</span>` : "";
-      return `<li><span>${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong>${value}</strong></li>`;
+      return { player, value, teamPill };
     })
+    .sort((a, b) => b.value - a.value)
+    .map(({ player, value, teamPill }, index) => `<li><span>${getRankBadgeHtml(index + 1)}${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong>${value}</strong></li>`)
     .join("");
 
   const teamTotals = settings.teamModeEnabled
@@ -4955,9 +4996,11 @@ function renderScores(players, scores) {
             return "";
           }
           const total = members.reduce((sum, member) => sum + Number(scores[member.id] || 0), 0);
-          return `<li class="team-score-row"><span><span class="team-pill team-${teamColor}">${teamColor}</span></span><strong>${total}</strong></li>`;
+          return { teamColor, total };
         })
         .filter(Boolean)
+        .sort((a, b) => b.total - a.total)
+        .map(({ teamColor, total }, index) => `<li class="team-score-row"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span></span><strong>${total}</strong></li>`)
         .join("")
     : "";
 
@@ -6313,6 +6356,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 // =============================================================================
 function boot() {
   renderPrejoinScreen();
+  probeRankBadges();
 }
 
 

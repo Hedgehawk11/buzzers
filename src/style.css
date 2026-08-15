@@ -905,6 +905,15 @@ button.buzzer-y:hover:enabled {
   padding: 0.55rem 0.7rem;
 }
 
+.score-card li .rank-badge {
+  width: 1.15rem;
+  height: 1.15rem;
+  object-fit: contain;
+  vertical-align: -0.15em;
+  margin-right: 0.4rem;
+  border-radius: 4px;
+}
+
 .muted-card {
   border-style: dashed;
 }
