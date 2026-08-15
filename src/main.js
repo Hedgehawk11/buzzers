@@ -769,7 +769,7 @@ function getRouletteFrame(roulette, tick = null) {
   const currentTick = tick === null ? Math.floor(Math.max(0, now() - Number(roulette?.startedAt || now())) / 500) : Number(tick);
   const r1 = seededFraction(seed + currentTick * 2);
   const r2 = seededFraction(seed + 1 + currentTick * 2);
-  const fraction = Math.pow((r1 + r2) / 2, 1.15);
+  const fraction = 0.75 + ((r1 + r2) / 2 - 0.5) * 0.5;
   const value = clamp(Math.round(1 + fraction * (ceiling - 1)), 1, ceiling);
   return { tick: currentTick, label: "", value, ceiling };
 }
