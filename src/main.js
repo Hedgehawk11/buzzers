@@ -63,14 +63,7 @@ const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
 
-const ROULETTE_PATTERN = [
-  { label: "", min: 0.16, max: 0.34 },
-  { label: "", min: 0.14, max: 0.32 },
-  { label: "", min: 0.38, max: 0.62 },
-  { label: "", min: 0.15, max: 0.33 },
-  { label: "", min: 0.04, max: 0.14 },
-  { label: "", min: 0.68, max: 1 },
-];
+const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
 const app = document.querySelector("#app");
 const NAME_KEY = "buzzer_player_name";
@@ -395,6 +388,7 @@ function getRound() {
       mode: "additive",
       topAmount: 1000,
       ceiling: 0,
+      seed: null,
       targetPlayerId: null,
       targetPlayerName: null,
       selections: {},
@@ -752,15 +746,13 @@ function computeBasePoints(settings, timeLeftCs, round = getRound()) {
 }
 
 function normalizeRouletteTopAmount(value) {
-  const allowed = [500, 1000, 1500, 2000, 2500, 3000];
   const numeric = Number(value);
-  return allowed.includes(numeric) ? numeric : 1000;
+  return VALUE_OPTIONS.includes(numeric) ? numeric : 1000;
 }
 
 function normalizeUniformPoints(value) {
-  const allowed = [500, 1000, 1500, 2000, 2500, 3000];
   const numeric = Number(value);
-  return allowed.includes(numeric) ? numeric : 1000;
+  return VALUE_OPTIONS.includes(numeric) ? numeric : 1000;
 }
 
 // =============================================================================
@@ -773,12 +765,13 @@ function seededFraction(seed) {
 
 function getRouletteFrame(roulette, tick = null) {
   const ceiling = Math.max(1, Number(roulette?.ceiling || 0) || 1);
+  const seed = Number(roulette?.seed) || 0;
   const currentTick = tick === null ? Math.floor(Math.max(0, now() - Number(roulette?.startedAt || now())) / 500) : Number(tick);
-  const pattern = ROULETTE_PATTERN[currentTick % ROULETTE_PATTERN.length];
-  const min = Math.max(1, Math.floor(ceiling * pattern.min));
-  const max = Math.max(min, Math.floor(ceiling * pattern.max));
-  const value = clamp(Math.round(min + seededFraction(currentTick + ceiling) * (max - min)), 1, ceiling);
-  return { tick: currentTick, label: pattern.label, value, ceiling };
+  const r1 = seededFraction(seed + currentTick * 2);
+  const r2 = seededFraction(seed + 1 + currentTick * 2);
+  const fraction = Math.pow((r1 + r2) / 2, 1.15);
+  const value = clamp(Math.round(1 + fraction * (ceiling - 1)), 1, ceiling);
+  return { tick: currentTick, label: "", value, ceiling };
 }
 
 function getRoulettePlayers() {
@@ -927,6 +920,7 @@ function startRoulettePhase() {
   }
   const players = getRoulettePlayers();
   const topAmount = normalizeRouletteTopAmount(settings.rouletteTopAmount);
+  const seed = Math.floor(Math.random() * 2147483647) + 1;
   const ceiling = settings.rouletteMode === "additive"
     ? Math.max(1, Math.floor(topAmount / Math.max(1, players.length || 1)))
     : topAmount;
@@ -953,6 +947,7 @@ function startRoulettePhase() {
           mode: settings.rouletteMode,
           topAmount,
           ceiling,
+          seed,
           targetPlayerId: null,
           targetPlayerName: null,
           selections: {},
@@ -989,6 +984,7 @@ function startRoulettePhase() {
         mode: settings.rouletteMode,
         topAmount,
         ceiling,
+        seed,
         targetPlayerId: targetPlayer ? targetPlayer.id : null,
         targetPlayerName: targetPlayer ? getPlayerName(targetPlayer) : null,
         selections: {},
@@ -2112,6 +2108,7 @@ function resetRound() {
         mode: settings.rouletteMode,
         topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount),
         ceiling: 0,
+        seed: null,
         targetPlayerId: null,
         targetPlayerName: null,
         selections: {},
@@ -2543,7 +2540,7 @@ function setHostSetting(key, value) {
         winnerOption: null, winnerAnswer: null, winnerName: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
         screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
       };
       setState("round", idleRound, true);
@@ -2556,7 +2553,7 @@ function setHostSetting(key, value) {
         winnerOption: null, winnerAnswer: null, winnerName: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
         screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
       };
       setState("round", idleRound, true);
@@ -4564,12 +4561,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   ? `<label>
                       Uniform points
                       <select data-setting="uniformPoints" ${settingDisabledAttr}>
-                        <option value="500" ${settings.uniformPoints === 500 ? "selected" : ""}>500</option>
-                        <option value="1000" ${settings.uniformPoints === 1000 ? "selected" : ""}>1000</option>
-                        <option value="1500" ${settings.uniformPoints === 1500 ? "selected" : ""}>1500</option>
-                        <option value="2000" ${settings.uniformPoints === 2000 ? "selected" : ""}>2000</option>
-                        <option value="2500" ${settings.uniformPoints === 2500 ? "selected" : ""}>2500</option>
-                        <option value="3000" ${settings.uniformPoints === 3000 ? "selected" : ""}>3000</option>
+                        ${VALUE_OPTIONS.map((value) => `<option value="${value}" ${settings.uniformPoints === value ? "selected" : ""}>${value}</option>`).join("")}
                       </select>
                       <p class="setting-helper">Every correct answer is worth this many points.</p>
                     </label>`
@@ -4603,12 +4595,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                     <label>
                       Top amount
                       <select data-setting="rouletteTopAmount" ${settingDisabledAttr}>
-                        <option value="500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 500 ? "selected" : ""}>500</option>
-                        <option value="1000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1000 ? "selected" : ""}>1000</option>
-                        <option value="1500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 1500 ? "selected" : ""}>1500</option>
-                        <option value="2000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2000 ? "selected" : ""}>2000</option>
-                        <option value="2500" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 2500 ? "selected" : ""}>2500</option>
-                        <option value="3000" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === 3000 ? "selected" : ""}>3000</option>
+                        ${VALUE_OPTIONS.map((value) => `<option value="${value}" ${normalizeRouletteTopAmount(settings.rouletteTopAmount) === value ? "selected" : ""}>${value}</option>`).join("")}
                       </select>
                       <p class="setting-helper">Maximum possible value.</p>
                     </label>
