@@ -3902,6 +3902,36 @@ const screwBtn = settings.allowScrewing
     `;
   }
 
+  if (settings.optionCount === 8) {
+    const buttons = [1, 2, 3, 4, 5, 6, 7, 8]
+      .map((opt) => {
+        const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
+        return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
+      })
+      .join("");
+const screwBtn = settings.allowScrewing
+    ? (screwUsedByMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
+        : screwInProgress
+            ? ""
+            : screwAvailable && !disabled && !playerDisabled
+                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
+                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
+    : "";
+    
+    return `
+      <section class="card player-card">
+        <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+        <p class="muted">${helperText}</p>
+        ${myScoreLine}
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        ${notice ? `<p class="muted">${notice}</p>` : ""}
+        <div class="eight-grid">${buttons}</div>
+        ${screwBtn}
+      </section>
+    `;
+  }
+
   if (settings.optionCount === 4) {
     const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
     const button = (opt, cls) => {
@@ -4503,6 +4533,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                         <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>
                         <option value="4" ${settings.optionCount === 4 ? "selected" : ""}>4</option>
                         <option value="6" ${settings.optionCount === 6 ? "selected" : ""}>6</option>
+                        <option value="8" ${settings.optionCount === 8 ? "selected" : ""}>8</option>
                       </select>
                       <p class="setting-helper">How many buzzer buttons each player sees.</p>
                     </label>`

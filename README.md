@@ -15,7 +15,7 @@ Yes. yes there is, handwritten response too, try it, I dare ya
 Screw em'
 
 ### Support for jack attack rounds? 
-I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6-choice mode, something like Full Stream would be possible.
+I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6/8-choice mode, something like Full Stream would be possible.
 
 ### Whats on said slide deck?
 Music, Questions, everything except a scoreboard, who buzzed etc.
@@ -51,7 +51,7 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 
 ### Complete feature list?
 (breathes in) 
-- 1,2,4,6 response multiple choice questions with the ability to toggle specific answers on and off
+- 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off
 - Text response mode for gibberish/anagram questions (or lame fill in the blanks)
 - Dis or Dats
 - Bingo

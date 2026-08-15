@@ -723,7 +723,8 @@ button:disabled {
 
 .abxy button,
 .abxy-diamond button,
-.six-grid button {
+.six-grid button,
+.eight-grid button {
   font-size: 1.1rem;
   font-weight: 700;
 }
@@ -733,6 +734,13 @@ button:disabled {
   display: grid;
   gap: 0.7rem;
   grid-template-columns: repeat(3, minmax(80px, 1fr));
+}
+
+.eight-grid {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(4, minmax(70px, 1fr));
 }
 
 .big-red {
