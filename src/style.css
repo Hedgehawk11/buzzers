@@ -825,12 +825,12 @@ button.team-buzzer.team-cyan:hover:enabled {
   background: linear-gradient(160deg, rgba(40, 235, 229, 0.98), rgba(0, 158, 158, 0.98));
 }
 
-button.team-buzzer.team-gold {
-  background: linear-gradient(160deg, rgba(255, 197, 71, 0.95), rgba(196, 148, 20, 0.96));
+button.team-buzzer.team-lime {
+  background: linear-gradient(160deg, rgba(180, 222, 20, 0.95), rgba(126, 168, 10, 0.96));
 }
 
-button.team-buzzer.team-gold:hover:enabled {
-  background: linear-gradient(160deg, rgba(255, 214, 108, 0.98), rgba(216, 165, 28, 0.98));
+button.team-buzzer.team-lime:hover:enabled {
+  background: linear-gradient(160deg, rgba(202, 241, 46, 0.98), rgba(142, 186, 16, 0.98));
 }
 
 button.buzzer-a {
@@ -1043,9 +1043,9 @@ button.red {
   color: #dcffff;
 }
 
-.team-gold {
-  background: rgba(255, 197, 71, 0.28);
-  color: #fff4d6;
+.team-lime {
+  background: rgba(180, 222, 20, 0.28);
+  color: #f4ffd6;
 }
 
 .team-score-row small {
@@ -1728,7 +1728,7 @@ body[data-team="orange"]:not(:has([data-screw-active])) { background-image: line
 body[data-team="magenta"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2a0b28, #140313); }
 body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #241709, #120b04); }
 body[data-team="cyan"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #062423, #031010); }
-body[data-team="gold"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #2b2103, #131002); }
+body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1d2405, #0d1202); }
 
 /* Rapid color crossfade while buzzers are open on a multiple-choice question */
 @keyframes buzzersOpenFlash {
