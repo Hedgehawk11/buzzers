@@ -17,7 +17,7 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - `src/snark.json` (~1030 lines) — player-facing string dictionary (see Snark mode)
 - `src/style.css` (~1730 lines) — flat CSS, custom properties for theming
 - `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
-- `vite.config.js` — `VitePWA` plugin only (see PWA); `public/` holds PWA icons + favicons
+- `vite.config.js` — `VitePWA` plugin only (see PWA); `public/` holds PWA icons + favicons + optional scoreboard rank badge images (`1.png`/`2.png`/`3.png`; see Scoreboard)
 
 ## Architecture
 - **PlayroomKit** (`insertCoin`) — host is single source of truth via `setState`/`getState`. Players send buzzes via `RPC.call("buzz", ..., RPC.Mode.HOST)`.
@@ -34,13 +34,15 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 
 ## Team modes
 - `teamModeEnabled` + `teamScoringMode`: `"alliance"` (individual buzzers, summed team score) or `"shared"` (shared team buzzer, team score). Chosen on host prejoin screen; `teamAssignments` maps players → `TEAM_COLORS`.
+- 10 team colors: `red, blue, green, purple, gray, orange, pink, brown, cyan, lime`. Each needs a `button.team-buzzer.team-*` gradient, a `.team-*` chip, and a `body[data-team="*"]` background in `style.css` if added/changed.
 - Player-led team assignment is always available while teams are on: host opens it via `openTeamSelect()` (`teamSelect` shared state: `{active, enabledTeams, locked, maxPerTeam}`). It starts **locked**; the host unlocks it so players can pick/leave via the `select-team` RPC, then re-locks (`setTeamSelectLocked`/`setTeamSelectTeams`/`setTeamSelectLimit`/`setPlayerTeam`). `maxPerTeam` (0 = unlimited) blocks players from joining full teams but host overrides bypass it. Full-screen host/player/audience panels (`renderTeamSelect*`) route via `isTeamSelectActive()` before the bingo/disordat branches. Requires `round.status === IDLE`; disabling `teamModeEnabled` force-closes it.
 
 ## Scoring modes
-- **Uniform**: fixed `uniformPoints` (500–3000, default 1000).
+- **Uniform**: fixed `uniformPoints` (500–10000 in 500-point steps, default 1000; const `VALUE_OPTIONS`).
 - **JACK**: `timeLeftCs × jackMultiplier` (1×–3×). Value decreases as timer ticks.
-- **Pick-a-Value** (display name for the mode internally keyed as `roulette`): players set a value, ceiling = `topAmount / playerCount` (additive) or `topAmount` (highest/single).
+- **Pick-a-Value** (display name for the mode internally keyed as `roulette`): players set a value, ceiling = `topAmount / playerCount` (additive) or `topAmount` (highest/single). `rouletteTopAmount` uses the same 500–10000 `VALUE_OPTIONS` range.
   - All internal identifiers stay `roulette`: settings keys `rouletteMode`/`rouletteTopAmount`/`rouletteSinglePlayerTarget`, `round.roulette`, status `ROUND_STATUSES.ROULETTE`, RPC `"roulette-stop"`, CSS classes, and function names. Only user-facing strings say "Pick-a-Value".
+  - **Value distribution**: no bracket/cadence pattern. `getRouletteFrame()` derives each tick's value from a per-round random `roulette.seed` (host sets it in `startRoulettePhase`) plus the tick, using a triangular distribution centered at ~3/4 of the ceiling (`0.75 + ((r1+r2)/2 − 0.5) × 0.5`, mean ≈ 0.75 × ceiling, range ~half-to-full). Deterministic per seed+tick so all clients render identical values. Old rounds without a `seed` fall back to `0`.
 
 ## Host flow
 1. `insertCoin` with no roomCode → creates room (host = first `insertCoin`).
@@ -62,7 +64,7 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - Disabled during bingo / Wen Dit Happn / Dis or Dat modes (`allowScrewing` setting).
 
 ## Input modes
-- **`buttons`**: 1–6 option buttons. `correctOptions` array for auto-eval.
+- **`buttons`**: 1–8 option buttons (1/2/4/6/8; 8 = `.eight-grid`). `correctOptions` array for auto-eval.
 - **`text`**: free-text entry. `correctAnswer` string for auto-eval.
 - **`bingo`**: 5-letter word, grid of tiles, cycling animation, first to collect all wins.
 - **`wendithapn`**: 3-option "Before/Never/After" per tile. Same cycling/collection as bingo.
@@ -80,6 +82,10 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 - `getSnark(section, fallbackEn, vars)` replaces all player-facing strings. Strings reused across screens live once under the `"shared"` screen and are found by fallback.
 - **Convention**: any new/changed player-facing string should route through `getSnark()` with keys added to `snark.json` — otherwise snark mode silently leaves it in English.
 
+## Scoreboard
+- `renderScores()` builds the scoreboard (player list, shared-team scores, and alliance totals), shown on host/player/audience screens when scores are visible. Each list is sorted by score **descending** (previously id order).
+- **Rank badges**: if `/public` contains images named just `1`, `2`, `3` (`png`/`jpg`/`jpeg`/`webp`/`gif`/`svg`/`avif`; first match wins), they render as a `<img class="rank-badge">` next to the top 3 rows. `probeRankBadges()` (called in `boot()`) lazily loads one candidate per rank per extension via `new Image()`, caches hits in `rankBadgeUrls`, and triggers a re-render when found. No files → no badges, no errors. `getRankBadgeHtml(rank)` emits the badge markup. Style: `.score-card li .rank-badge` (2rem, `object-fit: contain`); row keeps name left / score right, vertically centered via `.score-card li { align-items: center }`.
+
 ## UI animations
 - Buzzers-open flash: `data-buzzers-open` on `<main>` when `isBuzzersOpenFlash()` (round `OPEN`, `inputMode === "buttons"`, no active screw). CSS `buzzersOpenFlash` animates `background-color` — **not** `background-image` gradients, which Chrome/Safari snap rather than interpolate. The tablet timer is excluded.
 - Host toggle `uiAnimationsEnabled` (default on) → `render()` sets `body[data-ui-anims="on"|"off"]`; CSS `body[data-ui-anims="off"] * { animation: none !important }` kills the flash and roulette pulse (`roulettePulse`). New decorative animations must animate descendants of `body` or add their own `!important` gate.
@@ -87,7 +93,7 @@ CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`)
 ## Notable quirks
 - **PlayroomKit hash collision**: `launchGame()` clears `window.location.hash` (via `history.replaceState`) before `insertCoin` because PlayroomKit prioritises `#r` over `roomCode` option.
 - **F-You easter egg**: Typing "fuck you" in text mode applies `-2 × basePoints` penalty via `resolveLogEntryWithForcedDelta` (bypasses normal screw scoring).
-- **Host tick**: `setInterval` ~1s in `insertCoin` callback — manages timers, screw countdown, roulette finalization. Extra fast loops: 25ms re-render for audience display, 50ms for bingo cycling.
+- **Host tick**: `setInterval` ~1s in `insertCoin` callback — manages timers, screw countdown, roulette finalization. It only calls `render()` when `getUiSignature()` changed; otherwise `updateTimerDisplays()` updates the tablet timer in place. Don't add an unconditional `render()` to this loop. Extra fast loops: 25ms re-render for audience display, 50ms bingo cycling (state-keyed, skips re-render unless bingo state changed).
 - **Roulette (Pick-a-Value) rendering** uses `getRouletteFrame()` deterministic pseudo-random based on `round.roulette.seed`.
 - `maxPlayersPerRoom: 42`; `skipLobby: true`.
 - **PWA caching**: `npm run build` emits a service worker + `manifest.webmanifest` (via `VitePWA`, `registerType: 'autoUpdate'`). The SW only exists in built output — `npm run dev` has no SW. Testing PWA features requires `build` + `preview`. `dist/` is gitignored.

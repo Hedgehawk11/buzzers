@@ -902,6 +902,7 @@ button.buzzer-y:hover:enabled {
 .score-card li {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 0.75rem;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -909,12 +910,18 @@ button.buzzer-y:hover:enabled {
   padding: 0.55rem 0.7rem;
 }
 
+.score-card li > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
 .score-card li .rank-badge {
-  width: 1.15rem;
-  height: 1.15rem;
+  width: 2rem;
+  height: 2rem;
   object-fit: contain;
-  vertical-align: -0.15em;
-  margin-right: 0.4rem;
+  flex: none;
   border-radius: 4px;
 }
 
