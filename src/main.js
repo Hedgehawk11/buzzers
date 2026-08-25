@@ -36,6 +36,7 @@ const DEFAULT_SETTINGS = {
   bingoAlternateViewers: false,
   bingoLessRandom: true,
   snarkMode: "off",
+  disOrDatTimedSeconds: 30,
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -62,6 +63,7 @@ const DIS_OR_DAT_CORRECT_POINTS = 300;
 const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
+const DIS_OR_DAT_TIMED_OPTIONS = [30, 40];
 
 const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
@@ -508,6 +510,7 @@ function freshDisOrDatState() {
     pointsEarned: {},
     jackBonus: {},
     finishedPlayerIds: [],
+    timedSeconds: 30,
   };
 }
 
@@ -516,7 +519,11 @@ function getDisOrDat() {
 }
 
 function getDisOrDatTimeLeftCs(dd) {
-  if (!dd?.timeEndsAt) return DIS_OR_DAT_TIMED_SECONDS * 100;
+  if (!dd?.timeEndsAt) {
+    const settings = getSettings();
+    const timedSeconds = settings.disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
+    return timedSeconds * 100;
+  }
   return Math.max(0, Math.ceil((dd.timeEndsAt - now()) / 10));
 }
 
@@ -1864,6 +1871,7 @@ function startDisOrDat(mode, playerId) {
   const dd = getDisOrDat();
   if (dd.answers.some(a => a !== "dis" && a !== "dat" && a !== "both")) return;
   const isTimed = mode === "onePlayTimed" || mode === "allPlayTimed";
+  const timedSeconds = dd.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
   setState("disordat", {
     ...dd,
     active: true,
@@ -1871,7 +1879,7 @@ function startDisOrDat(mode, playerId) {
     mode,
     activePlayerId: mode === "onePlayTimed" ? playerId : null,
     pendingPick: false,
-    timeEndsAt: isTimed ? now() + DIS_OR_DAT_TIMED_SECONDS * 1000 : null,
+    timeEndsAt: isTimed ? now() + timedSeconds * 1000 : null,
     currentQuestion: 0,
     responses: {},
     pointsEarned: {},
@@ -3267,6 +3275,7 @@ function renderDisOrDatHostPanel(settings, players) {
         </div>
       </div>
     ` : "";
+    const timedOptionsHtml = DIS_OR_DAT_TIMED_OPTIONS.map(opt => `<option value="${opt}" ${dd.timedSeconds === opt ? "selected" : ""}>${opt} seconds</option>`).join("");
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Dis or Dat Setup</h2>
@@ -3277,6 +3286,11 @@ function renderDisOrDatHostPanel(settings, players) {
           </label>
           <label>Dat label
             <input type="text" id="disordat-dat-label" maxlength="40" value="${escapeHtml(dd.datLabel)}" placeholder="Dat" />
+          </label>
+          <label>Timed mode duration
+            <select id="disordat-timed-seconds">
+              ${timedOptionsHtml}
+            </select>
           </label>
         </div>
         <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Correct answers (${DIS_OR_DAT_QUESTION_COUNT})</h3>
@@ -4802,7 +4816,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
-                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a 30-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)</p>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat"
@@ -5650,6 +5664,15 @@ function bindEvents() {
       input.addEventListener("change", () => {
         if (!isHost()) return;
         setState("disordat", { ...getDisOrDat(), datLabel: String(input.value || "").trim() }, true);
+      });
+    });
+    app.querySelectorAll("#disordat-timed-seconds").forEach(select => {
+      select.addEventListener("change", () => {
+        if (!isHost()) return;
+        const seconds = Number(select.value);
+        if (DIS_OR_DAT_TIMED_OPTIONS.includes(seconds)) {
+          setState("disordat", { ...getDisOrDat(), timedSeconds: seconds }, true);
+        }
       });
     });
     app.querySelectorAll("[data-disordat-answer-chip]").forEach(button => {
