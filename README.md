@@ -12,10 +12,10 @@ But wait! isnt this just kahoot? I hear you ask! yes and no (see "why?" in the F
 Yes. yes there is, handwritten response too, try it, I dare ya
 
 ### My players are being evil
-Screw em'
+Screw em' you as the host (or co-host) have as many as you need.
 
 ### Support for jack attack rounds? 
-I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6/8-choice mode, something like Full Stream would be possible.
+I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6 or 8-choice mode, something like Full Stream would be possible.
 
 ### Whats on said slide deck?
 Music, Questions, everything except a scoreboard, who buzzed etc.
@@ -48,6 +48,9 @@ You can also just... not, your choice
 
 ### Speaking of themes... what would you recommend
 I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually... probably...
+
+#### Why is there a 40 second option on the disordat, arn't they traditionally 30 seconds
+well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 seconds sooooo... 
 
 ### Complete feature list?
 (breathes in) 
