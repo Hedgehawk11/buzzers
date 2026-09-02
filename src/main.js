@@ -35,6 +35,7 @@ const DEFAULT_SETTINGS = {
   teamScoringMode: "alliance",
   bingoAlternateViewers: false,
   bingoLessRandom: true,
+  bingoAllowMultipleCorrect: false,
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
 };
@@ -1838,9 +1839,11 @@ function handleBingoBuzz(player, payload) {
     }], true);
     if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
     bingoCycleQueue = [];
+    const settings = getSettings();
+    const shouldStopCycling = !settings.bingoAllowMultipleCorrect;
     setState("bingo", {
       ...bingo, playerItems: newPlayerItems,
-      collectedCounts, winner, cycling: false, currentLitIndex: -1, currentLitSlot: 0,
+      collectedCounts, winner, cycling: shouldStopCycling, currentLitIndex: -1, currentLitSlot: 0,
     }, true);
     render();
     return { ok: true, message: getSnark("player.outcome.bingoCorrect", "Correct! +500") };
@@ -3043,6 +3046,21 @@ function renderBingoLessRandomToggle(settings) {
     </div>`;
 }
 
+function renderBingoAllowMultipleCorrectToggle(settings) {
+  const isOn = settings.bingoAllowMultipleCorrect === true;
+  const onCls = isOn ? "is-active" : "";
+  const offCls = !isOn ? "is-active is-off-val" : "";
+  return `
+    <div class="toggle-group">
+      <span class="muted">Allow multiple correct answers</span>
+      <div class="toggle-switch">
+        <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="bingoAllowMultipleCorrect" data-value="true">On</button>
+        <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="bingoAllowMultipleCorrect" data-value="false">Off</button>
+      </div>
+      <p class="muted">When on, cycling continues after a correct answer so other players can also buzz.</p>
+    </div>`;
+}
+
 function renderBingoHostPanel(settings, players) {
   if (!hasHostPrivileges()) return "";
   const bingo = getBingo();
@@ -3108,6 +3126,7 @@ function renderBingoHostPanel(settings, players) {
       </div>
       ${renderBingoAlternateViewersToggle(settings)}
       ${renderBingoLessRandomToggle(settings)}
+      ${renderBingoAllowMultipleCorrectToggle(settings)}
       ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
       <div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
