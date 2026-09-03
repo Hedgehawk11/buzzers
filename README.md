@@ -31,7 +31,12 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 
 ### What's coming?
 In no particular order,\
-Better UI, fibbage mode, more round types, whatever people ask via creating issues and ~~whatever I think of the next time I shower~~ other cool stuff.
+ - Better UI 
+ - fibbage mode 
+ - more round types
+ - whatever people ask via creating issues
+ - YDKJ The Ride RNG for pick-a-value
+ - ~~whatever I think of the next time I shower~~ other cool stuff.
 
 ### How do you decide what to add?
 Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a few random qol and bug fixes changes added in as well
@@ -44,13 +49,16 @@ Possibly.
 
 ### How much experience with JACK would you recommend to understand the lingo
 play a few episodes of [The Re-Ride](https://thereri.de) (use the unlock all feature and play a few at random) and you should understand enough, you probably shouldn't go for it as the style of your presentation.\
-You can also just... not, your choice
+You can also just... not, your choice (but you should)
 
 ### Speaking of themes... what would you recommend
 I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually... probably...
 
-#### Why is there a 40 second option on the disordat, arn't they traditionally 30 seconds
+### Why is there a 40 second option on the disordat, arn't they traditionally 30 seconds
 well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 seconds sooooo... 
+
+### Sample slideshow?
+IDK possibly
 
 ### Complete feature list?
 (breathes in) 
@@ -66,9 +74,9 @@ well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 second
 - F*** You easter egg
 - Team mode (share buzzer across multiple devices)
 - Alliance mode (lump scores together)
-- You or players can create the teams (up to 8 teams, and you can add a player limit)
+- You or players can create the teams (up to 10 teams, and you can add a player limit)
 - 42 Player cap.
-- Three separate scoring modes (Uniform, JACK, and Pick-a-value)
+- Three separate scoring modes (Uniform, JACK, and Pick-a-value (roulette))
 - Organized labeled menu
 - Handwritten snark
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
