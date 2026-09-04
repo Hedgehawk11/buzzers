@@ -2548,11 +2548,14 @@ function handleFibbageTick() {
     finalizeFibbageScores();
     return;
   }
-  if (editingTruth) {
-    updateTimerDisplays();
-    return;
+  // Only tick timers for lying/voting; results/review/setup don't need per-second renders
+  if (fb.phase === "lying" || fb.phase === "voting") {
+    if (editingTruth) {
+      updateTimerDisplays();
+      return;
+    }
+    render();
   }
-  render();
 }
 
 // =============================================================================
@@ -4134,15 +4137,14 @@ function renderFibbageHostPanel(settings, players) {
     Object.entries(fb.votes||{}).forEach(([tk,idx])=>{ const n=Number(idx); voteMap[n]=voteMap[n]||[]; voteMap[n].push(tk); });
     const rows = choices.map((c,i)=>{
       const voters = voteMap[i]||[];
-      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ");
-      return `<li>"${escapeHtml(c.text)}" — picked by ${voters.length?escapeHtml(voterLabels):"<em>none</em>"} (${voters.length})</li>`;
+      return `<li>"${escapeHtml(c.text)}" — <span class="muted">${voters.length} vote${voters.length===1?"":"s"}</span></li>`;
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Voting (${timeLeft}s)</h2>
         <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${votedCount}/${eligibleTracks.length} voted</p>
         <ul class="fibbage-choices-list">${rows}</ul>
-        <p class="muted">You can see who picked what before revealing. Reveal will color: green truth, red lie with picks, yellow unpicked lie.</p>
+        <p class="muted">Votes hidden until reveal. After voting ends, use Show All or Spotlight to reveal.</p>
         <div class="host-actions"><button type="button" data-fibbage-exit>Return to buzzer mode</button></div>
       </section>`;
   }
@@ -4173,26 +4175,30 @@ function renderFibbageHostPanel(settings, players) {
         else if (voters.length>0) colorCls="is-lie-picked";
         else colorCls="is-lie-unpicked";
       }
-      const spotlightBtn = (!revealed.all && hasAudience) ? `<button type="button" data-fibbage-spotlight="${i}">Spotlight</button>` : "";
+      const spotlightBtn = (!revealed.all) ? `<button type="button" data-fibbage-spotlight="${i}">Spotlight</button>` : "";
+      const authorPart = isRevealed ? `<span class="muted">— ${escapeHtml(authorLabels)}</span>` : "";
+      const voterPart = isRevealed ? `<span class="muted">picked by: ${escapeHtml(voterLabels)} (${voters.length})</span>` : `<span class="muted">${voters.length} vote${voters.length===1?"":"s"} — hidden</span>`;
       return `<li class="fibbage-choice ${colorCls}" data-fibbage-choice="${i}">
         <strong>${i+1}.</strong> "${escapeHtml(c.text)}"
-        <span class="muted">— ${escapeHtml(authorLabels)}</span>
-        <span class="muted">picked by: ${escapeHtml(voterLabels)} (${voters.length})</span>
+        ${authorPart}
+        ${voterPart}
         ${spotlightBtn}
       </li>`;
     }).join("");
+    const pointsSection = revealed.all ? `<ul class="fibbage-points">${pointsRows || '<li class="muted">No points.</li>'}</ul>` : `<p class="muted">Points hidden until Show All.</p>`;
+    const spotlightNote = hasAudience ? " Spotlight one for big screen (audience display must be connected to see big card)." : " Spotlight will appear on audience display when connected.";
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Results</h2>
-        <p class="muted">Host sees picks before reveal. Show All colors: <span style="color:var(--green)">green</span> truth, <span style="color:var(--red)">red</span> lie with picks, <span style="color:#eab308">yellow</span> unpicked.${hasAudience ? " Spotlight one for big screen." : " Connect an Audience Display to enable Spotlight."}</p>
+        <p class="muted">Picks hidden until revealed. Show All colors: <span style="color:var(--green)">green</span> truth, <span style="color:var(--red)">red</span> lie with picks, <span style="color:#eab308">yellow</span> unpicked.${spotlightNote}</p>
         <ul class="fibbage-choices-list" style="margin:0.6rem 0">${choicesWithMeta}</ul>
         <div class="host-actions">
           <button type="button" class="primary-action" data-fibbage-show-all>Show All</button>
-          ${hasAudience ? `<button type="button" data-fibbage-spotlight-clear>Clear Spotlight</button>` : ""}
+          <button type="button" data-fibbage-spotlight-clear>Clear Spotlight</button>
           <button type="button" data-fibbage-reset>Play Again</button>
           <button type="button" data-fibbage-exit>Return to buzzer mode</button>
         </div>
-        <ul class="fibbage-points">${pointsRows || '<li class="muted">No points.</li>'}</ul>
+        ${pointsSection}
       </section>`;
   }
   return `<section class="card host-panel"><p>Fibbage phase: ${escapeHtml(fb.phase)}</p></section>`;
@@ -4364,7 +4370,8 @@ function renderFibbageAudienceDisplay(settings, players) {
         else cls="is-lie-unpicked";
       }
       const showAuthor = revealed.all ? ` — ${escapeHtml(authorLabels)}` : "";
-      return `<li class="fibbage-choice ${cls}"><strong>${i+1}.</strong> "${escapeHtml(c.text)}"${showAuthor} <span class="muted">picked by ${escapeHtml(voterLabels)}</span></li>`;
+      const voterPart = revealed.all ? `<span class="muted">picked by ${escapeHtml(voterLabels)}</span>` : `<span class="muted">${voters.length} vote${voters.length===1?"":"s"} — hidden</span>`;
+      return `<li class="fibbage-choice ${cls}"><strong>${i+1}.</strong> "${escapeHtml(c.text)}"${showAuthor} ${voterPart}</li>`;
     }).join("");
     const hideScores = shouldHideFibbageScores();
     const scoresHtml = hideScores ? "" : renderScores(players, getScores());
@@ -5694,7 +5701,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" ? "disabled" : ""}>Fibbage</button>
-                <p class="setting-helper">The Quiplash/Jackbox lie game. Host sets truth (before/during/after lying), picks lie + vote timers (30/45/60) and multiplier (1x..5x). Players submit lies (blocked if matches truth), host blocks bad lies, shows shuffled lies+truth, players vote (can't pick own), host reveals one-by-one or Show All (green truth, red fooled, yellow unpicked). 500 per fool, 1000 for truth, multiplied.</p>
+                <p class="setting-helper">The famous Jackbox fibbing game. Host sets truth (before/during/after lying), picks lie + vote timers (30/45/60) and multiplier (1x..5x). Players submit lies (blocked if matches truth), host blocks bad lies, shows shuffled lies+truth, players vote (can't pick own), host reveals one-by-one or Show All (green truth, red fooled, yellow unpicked). 500 per fool, 1000 for truth, multiplied.</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage"
@@ -6702,19 +6709,19 @@ function bindEvents() {
       const fb=getFibbage();
       setState("fibbage", {...fb, revealed:{all:true,singleIdx:null,revealedIdxs:(fb.choices||[]).map((_,i)=>i)}},true); render();
     }));
-    app.querySelectorAll("[data-fibbage-spotlight]").forEach((b)=> b.addEventListener("click", ()=>{
+    const handleSpotlight = (idx)=>{
       if(!isHost()) return;
-      const idx=Number(b.dataset.fibbageSpotlight);
       const fb=getFibbage();
       const already = fb.revealed.singleIdx===idx ? null : idx;
       const revealedIdxs = already!==null ? [...new Set([...(fb.revealed.revealedIdxs||[]), idx])] : (fb.revealed.revealedIdxs||[]);
       setState("fibbage", {...fb, revealed:{all:false,singleIdx:already,revealedIdxs}},true); render();
-    }));
-    app.querySelectorAll("[data-fibbage-spotlight-clear]").forEach((b)=> b.addEventListener("click", ()=>{
-      if(!isHost()) return;
-      const fb=getFibbage();
-      setState("fibbage", {...fb, revealed:{all:false,singleIdx:null,revealedIdxs:fb.revealed.revealedIdxs||[]}},true); render();
-    }));
+    };
+    app.querySelectorAll("[data-fibbage-spotlight]").forEach((b)=>{
+      b.addEventListener("click", (e)=>{ e.preventDefault(); handleSpotlight(Number(b.dataset.fibbageSpotlight)); });
+    });
+    app.querySelectorAll("[data-fibbage-spotlight-clear]").forEach((b)=>{
+      b.addEventListener("click", (e)=>{ e.preventDefault(); if(!isHost()) return; const fb=getFibbage(); setState("fibbage", {...fb, revealed:{all:false,singleIdx:null,revealedIdxs:fb.revealed.revealedIdxs||[]}},true); render(); });
+    });
     app.querySelectorAll("[data-fibbage-reset]").forEach((b)=> b.addEventListener("click", ()=> resetFibbage()));
     app.querySelectorAll("[data-fibbage-exit]").forEach((b)=> b.addEventListener("click", ()=> exitFibbage()));
     // Fibbage — player lie/vote

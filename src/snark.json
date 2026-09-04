@@ -545,18 +545,18 @@
     "fibbage": {
       "waitingHost": {
         "en": "Waiting for the host to start...",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "Waiting for the host to start Fibbage... any century now...",
+        "snark2": "Waiting on the host to start Fibbage. They're composing the perfect truth."
       },
       "notLying": {
         "en": "Not accepting lies right now.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "Not taking lies right now. Save that creativity.",
+        "snark2": "Lies closed. Even your best one will have to wait."
       },
       "notVoting": {
         "en": "Not voting right now.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "Voting isn't open. Patience.",
+        "snark2": "No voting yet. Stop trying to peek at the choices."
       },
       "notPlayer": {
         "en": "Host cannot lie.",
@@ -565,53 +565,53 @@
       },
       "alreadyLied": {
         "en": "You already submitted a lie.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "One lie per customer. You already fibbed.",
+        "snark2": "One lie is enough. Keep it fair."
       },
       "blocked": {
         "en": "Your lie was blocked.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "Blocked. The host wasn't amused.",
+        "snark2": "Your lie got bounced. Too real, too fake, too profane or too weird — host's call."
       },
       "emptyLie": {
         "en": "Lie cannot be empty.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "An empty lie is just silence. Try words.",
+        "snark2": "Empty lies are lazy. At least make an effort."
       },
       "tooLong": {
         "en": "Lie is too long.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "That lie is a novel. We need to be able to read it in a reasonable amount of time.",
+        "snark2": "Too long; didn't lie. Shorten it."
       },
       "truthNotLie": {
         "en": "The truth is not a lie — try again",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "You accidentally told the truth. Try lying this time.",
+        "snark2": "You wrote the actual answer. The whole point is to NOT do that."
       },
       "lieSubmitted": {
         "en": "Lie submitted.",
-        "snark1": "",
+        "snark1": "Lie submitted. Now let's see if anyone believes it.",
         "snark2": ""
       },
       "alreadyVoted": {
         "en": "You already voted.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "You already voted. No take-backs.",
+        "snark2": "Vote cast. Democracy is done."
       },
       "badChoice": {
         "en": "Bad choice.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "That's not a real choice. Pick one that exists.",
+        "snark2": "Invalid choice. Are you making up new answers now?"
       },
       "ownLie": {
         "en": "You cannot vote for your own lie.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "You can't vote for your own lie. We all know you love it, but no.",
+        "snark2": "Voting for yourself? That's just narcissistic."
       },
       "voteSubmitted": {
         "en": "Vote submitted.",
-        "snark1": "",
-        "snark2": ""
+        "snark1": "Vote in. Fingers crossed you found the truth.",
+        "snark2": "Vote submitted. May the best liar win."
       }
     },
     "scores": {
