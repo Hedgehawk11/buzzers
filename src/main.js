@@ -498,6 +498,13 @@ function isFibbageMode() {
   return getSettings().inputMode === "fibbage";
 }
 
+function hasAudienceDisplay() {
+  try {
+    const parts = Object.values(getParticipants() || {});
+    return parts.some((p) => p?.getState?.("isAudienceDisplay") === true || p?.getState?.("clientMode") === "display" || p?.getState?.("clientMode") === "tablet_timer");
+  } catch { return false; }
+}
+
 function freshFibbageState() {
   return {
     active: false,
@@ -2208,7 +2215,27 @@ function getEligibleFibbageTrackKeys() {
 function startFibbageLying() {
   if (!isHost()) return;
   if (!isFibbageMode()) return;
-  const fb = getFibbage();
+  let fb = getFibbage();
+  // Auto-apply draft truth if host typed but didn't press Set Truth
+  const draftInput = document.querySelector("#fibbage-truth");
+  const draftVal = draftInput ? String(draftInput.value || "").trim() : "";
+  if (draftVal && !String(fb.truth || "").trim()) {
+    fb = { ...fb, truth: draftVal };
+    setState("fibbage", fb, true);
+  } else if (draftVal && draftVal !== fb.truth) {
+    // If draft differs from saved truth, update it
+    const normTruth = normalizeAnswerForCompare(draftVal);
+    const newLies = { ...fb.lies };
+    const newErrors = { ...fb.lieErrors };
+    Object.entries(newLies).forEach(([tk, lieText]) => {
+      if (normalizeAnswerForCompare(lieText) === normTruth) {
+        delete newLies[tk];
+        newErrors[tk] = "The truth is not a lie — try again";
+      }
+    });
+    fb = { ...fb, truth: draftVal, lies: newLies, lieErrors: newErrors };
+    setState("fibbage", fb, true);
+  }
   const eligible = getEligibleFibbageTrackKeys();
   if (eligible.length < 2) {
     setBuzzNotice("Need at least 2 players for Fibbage.");
@@ -2303,8 +2330,27 @@ function endFibbageLyingEarly() {
 }
 function showFibbageResponses() {
   if (!isHost()) return;
-  const fb = getFibbage();
+  let fb = getFibbage();
   if (fb.phase !== "review") return;
+  // If host typed truth but hasn't pressed Set Truth yet, auto-apply it now
+  const draftInput = document.querySelector("#fibbage-truth");
+  const draftVal = draftInput ? String(draftInput.value || "").trim() : "";
+  if (!String(fb.truth || "").trim() && draftVal) {
+    const normTruth = normalizeAnswerForCompare(draftVal);
+    const newLies = { ...fb.lies };
+    const newErrors = { ...fb.lieErrors };
+    let culled = 0;
+    Object.entries(newLies).forEach(([tk, lieText]) => {
+      if (normalizeAnswerForCompare(lieText) === normTruth) {
+        delete newLies[tk];
+        newErrors[tk] = "The truth is not a lie — try again";
+        culled++;
+      }
+    });
+    setState("fibbage", { ...fb, truth: draftVal, lies: newLies, lieErrors: newErrors }, true);
+    fb = getFibbage();
+    if (culled) setBuzzNotice(`${culled} lie(s) matched the truth and were cleared.`);
+  }
   if (!String(fb.truth || "").trim()) {
     setBuzzNotice("Enter the truth before showing responses.");
     render();
@@ -2494,6 +2540,7 @@ function handleFibbageTick() {
   if (!isHost()) return;
   const fb = getFibbage();
   if (!fb.active) return;
+  const editingTruth = document.activeElement?.id === "fibbage-truth";
   if (fb.phase === "lying" && fb.timeEndsAt && now() >= fb.timeEndsAt) {
     setState("fibbage", { ...fb, phase: "review" }, true);
     render();
@@ -2501,6 +2548,10 @@ function handleFibbageTick() {
   }
   if (fb.phase === "voting" && fb.voteEndsAt && now() >= fb.voteEndsAt) {
     finalizeFibbageScores();
+    return;
+  }
+  if (editingTruth) {
+    updateTimerDisplays();
     return;
   }
   render();
@@ -4098,6 +4149,7 @@ function renderFibbageHostPanel(settings, players) {
       const votedText = Number.isInteger(Number(votedIdx)) && choices[Number(votedIdx)] ? choices[Number(votedIdx)].text : "—";
       return `<li><strong>${escapeHtml(label)}</strong>: lie "${escapeHtml(lieText)}", voted "${escapeHtml(votedText)}" — <strong>${pts} pts</strong></li>`;
     }).join("");
+    const hasAudience = hasAudienceDisplay();
     const choicesWithMeta = choices.map((c,i)=>{
       const voters = voteMap[i]||[];
       const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
@@ -4109,21 +4161,22 @@ function renderFibbageHostPanel(settings, players) {
         else if (voters.length>0) colorCls="is-lie-picked";
         else colorCls="is-lie-unpicked";
       }
+      const spotlightBtn = (!revealed.all && hasAudience) ? `<button type="button" data-fibbage-spotlight="${i}">Spotlight</button>` : "";
       return `<li class="fibbage-choice ${colorCls}" data-fibbage-choice="${i}">
         <strong>${i+1}.</strong> "${escapeHtml(c.text)}"
         <span class="muted">— ${escapeHtml(authorLabels)}</span>
         <span class="muted">picked by: ${escapeHtml(voterLabels)} (${voters.length})</span>
-        ${!revealed.all?`<button type="button" data-fibbage-spotlight="${i}">Spotlight</button>`:""}
+        ${spotlightBtn}
       </li>`;
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Results</h2>
-        <p class="muted">Host sees picks before reveal. Show All colors: <span style="color:var(--green)">green</span> truth, <span style="color:var(--red)">red</span> lie with picks, <span style="color:#eab308">yellow</span> unpicked. Spotlight one for big screen.</p>
+        <p class="muted">Host sees picks before reveal. Show All colors: <span style="color:var(--green)">green</span> truth, <span style="color:var(--red)">red</span> lie with picks, <span style="color:#eab308">yellow</span> unpicked.${hasAudience ? " Spotlight one for big screen." : " Connect an Audience Display to enable Spotlight."}</p>
         <ul class="fibbage-choices-list" style="margin:0.6rem 0">${choicesWithMeta}</ul>
         <div class="host-actions">
           <button type="button" class="primary-action" data-fibbage-show-all>Show All</button>
-          <button type="button" data-fibbage-spotlight-clear>Clear Spotlight</button>
+          ${hasAudience ? `<button type="button" data-fibbage-spotlight-clear>Clear Spotlight</button>` : ""}
           <button type="button" data-fibbage-reset>Play Again</button>
           <button type="button" data-fibbage-exit>Return to buzzer mode</button>
         </div>
@@ -5901,7 +5954,29 @@ function renderHiddenPanel(title, helper) {
 // =============================================================================
 // Top-level render — assembles the entire page HTML and calls bindEvents
 // =============================================================================
+let _fibTruthDraft = null;
+let _fibTruthSelStart = null;
+let _fibTruthSelEnd = null;
 function render() {
+  try {
+    const ae = document.activeElement;
+    if (ae && ae.id === "fibbage-truth") {
+      _fibTruthDraft = ae.value;
+      _fibTruthSelStart = ae.selectionStart;
+      _fibTruthSelEnd = ae.selectionEnd;
+    } else {
+      _fibTruthDraft = null;
+    }
+  } catch { _fibTruthDraft = null; }
+  const restoreFibTruth = () => {
+    if (_fibTruthDraft !== null) {
+      const el = document.getElementById("fibbage-truth");
+      if (el) {
+        el.value = _fibTruthDraft;
+        try { el.focus(); if (_fibTruthSelStart !== null) el.setSelectionRange(_fibTruthSelStart, _fibTruthSelEnd); } catch {}
+      }
+    }
+  };
   const mePlayer = me();
   const players = currentParticipants();
   const settings = getSettings();
@@ -6121,6 +6196,17 @@ function render() {
 // Event binding — attaches listeners to every data-* attribute in the DOM
 // =============================================================================
 function bindEvents() {
+  // Restore fibbage truth draft if host was typing during re-render
+  try {
+    if (_fibTruthDraft !== null) {
+      const el = document.getElementById("fibbage-truth");
+      if (el) {
+        el.value = _fibTruthDraft;
+        el.focus();
+        if (_fibTruthSelStart !== null) el.setSelectionRange(_fibTruthSelStart, _fibTruthSelEnd);
+      }
+    }
+  } catch {}
   app.querySelectorAll("[data-buzz]").forEach((button) => {
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
