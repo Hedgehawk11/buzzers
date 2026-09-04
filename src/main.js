@@ -66,6 +66,11 @@ const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
 const DIS_OR_DAT_TIMED_OPTIONS = [30, 40];
 
+const FIBBAGE_TIMES = [30, 45, 60];
+const FIBBAGE_FOOL_POINTS = 500;
+const FIBBAGE_TRUTH_POINTS = 1000;
+const FIBBAGE_MAX_MULT = 5;
+
 const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
 const app = document.querySelector("#app");
@@ -489,6 +494,45 @@ function isDisOrDatMode() {
   return getSettings().inputMode === "disordat";
 }
 
+function isFibbageMode() {
+  return getSettings().inputMode === "fibbage";
+}
+
+function freshFibbageState() {
+  return {
+    active: false,
+    phase: "setup",
+    truth: "",
+    lieTimeSec: 30,
+    voteTimeSec: 30,
+    multiplier: 1,
+    timeEndsAt: null,
+    voteEndsAt: null,
+    seed: null,
+    lies: {},
+    blocked: {},
+    lieErrors: {},
+    choices: [],
+    votes: {},
+    revealed: { all: false, singleIdx: null, revealedIdxs: [] },
+    pointsEarned: {},
+  };
+}
+
+function getFibbage() {
+  return getSafeState("fibbage", freshFibbageState());
+}
+
+function getFibbageLieTimeLeftCs(fb) {
+  if (!fb?.timeEndsAt) return (fb?.lieTimeSec || 30) * 100;
+  return Math.max(0, Math.ceil((fb.timeEndsAt - now()) / 10));
+}
+
+function getFibbageVoteTimeLeftCs(fb) {
+  if (!fb?.voteEndsAt) return (fb?.voteTimeSec || 30) * 100;
+  return Math.max(0, Math.ceil((fb.voteEndsAt - now()) / 10));
+}
+
 function isBuzzersOpenFlash(settings, round) {
   return round?.status === ROUND_STATUSES.OPEN
     && settings.inputMode === "buttons"
@@ -705,6 +749,16 @@ function updateTimerDisplays() {
       element.textContent = ddText;
     });
   }
+  if (isFibbageMode()) {
+    const fb = getFibbage();
+    if (fb.phase === "lying") {
+      const t = `${formatSeconds(getFibbageLieTimeLeftCs(fb))}s`;
+      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; });
+    } else if (fb.phase === "voting") {
+      const t = `${formatSeconds(getFibbageVoteTimeLeftCs(fb))}s`;
+      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; });
+    }
+  }
 }
 
 function getUiSignature() {
@@ -757,6 +811,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     controllerId: getControllerId(),
     cohostIds: getSafeState("cohostIds", []),
     disordat: getDisOrDat(),
+    fibbage: getFibbage(),
     bingo: (() => {
       const b = getBingo();
       return {
@@ -2127,6 +2182,331 @@ function handleDisOrDatTick() {
 }
 
 // =============================================================================
+// Fibbage — host enters truth, players submit lies, vote on shuffled pool
+// 500 per fool, 1000 for truth, multiplier 1..5, duplicates merged
+// =============================================================================
+function normalizeFibbageMultiplier(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  if (n > FIBBAGE_MAX_MULT) return FIBBAGE_MAX_MULT;
+  return n;
+}
+function normalizeFibbageTime(v) {
+  const n = Number(v);
+  return FIBBAGE_TIMES.includes(n) ? n : 30;
+}
+function getEligibleFibbageTrackKeys() {
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const players = currentParticipants().filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  if (players.length === 0) return [];
+  const tracks = [...new Set(players.filter((p) => !settings.teamModeEnabled || getPlayerTeamColor(p.id, assignments)).map((p) => getTeamTrackKey(p.id, settings, assignments)))];
+  return tracks;
+}
+function startFibbageLying() {
+  if (!isHost()) return;
+  if (!isFibbageMode()) return;
+  const fb = getFibbage();
+  const eligible = getEligibleFibbageTrackKeys();
+  if (eligible.length < 2) {
+    setBuzzNotice("Need at least 2 players for Fibbage.");
+    render();
+    return;
+  }
+  const lieTime = normalizeFibbageTime(fb.lieTimeSec);
+  setState("fibbage", {
+    ...fb,
+    active: true,
+    phase: "lying",
+    timeEndsAt: now() + lieTime * 1000,
+    voteEndsAt: null,
+    seed: Math.floor(Math.random() * 2147483647) + 1,
+    lies: {},
+    blocked: {},
+    lieErrors: {},
+    choices: [],
+    votes: {},
+    revealed: { all: false, singleIdx: null, revealedIdxs: [] },
+    pointsEarned: {},
+  }, true);
+  render();
+}
+function setFibbageTruth(val) {
+  if (!isHost()) return;
+  const raw = String(val || "").trim();
+  if (!raw) {
+    setBuzzNotice("Truth cannot be empty.");
+    render();
+    return;
+  }
+  if (raw.length > 120) {
+    setBuzzNotice("Truth is too long.");
+    render();
+    return;
+  }
+  const fb = getFibbage();
+  const normTruth = normalizeAnswerForCompare(raw);
+  const newLies = { ...fb.lies };
+  const newBlocked = { ...fb.blocked };
+  const newErrors = { ...fb.lieErrors };
+  let culled = 0;
+  Object.entries(newLies).forEach(([trackKey, lieText]) => {
+    if (normalizeAnswerForCompare(lieText) === normTruth) {
+      delete newLies[trackKey];
+      newErrors[trackKey] = "The truth is not a lie — try again";
+      culled++;
+    }
+  });
+  setState("fibbage", { ...fb, truth: raw, lies: newLies, blocked: newBlocked, lieErrors: newErrors }, true);
+  if (culled) setBuzzNotice(`${culled} lie(s) matched the truth and were cleared.`);
+  render();
+}
+function setFibbageLieTime(sec) {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.active && fb.phase !== "setup") return;
+  setState("fibbage", { ...fb, lieTimeSec: normalizeFibbageTime(sec) }, true);
+  render();
+}
+function setFibbageVoteTime(sec) {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.active && fb.phase !== "setup") return;
+  setState("fibbage", { ...fb, voteTimeSec: normalizeFibbageTime(sec) }, true);
+  render();
+}
+function setFibbageMultiplier(mult) {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.active && fb.phase !== "setup") return;
+  setState("fibbage", { ...fb, multiplier: normalizeFibbageMultiplier(mult) }, true);
+  render();
+}
+function toggleFibbageBlock(trackKey) {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.phase !== "lying" && fb.phase !== "review") return;
+  const blocked = { ...fb.blocked };
+  if (blocked[trackKey]) delete blocked[trackKey];
+  else blocked[trackKey] = true;
+  setState("fibbage", { ...fb, blocked }, true);
+  render();
+}
+function endFibbageLyingEarly() {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.phase !== "lying") return;
+  setState("fibbage", { ...fb, phase: "review", timeEndsAt: now() }, true);
+  render();
+}
+function showFibbageResponses() {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.phase !== "review") return;
+  if (!String(fb.truth || "").trim()) {
+    setBuzzNotice("Enter the truth before showing responses.");
+    render();
+    return;
+  }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const blocked = fb.blocked || {};
+  const normMap = new Map();
+  Object.entries(fb.lies || {}).forEach(([trackKey, rawText]) => {
+    if (blocked[trackKey]) return;
+    const text = String(rawText || "").trim();
+    if (!text) return;
+    const norm = normalizeAnswerForCompare(text);
+    if (!norm) return;
+    if (norm === normalizeAnswerForCompare(fb.truth)) return;
+    if (!normMap.has(norm)) normMap.set(norm, { text, authorKeys: [] });
+    normMap.get(norm).authorKeys.push(trackKey);
+  });
+  const choices = [];
+  normMap.forEach((entry) => {
+    choices.push({ text: entry.text, norm: normalizeAnswerForCompare(entry.text), authorKeys: entry.authorKeys.sort(), isTruth: false });
+  });
+  const truthNorm = normalizeAnswerForCompare(fb.truth);
+  choices.push({ text: String(fb.truth).trim(), norm: truthNorm, authorKeys: [], isTruth: true });
+  const seed = Number(fb.seed) || 1;
+  for (let i = choices.length - 1; i > 0; i--) {
+    const j = Math.floor(seededFraction(seed + i * 997) * (i + 1));
+    [choices[i], choices[j]] = [choices[j], choices[i]];
+  }
+  setState("fibbage", { ...fb, choices, votes: {}, phase: "voting_ready", revealed: { all: false, singleIdx: null, revealedIdxs: [] }, pointsEarned: {} }, true);
+  render();
+}
+function startFibbageVoteTimer() {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.phase !== "voting_ready") return;
+  setState("fibbage", { ...fb, phase: "voting", voteEndsAt: now() + normalizeFibbageTime(fb.voteTimeSec) * 1000 }, true);
+  render();
+}
+function finalizeFibbageScores() {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.phase !== "voting") return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const participants = currentParticipants();
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const eligibleTracks = getEligibleFibbageTrackKeys();
+  const choices = fb.choices || [];
+  const votes = fb.votes || {};
+  const multiplier = normalizeFibbageMultiplier(fb.multiplier);
+  const voteCountsByChoice = {};
+  Object.entries(votes).forEach(([trackKey, idx]) => {
+    const n = Number(idx);
+    if (!Number.isInteger(n) || n < 0 || n >= choices.length) return;
+    voteCountsByChoice[n] = (voteCountsByChoice[n] || 0) + 1;
+  });
+  const pointsEarned = {};
+  eligibleTracks.forEach((trackKey) => { pointsEarned[trackKey] = 0; });
+  choices.forEach((choice, idx) => {
+    if (choice.isTruth) return;
+    const count = voteCountsByChoice[idx] || 0;
+    if (count <= 0) return;
+    choice.authorKeys.forEach((authorKey) => {
+      pointsEarned[authorKey] = (pointsEarned[authorKey] || 0) + count * FIBBAGE_FOOL_POINTS * multiplier;
+    });
+  });
+  const truthIdx = choices.findIndex((c) => c.isTruth);
+  if (truthIdx >= 0) {
+    Object.entries(votes).forEach(([trackKey, idx]) => {
+      if (Number(idx) === truthIdx) {
+        pointsEarned[trackKey] = (pointsEarned[trackKey] || 0) + FIBBAGE_TRUTH_POINTS * multiplier;
+      }
+    });
+  }
+  const scores = { ...getScores() };
+  const log = [...getLog()];
+  eligibleTracks.forEach((trackKey) => {
+    const pts = pointsEarned[trackKey] || 0;
+    if (pts === 0 && !votes[trackKey] && !choices.some((c) => c.authorKeys.includes(trackKey))) return;
+    const isTeamTrack = TEAM_COLORS.includes(trackKey);
+    let rep = null;
+    if (isTeamTrack) rep = participants.find((p) => getTeamTrackKey(p.id, settings, assignments) === trackKey) || null;
+    else rep = participants.find((p) => p.id === trackKey) || null;
+    const teamColor = isTeamTrack ? trackKey : (rep ? getPlayerTeamColor(rep.id, assignments) : null);
+    const scoreKey = rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : trackKey;
+    if (pts !== 0) scores[scoreKey] = Number(scores[scoreKey] || 0) + pts;
+    const votedIdx = votes[trackKey];
+    const votedChoice = Number.isInteger(Number(votedIdx)) && choices[Number(votedIdx)] ? choices[Number(votedIdx)].text : "—";
+    const myLieEntry = choices.find((c) => c.authorKeys.includes(trackKey));
+    const myLieText = myLieEntry ? myLieEntry.text : (fb.lies[trackKey] || ((fb.blocked||{})[trackKey] ? "[blocked]" : "—"));
+    log.push({
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "fibbage",
+      ts: now(),
+      playerId: rep?.id || trackKey,
+      playerName: rep ? getPlayerName(rep) : trackKey,
+      teamColor,
+      scoreKey,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (rep ? getPlayerName(rep) : trackKey),
+      option: null,
+      answerText: `Fibbage: lie "${myLieText}" voted "${votedChoice}"`,
+      timeLeftCs: 0,
+      scoringMode: "fibbage",
+      jackMultiplier: multiplier,
+      uniformPoints: FIBBAGE_FOOL_POINTS,
+      basePoints: pts,
+      awardedDelta: pts,
+      resolved: true,
+    });
+  });
+  setState("scores", scores, true);
+  setState("gameLog", log, true);
+  setState("fibbage", { ...fb, phase: "results", voteEndsAt: null, pointsEarned, revealed: { all: false, singleIdx: null, revealedIdxs: [] } }, true);
+  render();
+}
+function resetFibbage() {
+  if (!isHost()) return;
+  setState("fibbage", freshFibbageState(), true);
+  render();
+}
+function exitFibbage() {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.active && (fb.phase === "lying" || fb.phase === "voting")) {
+    setState("fibbage", { ...fb, phase: "results", revealed: { all: true, singleIdx: null, revealedIdxs: (fb.choices || []).map((_, i) => i) } }, true);
+    finalizeFibbageScores();
+  }
+  setHostSetting("inputMode", "buttons");
+}
+function handleFibbageLie(senderPlayer, payload) {
+  const fb = getFibbage();
+  if (!isFibbageMode() || !fb.active || fb.phase !== "lying") return { ok: false, reason: getSnark("player.fibbage.notLying", "Not accepting lies right now.") };
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const trackKey = getTeamTrackKey(senderPlayer.id, settings, assignments);
+  if (senderPlayer.id === getControllerId()) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot lie.") };
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id)) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot lie.") };
+  if (settings.teamModeEnabled && !getPlayerTeamColor(senderPlayer.id, assignments)) return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  if (fb.lies[trackKey] !== undefined) return { ok: false, reason: getSnark("player.fibbage.alreadyLied", "You already submitted a lie.") };
+  if (fb.blocked[trackKey]) return { ok: false, reason: getSnark("player.fibbage.blocked", "Your lie was blocked.") };
+  const raw = String(payload?.lieText || "").trim();
+  if (!raw) return { ok: false, reason: getSnark("player.fibbage.emptyLie", "Lie cannot be empty.") };
+  if (raw.length > 120) return { ok: false, reason: getSnark("player.fibbage.tooLong", "Lie is too long.") };
+  if (String(fb.truth || "").trim() && normalizeAnswerForCompare(raw) === normalizeAnswerForCompare(fb.truth)) {
+    const newErrors = { ...(fb.lieErrors || {}), [trackKey]: "The truth is not a lie — try again" };
+    setState("fibbage", { ...fb, lieErrors: newErrors }, true);
+    render();
+    return { ok: false, reason: getSnark("player.fibbage.truthNotLie", "The truth is not a lie — try again") };
+  }
+  const lies = { ...fb.lies, [trackKey]: raw };
+  const lieErrors = { ...fb.lieErrors };
+  delete lieErrors[trackKey];
+  setState("fibbage", { ...fb, lies, lieErrors }, true);
+  render();
+  return { ok: true, message: getSnark("player.fibbage.lieSubmitted", "Lie submitted.") };
+}
+function handleFibbageVote(senderPlayer, payload) {
+  const fb = getFibbage();
+  if (!isFibbageMode() || !fb.active || (fb.phase !== "voting" && fb.phase !== "voting_ready")) return { ok: false, reason: getSnark("player.fibbage.notVoting", "Not voting right now.") };
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const trackKey = getTeamTrackKey(senderPlayer.id, settings, assignments);
+  if (senderPlayer.id === getControllerId()) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot vote.") };
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id)) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot vote.") };
+  if (settings.teamModeEnabled && !getPlayerTeamColor(senderPlayer.id, assignments)) return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  if (fb.votes[trackKey] !== undefined) return { ok: false, reason: getSnark("player.fibbage.alreadyVoted", "You already voted.") };
+  const idx = Number(payload?.choiceIdx);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= (fb.choices || []).length) return { ok: false, reason: getSnark("player.fibbage.badChoice", "Bad choice.") };
+  const choice = fb.choices[idx];
+  if (choice.authorKeys.includes(trackKey)) return { ok: false, reason: getSnark("player.fibbage.ownLie", "You cannot vote for your own lie.") };
+  const votes = { ...fb.votes, [trackKey]: idx };
+  setState("fibbage", { ...fb, votes }, true);
+  const eligible = getEligibleFibbageTrackKeys();
+  if (eligible.length > 0 && eligible.every((tk) => votes[tk] !== undefined)) {
+    finalizeFibbageScores();
+    return { ok: true, message: getSnark("player.fibbage.voteSubmitted", "Vote submitted.") };
+  }
+  render();
+  return { ok: true, message: getSnark("player.fibbage.voteSubmitted", "Vote submitted.") };
+}
+function handleFibbageTick() {
+  if (!isHost()) return;
+  const fb = getFibbage();
+  if (!fb.active) return;
+  if (fb.phase === "lying" && fb.timeEndsAt && now() >= fb.timeEndsAt) {
+    setState("fibbage", { ...fb, phase: "review" }, true);
+    render();
+    return;
+  }
+  if (fb.phase === "voting" && fb.voteEndsAt && now() >= fb.voteEndsAt) {
+    finalizeFibbageScores();
+    return;
+  }
+  render();
+}
+
+// =============================================================================
 // Return round to IDLE, preserving roulette final value and settings
 // =============================================================================
 function resetRound() {
@@ -2432,6 +2812,10 @@ function hostTick() {
   if (!isHost()) {
     return;
   }
+  if (isFibbageMode()) {
+    handleFibbageTick();
+    return;
+  }
   if (isBingoMode()) return;
   if (isDisOrDatMode()) {
     handleDisOrDatTick();
@@ -2620,6 +3004,21 @@ function setHostSetting(key, value) {
         jackBonus: {},
         finishedPlayerIds: [],
       }, true);
+    }
+    if (value === "fibbage") {
+      const idleRound = {
+        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
+        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null,
+        buzzedPlayerIds: [],
+        buzzCounts: {},
+        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
+      };
+      setState("round", idleRound, true);
+      setState("pendingLogId", null, true);
+      const fb = getFibbage();
+      setState("fibbage", { ...freshFibbageState(), lieTimeSec: fb.lieTimeSec || 30, voteTimeSec: fb.voteTimeSec || 30, multiplier: fb.multiplier || 1 }, true);
     }
   }
   if (key === "rouletteTopAmount") {
@@ -2972,6 +3371,9 @@ function ensureHostInit() {
   }
   if (!getState("teamSelect")) {
     setState("teamSelect", freshTeamSelect(), true);
+  }
+  if (!getState("fibbage")) {
+    setState("fibbage", freshFibbageState(), true);
   }
   if (!getState("cohostPassword")) {
     const password = String(Math.floor(10000 + Math.random() * 90000));
@@ -3545,6 +3947,366 @@ function renderDisOrDatAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
+// Fibbage — host / player / audience panels
+// =============================================================================
+function renderFibbageHostPanel(settings, players) {
+  if (!hasHostPrivileges()) return `<section class="card host-panel"><p>Co-hosts cannot control Fibbage. The host must manage it.</p></section>`;
+  const fb = getFibbage();
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const eligibleTracks = getEligibleFibbageTrackKeys();
+  const liesCount = Object.keys(fb.lies || {}).length;
+  const timeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
+  const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t}s</option>`).join("");
+  const multOpts = Array.from({length:FIBBAGE_MAX_MULT},(_,i)=>i+1).map((m)=>`<option value="${m}" ${Number(fb.multiplier)===m?"selected":""}>${m}x</option>`).join("");
+  if (!fb.active) {
+    return `
+      <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
+        <h2>Fibbage Setup</h2>
+        <p class="muted">Pick timers and multiplier, optionally set the truth. Then press Enter Lies. Players will submit fake answers. Host can block bad lies, ensure truth is set, then Show Responses.</p>
+        <div class="control-grid">
+          <label>Lie timer
+            <select id="fibbage-lie-time">${timeOpts}</select>
+          </label>
+          <label>Vote timer
+            <select id="fibbage-vote-time">${voteTimeOpts}</select>
+          </label>
+          <label>Multiplier
+            <select id="fibbage-mult">${multOpts}</select>
+            <p class="setting-helper">500 per fool, 1000 for truth, multiplied.</p>
+          </label>
+        </div>
+        <label>Truth (can be set before, during, or after lying)
+          <input type="text" id="fibbage-truth" maxlength="120" value="${escapeHtml(fb.truth||"")}" placeholder="The true answer" />
+        </label>
+        <div class="host-actions" style="margin-top:0.6rem">
+          <button type="button" class="primary-action" data-fibbage-enter-lies ${eligibleTracks.length<2?"disabled":""}>Enter Lies (${eligibleTracks.length} eligible)</button>
+          <button type="button" data-fibbage-set-truth>Set Truth</button>
+        </div>
+        ${eligibleTracks.length<2?'<p class="setting-helper">Need at least 2 eligible players.</p>':""}
+        <div class="host-actions" style="margin-top:0.6rem"><button type="button" data-fibbage-exit>Return to buzzer mode</button></div>
+      </section>`;
+  }
+  if (fb.phase === "lying") {
+    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const lieRows = eligibleTracks.map((trackKey)=>{
+      const raw = fb.lies[trackKey] || "";
+      const isBlocked = !!fb.blocked[trackKey];
+      const err = fb.lieErrors[trackKey] || "";
+      const label = TEAM_COLORS.includes(trackKey) ? `Team ${trackKey}` : (players.find((p)=>p.id===trackKey)? getPlayerName(players.find((p)=>p.id===trackKey)) : trackKey);
+      const status = raw ? (isBlocked? "blocked" : "submitted") : "waiting";
+      return `<div class="fibbage-lie-row ${isBlocked?"is-blocked":""}">
+        <strong>${escapeHtml(label)}</strong>
+        <span class="muted">${status}</span>
+        <span>${raw ? `"${escapeHtml(raw)}"` : "<em>—</em>"}</span>
+        ${err?`<span class="error-text">${escapeHtml(err)}</span>`:""}
+        <button type="button" class="toggle-chip ${isBlocked?"is-off":"is-on"}" data-fibbage-block="${trackKey}">${isBlocked?"Unblock":"Block"}</button>
+      </div>`;
+    }).join("") || '<p class="muted">No eligible tracks.</p>';
+    return `
+      <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
+        <h2>Fibbage — Lying (${timeLeft}s left)</h2>
+        <p class="muted">Players are submitting lies. Block bad ones. Truth can be set/changed now. “The truth is not a lie” clears matching lies.</p>
+        <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${liesCount}/${eligibleTracks.length} lies</p>
+        <label>Truth
+          <input type="text" id="fibbage-truth" maxlength="120" value="${escapeHtml(fb.truth||"")}" placeholder="The true answer" />
+          <button type="button" data-fibbage-set-truth>Set Truth</button>
+        </label>
+        <div class="fibbage-lie-list">${lieRows}</div>
+        <div class="host-actions">
+          <button type="button" data-fibbage-end-lying>End Lying Early</button>
+          <button type="button" data-fibbage-exit>Return to buzzer mode</button>
+        </div>
+      </section>`;
+  }
+  if (fb.phase === "review") {
+    const lieRows = eligibleTracks.map((trackKey)=>{
+      const raw = fb.lies[trackKey] || "";
+      const isBlocked = !!fb.blocked[trackKey];
+      const label = TEAM_COLORS.includes(trackKey) ? `Team ${trackKey}` : (players.find((p)=>p.id===trackKey)? getPlayerName(players.find((p)=>p.id===trackKey)) : trackKey);
+      return `<div class="fibbage-lie-row ${isBlocked?"is-blocked":""}">
+        <strong>${escapeHtml(label)}</strong>
+        <span>${raw ? `"${escapeHtml(raw)}"` : "<em>—</em>"}</span>
+        <button type="button" class="toggle-chip ${isBlocked?"is-off":"is-on"}" data-fibbage-block="${trackKey}">${isBlocked?"Unblock":"Block"}</button>
+      </div>`;
+    }).join("");
+    const truthOk = String(fb.truth||"").trim().length>0;
+    return `
+      <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
+        <h2>Fibbage — Review</h2>
+        <p class="muted">Lying ended. Set truth if needed, block rejects (final), then Show Responses to build shuffled choices.</p>
+        <label>Truth
+          <input type="text" id="fibbage-truth" maxlength="120" value="${escapeHtml(fb.truth||"")}" />
+          <button type="button" data-fibbage-set-truth>Set Truth</button>
+        </label>
+        ${!truthOk?'<p class="error-text">Truth required before showing responses.</p>':''}
+        <div class="fibbage-lie-list">${lieRows || '<p class="muted">No lies.</p>'}</div>
+        <div class="host-actions">
+          <button type="button" class="primary-action" data-fibbage-show-responses ${!truthOk?"disabled":""}>Show Responses</button>
+          <button type="button" data-fibbage-reset>Reset Fibbage</button>
+          <button type="button" data-fibbage-exit>Return to buzzer mode</button>
+        </div>
+      </section>`;
+  }
+  if (fb.phase === "voting_ready") {
+    const choicesHtml = (fb.choices||[]).map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}" ${c.isTruth?'<span class="muted">(truth)</span>':`<span class="muted">by ${c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ")}</span>`}</li>`).join("");
+    return `
+      <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
+        <h2>Fibbage — Responses Ready</h2>
+        <p class="muted">Choices shuffled. Press Start Timer to let players vote (${fb.voteTimeSec}s, ends early if all vote).</p>
+        <ul class="fibbage-choices-list">${choicesHtml}</ul>
+        <div class="host-actions">
+          <button type="button" class="primary-action" data-fibbage-start-vote>Start Timer</button>
+          <button type="button" data-fibbage-reset>Reset</button>
+        </div>
+      </section>`;
+  }
+  if (fb.phase === "voting") {
+    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const votedCount = Object.keys(fb.votes||{}).length;
+    const choices = fb.choices||[];
+    const voteMap = {};
+    Object.entries(fb.votes||{}).forEach(([tk,idx])=>{ const n=Number(idx); voteMap[n]=voteMap[n]||[]; voteMap[n].push(tk); });
+    const rows = choices.map((c,i)=>{
+      const voters = voteMap[i]||[];
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ");
+      return `<li>"${escapeHtml(c.text)}" — picked by ${voters.length?escapeHtml(voterLabels):"<em>none</em>"} (${voters.length})</li>`;
+    }).join("");
+    return `
+      <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
+        <h2>Fibbage — Voting (${timeLeft}s)</h2>
+        <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${votedCount}/${eligibleTracks.length} voted</p>
+        <ul class="fibbage-choices-list">${rows}</ul>
+        <p class="muted">You can see who picked what before revealing. Reveal will color: green truth, red lie with picks, yellow unpicked lie.</p>
+        <div class="host-actions"><button type="button" data-fibbage-exit>Return to buzzer mode</button></div>
+      </section>`;
+  }
+  if (fb.phase === "results") {
+    const choices = fb.choices||[];
+    const voteMap = {};
+    Object.entries(fb.votes||{}).forEach(([tk,idx])=>{ const n=Number(idx); voteMap[n]=voteMap[n]||[]; voteMap[n].push(tk); });
+    const revealed = fb.revealed||{all:false,singleIdx:null,revealedIdxs:[]};
+    const points = fb.pointsEarned||{};
+    const pointsRows = eligibleTracks.map((tk)=>{
+      const label = TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk);
+      const pts = points[tk]||0;
+      const lieChoice = choices.find((c)=>c.authorKeys.includes(tk));
+      const lieText = lieChoice? lieChoice.text : (fb.lies[tk]|| (fb.blocked[tk]?"[blocked]":"—"));
+      const votedIdx = fb.votes[tk];
+      const votedText = Number.isInteger(Number(votedIdx)) && choices[Number(votedIdx)] ? choices[Number(votedIdx)].text : "—";
+      return `<li><strong>${escapeHtml(label)}</strong>: lie "${escapeHtml(lieText)}", voted "${escapeHtml(votedText)}" — <strong>${pts} pts</strong></li>`;
+    }).join("");
+    const choicesWithMeta = choices.map((c,i)=>{
+      const voters = voteMap[i]||[];
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      const isRevealed = revealed.all || revealed.singleIdx===i || (revealed.revealedIdxs||[]).includes(i);
+      let colorCls="";
+      if (isRevealed) {
+        if (c.isTruth) colorCls="is-truth";
+        else if (voters.length>0) colorCls="is-lie-picked";
+        else colorCls="is-lie-unpicked";
+      }
+      return `<li class="fibbage-choice ${colorCls}" data-fibbage-choice="${i}">
+        <strong>${i+1}.</strong> "${escapeHtml(c.text)}"
+        <span class="muted">— ${escapeHtml(authorLabels)}</span>
+        <span class="muted">picked by: ${escapeHtml(voterLabels)} (${voters.length})</span>
+        ${!revealed.all?`<button type="button" data-fibbage-spotlight="${i}">Spotlight</button>`:""}
+      </li>`;
+    }).join("");
+    return `
+      <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
+        <h2>Fibbage — Results</h2>
+        <p class="muted">Host sees picks before reveal. Show All colors: <span style="color:var(--green)">green</span> truth, <span style="color:var(--red)">red</span> lie with picks, <span style="color:#eab308">yellow</span> unpicked. Spotlight one for big screen.</p>
+        <ul class="fibbage-choices-list" style="margin:0.6rem 0">${choicesWithMeta}</ul>
+        <div class="host-actions">
+          <button type="button" class="primary-action" data-fibbage-show-all>Show All</button>
+          <button type="button" data-fibbage-spotlight-clear>Clear Spotlight</button>
+          <button type="button" data-fibbage-reset>Play Again</button>
+          <button type="button" data-fibbage-exit>Return to buzzer mode</button>
+        </div>
+        <ul class="fibbage-points">${pointsRows || '<li class="muted">No points.</li>'}</ul>
+      </section>`;
+  }
+  return `<section class="card host-panel"><p>Fibbage phase: ${escapeHtml(fb.phase)}</p></section>`;
+}
+function renderFibbagePlayerPanel(settings, mePlayer) {
+  const fb = getFibbage();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
+  if (isControllerPlayer() || isCohost()) {
+    return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Host/Co-host has no lie input.</p></section>`;
+  }
+  if (settings.teamModeEnabled && !myTeamColor) {
+    return `<section class="card player-card"><h2>Fibbage</h2><p class="muted">${getSnark("player.buzzer.waitingTeamAssignment","Waiting For Team Assignment")}</p></section>`;
+  }
+  if (!fb.active) {
+    return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">${getSnark("player.fibbage.waitingHost","Waiting for the host to start...")}</p></section>`;
+  }
+  const notice = getRecentBuzzNotice();
+  if (fb.phase === "lying") {
+    const already = fb.lies[trackKey] !== undefined;
+    const blocked = !!fb.blocked[trackKey];
+    const err = fb.lieErrors[trackKey] || "";
+    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    if (blocked) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Your lie was blocked by the host.</p></section>`;
+    if (already) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Lie submitted: "${escapeHtml(fb.lies[trackKey])}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>${notice?`<p class="muted">${notice}</p>`:""}</section>`;
+    return `
+      <section class="card player-card">
+        <h2>Fibbage ${teamPill}</h2>
+        <p class="muted">Write a lie to fool other players. Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>
+        ${err?`<p class="error-text">${escapeHtml(err)}</p>`:""}
+        ${notice?`<p class="muted">${notice}</p>`:""}
+        <div class="text-entry">
+          <input id="fibbage-lie-entry" type="text" maxlength="120" placeholder="Type your lie" />
+          <button type="button" data-fibbage-submit-lie>Submit Lie</button>
+        </div>
+      </section>`;
+  }
+  if (fb.phase === "review" || fb.phase === "voting_ready") {
+    return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Waiting for host to show responses...</p></section>`;
+  }
+  if (fb.phase === "voting") {
+    const alreadyVoted = fb.votes[trackKey] !== undefined;
+    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    if (alreadyVoted) {
+      const idx = fb.votes[trackKey];
+      const choice = (fb.choices||[])[Number(idx)];
+      return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">You voted for "${escapeHtml(choice?choice.text:"")}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p></section>`;
+    }
+    const choices = fb.choices||[];
+    const buttons = choices.map((c,i)=>{
+      const isOwn = c.authorKeys.includes(trackKey);
+      return `<button type="button" class="fibbage-vote-btn" data-fibbage-vote="${i}" ${isOwn?"disabled":""}>${escapeHtml(c.text)}${isOwn?' (your lie)':''}</button>`;
+    }).join("");
+    return `
+      <section class="card player-card">
+        <h2>Fibbage — Vote ${teamPill}</h2>
+        <p class="muted">Pick the truth. You cannot pick your own lie. Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>
+        ${notice?`<p class="muted">${notice}</p>`:""}
+        <div class="fibbage-vote-list">${buttons}</div>
+      </section>`;
+  }
+  if (fb.phase === "results") {
+    const choices = fb.choices||[];
+    const voteMap = {};
+    Object.entries(fb.votes||{}).forEach(([tk,idx])=>{ const n=Number(idx); voteMap[n]=voteMap[n]||[]; voteMap[n].push(tk); });
+    const revealed = fb.revealed||{all:false,singleIdx:null,revealedIdxs:[]};
+    const pts = (fb.pointsEarned||{})[trackKey]||0;
+    const players = currentParticipants();
+    const list = choices.map((c,i)=>{
+      const voters = voteMap[i]||[];
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      const isRevealed = revealed.all || revealed.singleIdx===i || (revealed.revealedIdxs||[]).includes(i);
+      let cls="";
+      if (isRevealed) {
+        if (c.isTruth) cls="is-truth";
+        else if (voters.length>0) cls="is-lie-picked";
+        else cls="is-lie-unpicked";
+      } else {
+        cls="is-hidden";
+      }
+      const myVote = fb.votes[trackKey]===i ? " ← your pick" : "";
+      return `<li class="fibbage-choice ${cls}">"${escapeHtml(c.text)}" <span class="muted">${isRevealed?`— ${escapeHtml(authorLabels)}`:""} ${myVote}</span></li>`;
+    }).join("");
+    return `
+      <section class="card player-card">
+        <h2>Fibbage — Results ${teamPill}</h2>
+        <p class="muted">You earned <strong>${pts} pts</strong> (500 per fool, 1000 for truth, ×${fb.multiplier})</p>
+        <ul class="fibbage-choices-list">${list}</ul>
+        ${!revealed.all && revealed.singleIdx===null?'<p class="muted">Waiting for host to reveal...</p>':''}
+      </section>`;
+  }
+  return `<section class="card player-card"><h2>Fibbage</h2><p>Phase ${escapeHtml(fb.phase)}</p></section>`;
+}
+function renderFibbageAudienceDisplay(settings, players) {
+  const fb = getFibbage();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  if (!fb.active) {
+    return `<main class="layout audience-layout" data-fibbage-active="true"><header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage</h1><p class="muted">Waiting for the game to start...</p></div></header></main>`;
+  }
+  if (fb.phase === "lying") {
+    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const eligible = getEligibleFibbageTrackKeys();
+    const submitted = Object.keys(fb.lies||{}).length;
+    return `<main class="layout audience-layout" data-fibbage-active="true">
+      <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Lying</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer">${timeLeft}s</span><span>${submitted}/${eligible.length} lies</span></div></header>
+      <section class="card"><h2>Lies submitted</h2><p class="muted">${submitted}/${eligible.length} — waiting for host to block/review.</p></section>
+    </main>`;
+  }
+  if (fb.phase === "review") {
+    return `<main class="layout audience-layout" data-fibbage-active="true"><header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Review</h1><p class="muted">Host is reviewing lies and truth</p></div></header></main>`;
+  }
+  if (fb.phase === "voting_ready") {
+    const choices = fb.choices||[];
+    const list = choices.map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}"</li>`).join("");
+    return `<main class="layout audience-layout" data-fibbage-active="true">
+      <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Vote</h1><p class="muted">Waiting for vote timer</p></div></header>
+      <section class="card"><h2>Choices</h2><ul class="fibbage-choices-list">${list}</ul></section>
+    </main>`;
+  }
+  if (fb.phase === "voting") {
+    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const choices = fb.choices||[];
+    const list = choices.map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}"</li>`).join("");
+    return `<main class="layout audience-layout" data-fibbage-active="true">
+      <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Voting</h1></div><div class="hero-meta"><span class="audience-timer">${timeLeft}s</span></div></header>
+      <section class="card"><h2>Choices</h2><ul class="fibbage-choices-list">${list}</ul></section>
+    </main>`;
+  }
+  if (fb.phase === "results") {
+    const choices = fb.choices||[];
+    const voteMap = {};
+    Object.entries(fb.votes||{}).forEach(([tk,idx])=>{ const n=Number(idx); voteMap[n]=voteMap[n]||[]; voteMap[n].push(tk); });
+    const revealed = fb.revealed||{all:false,singleIdx:null};
+    let focusIdx = revealed.singleIdx;
+    if (focusIdx!==null && focusIdx!==undefined && choices[focusIdx]) {
+      const c = choices[focusIdx];
+      const voters = voteMap[focusIdx]||[];
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      let colorCls="";
+      if (c.isTruth) colorCls="is-truth";
+      else if (voters.length>0) colorCls="is-lie-picked";
+      else colorCls="is-lie-unpicked";
+      return `<main class="layout audience-layout" data-fibbage-active="true">
+        <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Spotlight</h1></div></header>
+        <section class="card fibbage-spotlight ${colorCls}" style="text-align:center; padding:2rem">
+          <h2 style="font-size:2rem">"${escapeHtml(c.text)}"</h2>
+          <p>Picked by: <strong>${escapeHtml(voterLabels)}</strong> (${voters.length})</p>
+          <p class="muted">— ${escapeHtml(authorLabels)}</p>
+        </section>
+      </main>`;
+    }
+    const list = choices.map((c,i)=>{
+      const voters = voteMap[i]||[];
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      let cls="";
+      if (revealed.all) {
+        if (c.isTruth) cls="is-truth";
+        else if (voters.length>0) cls="is-lie-picked";
+        else cls="is-lie-unpicked";
+      }
+      const showAuthor = revealed.all ? ` — ${escapeHtml(authorLabels)}` : "";
+      return `<li class="fibbage-choice ${cls}"><strong>${i+1}.</strong> "${escapeHtml(c.text)}"${showAuthor} <span class="muted">picked by ${escapeHtml(voterLabels)}</span></li>`;
+    }).join("");
+    return `<main class="layout audience-layout" data-fibbage-active="true">
+      <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Results</h1></div></header>
+      <section class="card"><h2>All Choices ${revealed.all?"(revealed)":""}</h2><ul class="fibbage-choices-list">${list}</ul></section>
+      ${renderScores(players, getScores())}
+    </main>`;
+  }
+  return `<main class="layout audience-layout" data-fibbage-active="true"><header class="hero audience-hero"><div><h1>Fibbage</h1><p>${escapeHtml(fb.phase)}</p></div></header></main>`;
+}
+
+// =============================================================================
 // Player-led team selection — dedicated screens for host, players, audience
 // =============================================================================
 function renderTeamSelectPlayerPanel(settings, players, mePlayer) {
@@ -3729,6 +4491,7 @@ function renderTeamSelectAudienceDisplay(settings, players) {
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
+  if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   if (isControllerPlayer() || isCohost()) {
     return `
@@ -4271,8 +5034,23 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
 
-  // Bingo / Wen Dit Happn tablets are not useful.
+  // Bingo / Wen Dit Happn / Fibbage tablets handle separately
   if (isBingoMode()) {
+    return renderTabletTimerNotUseful();
+  }
+
+  if (isFibbageMode()) {
+    const fb = getFibbage();
+    if (fb.phase === "lying") {
+      const cs = getFibbageLieTimeLeftCs(fb);
+      const flash = isTabletTimerFlashing(cs);
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value">${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
+    }
+    if (fb.phase === "voting") {
+      const cs = getFibbageVoteTimeLeftCs(fb);
+      const flash = isTabletTimerFlashing(cs);
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value">${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
+    }
     return renderTabletTimerNotUseful();
   }
 
@@ -4344,6 +5122,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
   if (isDisOrDatMode()) return renderDisOrDatAudienceDisplay(settings, players);
+  if (isFibbageMode()) return renderFibbageAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
@@ -4502,6 +5281,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   if (isDisOrDatMode()) {
     if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control Dis or Dat. The host must manage it.</p></section>`;
     return renderDisOrDatHostPanel(settings, players);
+  }
+
+  if (isFibbageMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control Fibbage. The host must manage it.</p></section>`;
+    return renderFibbageHostPanel(settings, players);
   }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
@@ -4837,8 +5621,12 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
                 <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)</p>
               </div>
+              <div>
+                <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" ? "disabled" : ""}>Fibbage</button>
+                <p class="setting-helper">The Quiplash/Jackbox lie game. Host sets truth (before/during/after lying), picks lie + vote timers (30/45/60) and multiplier (1x..5x). Players submit lies (blocked if matches truth), host blocks bad lies, shows shuffled lies+truth, players vote (can't pick own), host reveals one-by-one or Show All (green truth, red fooled, yellow unpicked). 500 per fool, 1000 for truth, multiplied.</p>
+              </div>
             </div>
-            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat"
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage"
               ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
               : ""}
           </div>
@@ -5256,6 +6044,38 @@ function render() {
           </div>
         </header>
         ${ddBody}
+      </main>
+    `;
+    lastUiSignature = getUiSignature();
+    bindEvents();
+    return;
+  }
+
+  if (isFibbageMode()) {
+    const fibBody = showAdminData ? `
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      <section class="grid">
+        ${renderScores(players, scores)}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+      </section>` ;
+    app.innerHTML = `
+      <main class="layout" data-fibbage-active="true">
+        <header class="hero">
+          <div>
+            <h1>Fibbage</h1>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
+          </div>
+          <div class="hero-meta">
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
+          </div>
+        </header>
+        ${fibBody}
       </main>
     `;
     lastUiSignature = getUiSignature();
@@ -5757,6 +6577,69 @@ function bindEvents() {
       });
     });
 
+    // Fibbage — host controls
+    app.querySelectorAll("[data-fibbage-enter-lies]").forEach((b)=> b.addEventListener("click", ()=> startFibbageLying()));
+    app.querySelectorAll("[data-fibbage-set-truth]").forEach((b)=> b.addEventListener("click", ()=>{
+      const inp = app.querySelector("#fibbage-truth");
+      setFibbageTruth(inp ? inp.value : "");
+    }));
+    app.querySelectorAll("#fibbage-lie-time").forEach((el)=> el.addEventListener("change", ()=> setFibbageLieTime(el.value)));
+    app.querySelectorAll("#fibbage-vote-time").forEach((el)=> el.addEventListener("change", ()=> setFibbageVoteTime(el.value)));
+    app.querySelectorAll("#fibbage-mult").forEach((el)=> el.addEventListener("change", ()=> setFibbageMultiplier(el.value)));
+    app.querySelectorAll("[data-fibbage-end-lying]").forEach((b)=> b.addEventListener("click", ()=> endFibbageLyingEarly()));
+    app.querySelectorAll("[data-fibbage-show-responses]").forEach((b)=> b.addEventListener("click", ()=> showFibbageResponses()));
+    app.querySelectorAll("[data-fibbage-start-vote]").forEach((b)=> b.addEventListener("click", ()=> startFibbageVoteTimer()));
+    app.querySelectorAll("[data-fibbage-block]").forEach((b)=> b.addEventListener("click", ()=> toggleFibbageBlock(b.dataset.fibbageBlock)));
+    app.querySelectorAll("[data-fibbage-show-all]").forEach((b)=> b.addEventListener("click", ()=>{
+      if(!isHost()) return;
+      const fb=getFibbage();
+      setState("fibbage", {...fb, revealed:{all:true,singleIdx:null,revealedIdxs:(fb.choices||[]).map((_,i)=>i)}},true); render();
+    }));
+    app.querySelectorAll("[data-fibbage-spotlight]").forEach((b)=> b.addEventListener("click", ()=>{
+      if(!isHost()) return;
+      const idx=Number(b.dataset.fibbageSpotlight);
+      const fb=getFibbage();
+      const already = fb.revealed.singleIdx===idx ? null : idx;
+      const revealedIdxs = already!==null ? [...new Set([...(fb.revealed.revealedIdxs||[]), idx])] : (fb.revealed.revealedIdxs||[]);
+      setState("fibbage", {...fb, revealed:{all:false,singleIdx:already,revealedIdxs}},true); render();
+    }));
+    app.querySelectorAll("[data-fibbage-spotlight-clear]").forEach((b)=> b.addEventListener("click", ()=>{
+      if(!isHost()) return;
+      const fb=getFibbage();
+      setState("fibbage", {...fb, revealed:{all:false,singleIdx:null,revealedIdxs:fb.revealed.revealedIdxs||[]}},true); render();
+    }));
+    app.querySelectorAll("[data-fibbage-reset]").forEach((b)=> b.addEventListener("click", ()=> resetFibbage()));
+    app.querySelectorAll("[data-fibbage-exit]").forEach((b)=> b.addEventListener("click", ()=> exitFibbage()));
+    // Fibbage — player lie/vote
+    app.querySelectorAll("[data-fibbage-submit-lie]").forEach((b)=> b.addEventListener("click", async ()=>{
+      if(isControllerPlayer()||isCohost()) return;
+      const inp=app.querySelector("#fibbage-lie-entry");
+      const lieText=String(inp?.value||"").trim();
+      try{
+        const res=await RPC.call("fibbage-lie",{lieText}, RPC.Mode.HOST);
+        if(res?.ok===false && res?.reason) setBuzzNotice(res.reason);
+        else if(res?.message) setBuzzNotice(res.message);
+        if(res?.ok) if(inp) inp.value="";
+        render();
+      }catch{ setBuzzNotice("Could not send lie."); render();}
+    }));
+    app.querySelectorAll("[data-fibbage-vote]").forEach((b)=> b.addEventListener("click", async ()=>{
+      if(isControllerPlayer()||isCohost()) return;
+      const idx=Number(b.dataset.fibbageVote);
+      try{
+        const res=await RPC.call("fibbage-vote",{choiceIdx:idx}, RPC.Mode.HOST);
+        if(res?.ok===false && res?.reason) setBuzzNotice(res.reason);
+        else if(res?.message) setBuzzNotice(res.message);
+        render();
+      }catch{ setBuzzNotice("Could not send vote."); render();}
+    }));
+    const fibInput=app.querySelector("#fibbage-lie-entry");
+    if(fibInput){
+      fibInput.addEventListener("keydown",(e)=>{
+        if(e.key==="Enter"){ e.preventDefault(); app.querySelector("[data-fibbage-submit-lie]")?.click(); }
+      });
+    }
+
   if (!rouletteKeydownBound) {
     document.addEventListener("keydown", handleRouletteKeydown);
     rouletteKeydownBound = true;
@@ -5841,6 +6724,8 @@ function isEditingControl() {
     active.closest("[data-setting]") ||
       active.closest("[data-log-input]") ||
       active.id === "answer-entry" ||
+      active.id === "fibbage-lie-entry" ||
+      active.id === "fibbage-truth" ||
       active.matches("[data-prejoin-input]"),
   );
 }
@@ -6317,6 +7202,15 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress") };
     }
     return selectScrewee(screweeId);
+  });
+
+  RPC.register("fibbage-lie", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleFibbageLie(senderPlayer, payload);
+  });
+  RPC.register("fibbage-vote", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleFibbageVote(senderPlayer, payload);
   });
 
   RPC.register("claim-cohost", async (payload, senderPlayer) => {

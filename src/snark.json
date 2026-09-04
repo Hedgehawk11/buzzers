@@ -542,6 +542,78 @@
         "snark2": ""
       }
     },
+    "fibbage": {
+      "waitingHost": {
+        "en": "Waiting for the host to start...",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notLying": {
+        "en": "Not accepting lies right now.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notVoting": {
+        "en": "Not voting right now.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notPlayer": {
+        "en": "Host cannot lie.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "alreadyLied": {
+        "en": "You already submitted a lie.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "blocked": {
+        "en": "Your lie was blocked.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "emptyLie": {
+        "en": "Lie cannot be empty.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "tooLong": {
+        "en": "Lie is too long.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "truthNotLie": {
+        "en": "The truth is not a lie — try again",
+        "snark1": "",
+        "snark2": ""
+      },
+      "lieSubmitted": {
+        "en": "Lie submitted.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "alreadyVoted": {
+        "en": "You already voted.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badChoice": {
+        "en": "Bad choice.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "ownLie": {
+        "en": "You cannot vote for your own lie.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "voteSubmitted": {
+        "en": "Vote submitted.",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "scores": {
       "scoresHidden": {
         "en": "Only the Host can view scores right now.",

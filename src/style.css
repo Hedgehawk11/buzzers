@@ -1788,3 +1788,69 @@ body:has([data-screw-active]) {
     radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
     linear-gradient(160deg, #1f0a0a, #0d0505);
 }
+
+/* Fibbage */
+body:has([data-fibbage-active]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(180, 80, 255, 0.18), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(255, 139, 36, 0.14), transparent 55%),
+    linear-gradient(160deg, #1a0b2e, #0d0a1a);
+}
+.fibbage-lie-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+.fibbage-lie-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+.fibbage-lie-row.is-blocked {
+  opacity: 0.5;
+  background: rgba(235,61,48,0.12);
+}
+.fibbage-choices-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.fibbage-choices-list li {
+  padding: 0.6rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+.fibbage-choice.is-truth {
+  border-color: rgba(29,185,84,0.6);
+  background: rgba(29,185,84,0.18);
+}
+.fibbage-choice.is-lie-picked {
+  border-color: rgba(235,61,48,0.6);
+  background: rgba(235,61,48,0.15);
+}
+.fibbage-choice.is-lie-unpicked {
+  border-color: rgba(234,179,8,0.6);
+  background: rgba(234,179,8,0.12);
+}
+.fibbage-vote-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+.fibbage-vote-btn {
+  padding: 0.7rem;
+  font-weight: 700;
+  text-align: left;
+  border-radius: 10px;
+}
+.fibbage-spotlight {
+  border: 2px solid rgba(255,255,255,0.2);
+}
