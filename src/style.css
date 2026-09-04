@@ -1788,3 +1788,157 @@ body:has([data-screw-active]) {
     radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
     linear-gradient(160deg, #1f0a0a, #0d0505);
 }
+
+/* Fibbage */
+body:has([data-fibbage-active]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(180, 80, 255, 0.18), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(255, 139, 36, 0.14), transparent 55%),
+    linear-gradient(160deg, #1a0b2e, #0d0a1a);
+}
+.fibbage-lie-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+.fibbage-lie-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+}
+.fibbage-lie-row.is-blocked {
+  opacity: 0.5;
+  background: rgba(235,61,48,0.12);
+}
+.fibbage-choices-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.6rem 0;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.fibbage-choices-list li {
+  padding: 0.8rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.04);
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+}
+.fibbage-choice.is-truth {
+  border-color: rgba(29,185,84,0.6);
+  background: rgba(29,185,84,0.18);
+}
+.fibbage-choice.is-lie-picked {
+  border-color: rgba(235,61,48,0.6);
+  background: rgba(235,61,48,0.15);
+}
+.fibbage-choice.is-lie-unpicked {
+  border-color: rgba(234,179,8,0.6);
+  background: rgba(234,179,8,0.12);
+}
+.fibbage-vote-list {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.fibbage-vote-btn {
+  min-height: 64px;
+  padding: 0.9rem 1rem;
+  font-weight: 800;
+  font-size: 1.05rem;
+  text-align: center;
+  border-radius: 14px;
+  line-height: 1.25;
+  display: grid;
+  place-items: center;
+  transition: transform 120ms, background 120ms;
+}
+.fibbage-vote-btn:hover:enabled {
+  transform: translateY(-1px);
+}
+.fibbage-spotlight {
+  min-height: 62vh;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 3.5rem 2rem;
+  border-width: 3px;
+  border-radius: 28px;
+  background:
+    radial-gradient(120% 120% at 50% 0%, rgba(255,255,255,0.10), transparent 60%),
+    linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.25)),
+    var(--panel);
+  box-shadow: 0 20px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06) inset;
+  animation: fibbageSpotlightIn 420ms ease-out, fibbageGlow 1.8s ease-in-out infinite alternate;
+  position: relative;
+  overflow: hidden;
+}
+.fibbage-spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  background: radial-gradient(800px 400px at 50% 0%, rgba(255,255,255,0.18), transparent 70%);
+  pointer-events: none;
+  opacity: 0.7;
+}
+.fibbage-spotlight h2 {
+  font-size: clamp(2.6rem, 8vw, 5.5rem);
+  line-height: 0.95;
+  letter-spacing: 0.02em;
+  text-wrap: balance;
+  text-shadow: 0 4px 30px rgba(0,0,0,0.45), 0 0 20px rgba(255,255,255,0.15);
+  margin: 0;
+}
+.fibbage-spotlight .spotlight-meta {
+  margin-top: 1.2rem;
+  font-size: clamp(1rem, 2.5vw, 1.35rem);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.fibbage-spotlight .spotlight-author {
+  margin-top: 0.6rem;
+  font-size: clamp(0.95rem, 2.2vw, 1.2rem);
+  color: var(--muted);
+}
+.fibbage-spotlight.is-truth {
+  border-color: rgba(29,185,84,0.9);
+  background:
+    radial-gradient(900px 500px at 50% 0%, rgba(29,185,84,0.35), transparent 65%),
+    linear-gradient(160deg, rgba(29,185,84,0.22), rgba(0,0,0,0.25)),
+    var(--panel);
+  box-shadow: 0 0 80px rgba(29,185,84,0.55), 0 20px 80px rgba(0,0,0,0.55);
+}
+.fibbage-spotlight.is-lie-picked {
+  border-color: rgba(235,61,48,0.85);
+  background:
+    radial-gradient(900px 500px at 50% 0%, rgba(235,61,48,0.32), transparent 65%),
+    linear-gradient(160deg, rgba(235,61,48,0.18), rgba(0,0,0,0.25)),
+    var(--panel);
+  box-shadow: 0 0 70px rgba(235,61,48,0.45), 0 20px 80px rgba(0,0,0,0.55);
+}
+.fibbage-spotlight.is-lie-unpicked {
+  border-color: rgba(234,179,8,0.85);
+  background:
+    radial-gradient(900px 500px at 50% 0%, rgba(234,179,8,0.30), transparent 65%),
+    linear-gradient(160deg, rgba(234,179,8,0.16), rgba(0,0,0,0.25)),
+    var(--panel);
+  box-shadow: 0 0 60px rgba(234,179,8,0.40), 0 20px 80px rgba(0,0,0,0.55);
+}
+@keyframes fibbageSpotlightIn {
+  from { transform: scale(0.88) translateY(18px); opacity: 0; }
+  to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+@keyframes fibbageGlow {
+  from { filter: brightness(1); }
+  to   { filter: brightness(1.08); }
+}

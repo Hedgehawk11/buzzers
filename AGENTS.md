@@ -1,105 +1,79 @@
 # Buzzers — Agent guide
 
 ## Project
-Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows. PWA-enabled via `vite-plugin-pwa`. Requires Node 20+ (README; CI matrix 20/22/24).
+Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows. PWA via `vite-plugin-pwa`. Node 20+ (CI matrix 20/22/24).
 
 ## Commands
 ```
 npm run dev        # vite dev server
-npm run dev-server # vite --host (LAN access for multi-device testing)
-npm run build      # vite build → dist/
-npm run preview    # vite preview
+npm run dev-server # vite --host (LAN multi-device)
+npm run build      # vite build → dist/ (CI: npm ci && npm run build)
+npm run preview    # vite preview built output
 ```
-CI: `npm ci && npm run build` on Node 20/22/24 (`.github/workflows/node.js.yml`). No typecheck, formatter, or pre-commit hooks.
+No typecheck/lint/format/test hooks. `dist/` gitignored. PWA SW only in `build`.
 
 ## Key structure
-- `src/main.js` (~6300 lines) — entire app: render, state machine, event binding, prejoin UI
-- `src/snark.json` (~1030 lines) — player-facing string dictionary (see Snark mode)
-- `src/style.css` (~1730 lines) — flat CSS, custom properties for theming
-- `index.html` — mounts `<div id="app">`, loads `src/main.js` as module
-- `vite.config.js` — `VitePWA` plugin only (see PWA); `public/` holds PWA icons + favicons + optional scoreboard rank badge images (`1.png`/`2.png`/`3.png`; see Scoreboard)
+- `src/main.js` (~7300 lines) — entire app: render, state, RPC, prejoin. Change here for game logic.
+- `src/snark.json` (~1100 lines) — `screen.group.key → {en,snark1,snark2}` with `{token}`. All player strings via `getSnark()`.
+- `src/style.css` (~1850 lines) — flat CSS, custom properties. No modules.
+- `index.html` — `<div id="app">` + `src/main.js`
+- `vite.config.js` — `VitePWA` only. `public/` icons + optional `1.png`/`2.png`/`3.png` rank badges.
 
 ## Architecture
-- **PlayroomKit** (`insertCoin`) — host is single source of truth via `setState`/`getState`. Players send buzzes via `RPC.call("buzz", ..., RPC.Mode.HOST)`.
-- Round state machine: `IDLE → OPEN → LOCKED/ROULETTE → CLOSED → IDLE` (const `ROUND_STATUSES`). Host drives transitions via `setState("round", ...)`.
-- Client roles: **player**, **host** (sees controls), **co-host**, **audience display** (projection), **tablet timer** (timer-only display). `clientMode` (and mirrored `me().state.clientMode`) picks the render path.
-- All state mutations use `setState(key, value, true)` (reliable broadcast).
-- Settings key `"settings"`, only host can change (`isHost()`), locked while round is OPEN or ROULETTE.
-- Scores, teams, log, bingo, controller ID, cohosts all live in shared PlayroomKit state keys.
+- **PlayroomKit** (`insertCoin({skipLobby:true, maxPlayersPerRoom:42})`) — host is SSOT via `setState(k,v,true)` (reliable). Players → host via `RPC.call("buzz",…,RPC.Mode.HOST)`. `me().state.clientMode` mirrors `clientMode` var.
+- Round: `IDLE → OPEN → LOCKED/ROULETTE → CLOSED → IDLE` (`ROUND_STATUSES`). Host drives `setState("round",…)`.
+- Roles: `player` | `host` (controls) | `co-host` | `display` | `tablet_timer`. `clientMode` picks render path.
+- Shared keys: `settings` (host-only, locked when `OPEN`/`ROULETTE`), `round`, `scores`, `gameLog`, `bingo`, `disordat`, `fibbage`, `teamAssignments`/`teamSelect`, `controllerId`, `cohostPassword`/`cohostIds`. All mutations `,true`.
+- `ensureHostInit()` seeds defaults; cleans stale `cohostIds`/`teamAssignments`.
 
 ## Co-host
-- Host seeds a random 5-digit `cohostPassword`; cohosts join with room code + password and claim via `claim-cohost` RPC (`cohostIds` state). Cleanup prunes stale cohost IDs.
-- UI actions go through `cohostDispatch()`: runs locally if host, else relays via `cohost-action` RPC to the `HOST_ACTIONS` map on the host. `hasHostPrivileges()` = host OR cohost.
-- Bingo / Wen Dit Happn / Dis or Dat are **host-only** — cohosts get a "host must manage it" notice (host-only UI panels, functions return early).
+- Host seeds 5-digit `cohostPassword`; claim via `claim-cohost` RPC → `cohostIds`. `hasHostPrivileges()=isHost()||isCohost()`.
+- `cohostDispatch(fn,args)` relays via `cohost-action` RPC to `HOST_ACTIONS` map on host.
+- Host-only modes: Bingo/Wen/Dis or Dat/Fibbage — cohost sees "host must manage" and handlers early-return.
 
 ## Team modes
-- `teamModeEnabled` + `teamScoringMode`: `"alliance"` (individual buzzers, summed team score) or `"shared"` (shared team buzzer, team score). Chosen on host prejoin screen; `teamAssignments` maps players → `TEAM_COLORS`.
-- 10 team colors: `red, blue, green, purple, gray, orange, pink, brown, cyan, lime`. Each needs a `button.team-buzzer.team-*` gradient, a `.team-*` chip, and a `body[data-team="*"]` background in `style.css` if added/changed.
-- Player-led team assignment is always available while teams are on: host opens it via `openTeamSelect()` (`teamSelect` shared state: `{active, enabledTeams, locked, maxPerTeam}`). It starts **locked**; the host unlocks it so players can pick/leave via the `select-team` RPC, then re-locks (`setTeamSelectLocked`/`setTeamSelectTeams`/`setTeamSelectLimit`/`setPlayerTeam`). `maxPerTeam` (0 = unlimited) blocks players from joining full teams but host overrides bypass it. Full-screen host/player/audience panels (`renderTeamSelect*`) route via `isTeamSelectActive()` before the bingo/disordat branches. Requires `round.status === IDLE`; disabling `teamModeEnabled` force-closes it.
+- `teamModeEnabled` + `teamScoringMode` `"alliance"` (individual buzzers, summed) vs `"shared"` (one buzzer/score per team). Set on host prejoin. `TEAM_COLORS` 10: red/blue/green/purple/gray/orange/pink/brown/cyan/lime — adding one needs `button.team-buzzer.team-*`, `.team-*` chip, `body[data-team="*"]` in `style.css`.
+- Player-led select: `teamSelect {active,enabledTeams,locked,maxPerTeam}` (0=unlimited). Starts locked, host unlocks. RPC `select-team`, host can override via `setPlayerTeam`. Routed via `isTeamSelectActive()` before bingo/disordat/fibbage. Requires `round.status===IDLE`.
 
 ## Scoring modes
-- **Uniform**: fixed `uniformPoints` (500–10000 in 500-point steps, default 1000; const `VALUE_OPTIONS`).
-- **JACK**: `timeLeftCs × jackMultiplier` (1×–3×). Value decreases as timer ticks.
-- **Pick-a-Value** (display name for the mode internally keyed as `roulette`): players set a value, ceiling = `topAmount / playerCount` (additive) or `topAmount` (highest/single). `rouletteTopAmount` uses the same 500–10000 `VALUE_OPTIONS` range.
-  - All internal identifiers stay `roulette`: settings keys `rouletteMode`/`rouletteTopAmount`/`rouletteSinglePlayerTarget`, `round.roulette`, status `ROUND_STATUSES.ROULETTE`, RPC `"roulette-stop"`, CSS classes, and function names. Only user-facing strings say "Pick-a-Value".
-  - **Value distribution**: no bracket/cadence pattern. `getRouletteFrame()` derives each tick's value from a per-round random `roulette.seed` (host sets it in `startRoulettePhase`) plus the tick, using a triangular distribution centered at ~3/4 of the ceiling (`0.75 + ((r1+r2)/2 − 0.5) × 0.5`, mean ≈ 0.75 × ceiling, range ~half-to-full). Deterministic per seed+tick so all clients render identical values. Old rounds without a `seed` fall back to `0`.
+- **Uniform**: `uniformPoints` 500..10000/500 (default 1000, `VALUE_OPTIONS`).
+- **JACK**: `timeLeftCs * jackMultiplier` (1..3x, time decays).
+- **Pick-a-Value** (`roulette` internals): ceiling `topAmount/playerCount` (additive) or `topAmount`. `getRouletteFrame()` deterministic pseudo-random per `roulette.seed`+tick (triangular ~0.75*ceiling, half-to-full).
 
-## Host flow
-1. `insertCoin` with no roomCode → creates room (host = first `insertCoin`).
-2. `ensureHostInit()` seeds shared state: settings, round, scores, gameLog, pendingLogId, bingo, controllerId, cohostPassword/Ids.
-3. Players join via 4-char room code; cohosts via code + password; displays via code.
-4. Host configures settings, assigns teams, sets pre-set correct answer (optional).
-5. "Open Buzzers" → buzzer phase until timer expires or a buzz locks.
-6. Auto-evaluates if preset correct answer exists; otherwise host rules Correct/Incorrect.
-7. "Reset Round" → IDLE.
+## Input modes (all switch via `settings.inputMode`, host-only, `hostTick` early-returns)
+- `buttons`: 1/2/4/6/8 options (8=`.eight-grid`), `correctOptions[]`.
+- `text`: free-text, `correctAnswer` string.
+- `bingo`/`wendithapn`: 5 tiles or 3×Before/Never/After, cycling `750ms`, `50ms` bingo re-render loop.
+- `disordat`: 7 Qs, 300pts each + time bonus 5+ correct. `disordat` state, host presets `answers[7]`.
+- `fibbage`: lie game (see below). `fibbage` state, host presets truth, players lie then vote.
+
+## Fibbage
+- **Truth** must be set in `setup` before `Enter Lies`; locked thereafter (`setFibbageTruth` early-returns if `active`). `Show Responses` and `Enter Lies` auto-apply draft `#fibbage-truth` value if host typed but didn't press **Set Truth**. Truth input uses draft preservation (`_fibTruthDraft` in `render()`/`bindEvents()`) to survive per-second re-render.
+- **Phases**: `setup → lying (lieTimeSec 30|45|60) → review → voting_ready → voting (voteTimeSec 30|45|60) → results`. `multiplier` 1..5 scales both `500` per fool and `1000` for truth. Timers via `getFibbageLie/VoteTimeLeftCs`, `handleFibbageTick` in `hostTick` (skips full `render()` when truth input focused, only `updateTimerDisplays`).
+- **Lies**: `RPC fibbage-lie {lieText}` one per `trackKey` (`getTeamTrackKey` → shared-team = one per team). Block via `blocked[track]` (host toggle, final). Duplicates merged by normalized text → one choice `authorKeys[]` (shown as `Player One + Player Two`), each co-author gets full `500*M` per voter. Shuffle deterministic per `seed` (`seededFraction`).
+- **Voting**: `RPC fibbage-vote {choiceIdx}`, can't pick own lie (own `authorKeys` includes voter). Ends when all eligible voted or vote timer expires. `finalizeFibbageScores()` only on reveal, single `gameLog type:"fibbage"` entry per track.
+- **Reveal**: host sees `who picked what` before reveal. `Show All` → green truth / red fooled lie / yellow unpicked; `Spotlight` single index → big-screen `renderFibbageAudienceDisplay` dramatic card `.fibbage-spotlight` (62vh, `fibbageSpotlightIn`/`fibbageGlow`, badge `TRUTH`/`FOOLED N`/`UNPICKED`, `clamp(2.6rem,8vw,5.5rem)` title) — only rendered if `hasAudienceDisplay()` true (hides buttons otherwise). `revealed{all,singleIdx,revealedIdxs}` in state. `updateTimerDisplays` updates `[data-fibbage-time-left]`.
 
 ## Screw mechanic
-- One screw per player per game. Tracked via `round.screwsUsedBy` array. Screwer picks a target (screwee), then a 5s countdown starts (`screwTimerMs: 5000`) — only screwee can buzz.
-- **Scoring**: screwee gets normal ±1000 (correct → +1000 extra, wrong → −1000 extra), screwer gets ∓1000 (opposite transfer).
-- **Timeout** (no buzz): screwee loses `basePoints + 1000`, screwer gains +1000.
-- Buzz freezes question value (`screw.frozenCs`/`screw.frozenPoints`) for JACK scoring.
-- Main timer pauses during screw; `closeScrewMode()` resumes it from the frozen value.
-- Red background (`body:has([data-screw-active])`) on all screens during screw.
-- **Round normally closes after screw ruling (never re-opens)** — unless `reopenBuzzersAfterScrew` (default off, shown only when `allowScrewing` on) is set, in which case the round reopens with the remaining time. Screw mode is closed via `closeScrewMode()` in both paths.
-- Disabled during bingo / Wen Dit Happn / Dis or Dat modes (`allowScrewing` setting).
+- One per player per game (`round.screwsUsedBy`). Screwer→screwee→5s `screwTimerMs`, only screwee can buzz. Freeze `screw.frozenCs/frozenPoints` for JACK, pause main timer (`closeScrewMode` resumes). Red `body:has([data-screw-active])`.
+- Scoring: screwee ±1000 extra, screwer ∓1000. Timeout: screwee `-base-1000`, screwer `+1000`. Normally closes round; `reopenBuzzersAfterScrew` re-opens with remaining time. Disabled in bingo/wen/disordat/fibbage.
 
-## Input modes
-- **`buttons`**: 1–8 option buttons (1/2/4/6/8; 8 = `.eight-grid`). `correctOptions` array for auto-eval.
-- **`text`**: free-text entry. `correctAnswer` string for auto-eval.
-- **`bingo`**: 5-letter word, grid of tiles, cycling animation, first to collect all wins.
-- **`wendithapn`**: 3-option "Before/Never/After" per tile. Same cycling/collection as bingo.
-- **`disordat`**: 7 "Dis or Dat" questions (300 pts each, 30s timed, +bonus for 5+ correct). Host taps correct answers to preset; players answer each. Uses its own host panel and tick handler.
-- Bingo/Wen/Dis-or-Dat: host-only control; `hostTick()` returns early for bingo, routes to `handleDisOrDatTick()` for disordat.
+## Buzz handling
+- `canBuzz()` checks controller/cohost/team-assigned/enabled/option-enabled/`maxBuzzesPerOption` (1..50 when `rebuzzAllowed`), screw gate.
+- `hostHandleBuzz`: `lockAfterBuzz` off + `rebuzzAllowed` off → stays OPEN but auto-`CLOSED` when all eligible buzzed (`isAllEligibleBuzzed`). `round.buzzCounts` per-option cap for rebuzz, `buzzedPlayerIds` (shared-team appends all members). F-You `"fuck you"` text → `-2*basePoints` via `resolveLogEntryWithForcedDelta`.
 
-## Buzz handling (`hostHandleBuzz`)
-- With `lockAfterBuzz` **off** and `rebuzzAllowed` **off**, buzzers stay open and host rules each entry from the Game Log — **but the round auto-closes to `CLOSED` as soon as every eligible player has buzzed** (`isAllEligibleBuzzed`; eligible = non-host, non-cohost, buzzer enabled). Re-buzz on → no auto-close.
-- **Rebuzz per-option cap**: with `rebuzzAllowed` on, each player can buzz each option at most `maxBuzzesPerOption` (default 1, host-adjustable 1–50). Counts live in `round.buzzCounts` (`{playerId: {option: n}}`), reset in `openBuzzers`/`resetRound`; enforced in `canBuzz()` and by disabling the matching buzzer buttons. Text entry is uncapped.
-- `round.buzzedPlayerIds` = who has answered this round (resets each open). For shared-team scoring, all team members are appended together.
+## Snark / Scoreboard / Animations
+- `getSnark(section,fallbackEn,vars)` — `snarkMode off|1|2` (2→1→en fallback, blank skips). New strings must route through it and add to `snark.json`.
+- `renderScores()` sorted desc, includes alliance totals and shared-team scores. `1/2/3.*` in `public/` → `rankBadgeUrls` via `probeRankBadges()` in `boot()`.
+- Flash `data-buzzers-open` when `OPEN && buttons && !screw` → `buzzersOpenFlash` (bg-color only). `uiAnimationsEnabled` → `body[data-ui-anims="off"] * {animation:none!important}`.
 
-## Snark mode
-- `src/snark.json` maps player-facing strings to snarky variants. Keys are dot-paths `screen.group.section` (e.g. `player.buzzer.buzzSent`); each entry is `{ en, snark1, snark2 }` with `{token}` placeholders.
-- Host setting `snarkMode`: `"off"` | `"1"` | `"2"`. Level 2 prefers `snark2`, level 1 prefers `snark1`; a blank line falls back to `en`, then to the English fallback passed to `getSnark()`.
-- `getSnark(section, fallbackEn, vars)` replaces all player-facing strings. Strings reused across screens live once under the `"shared"` screen and are found by fallback.
-- **Convention**: any new/changed player-facing string should route through `getSnark()` with keys added to `snark.json` — otherwise snark mode silently leaves it in English.
-
-## Scoreboard
-- `renderScores()` builds the scoreboard (player list, shared-team scores, and alliance totals), shown on host/player/audience screens when scores are visible. Each list is sorted by score **descending** (previously id order).
-- **Rank badges**: if `/public` contains images named just `1`, `2`, `3` (`png`/`jpg`/`jpeg`/`webp`/`gif`/`svg`/`avif`; first match wins), they render as a `<img class="rank-badge">` next to the top 3 rows. `probeRankBadges()` (called in `boot()`) lazily loads one candidate per rank per extension via `new Image()`, caches hits in `rankBadgeUrls`, and triggers a re-render when found. No files → no badges, no errors. `getRankBadgeHtml(rank)` emits the badge markup. Style: `.score-card li .rank-badge` (2rem, `object-fit: contain`); row keeps name left / score right, vertically centered via `.score-card li { align-items: center }`.
-
-## UI animations
-- Buzzers-open flash: `data-buzzers-open` on `<main>` when `isBuzzersOpenFlash()` (round `OPEN`, `inputMode === "buttons"`, no active screw). CSS `buzzersOpenFlash` animates `background-color` — **not** `background-image` gradients, which Chrome/Safari snap rather than interpolate. The tablet timer is excluded.
-- Host toggle `uiAnimationsEnabled` (default on) → `render()` sets `body[data-ui-anims="on"|"off"]`; CSS `body[data-ui-anims="off"] * { animation: none !important }` kills the flash and roulette pulse (`roulettePulse`). New decorative animations must animate descendants of `body` or add their own `!important` gate.
-
-## Notable quirks
-- **PlayroomKit hash collision**: `launchGame()` clears `window.location.hash` (via `history.replaceState`) before `insertCoin` because PlayroomKit prioritises `#r` over `roomCode` option.
-- **F-You easter egg**: Typing "fuck you" in text mode applies `-2 × basePoints` penalty via `resolveLogEntryWithForcedDelta` (bypasses normal screw scoring).
-- **Host tick**: `setInterval` ~1s in `insertCoin` callback — manages timers, screw countdown, roulette finalization. It only calls `render()` when `getUiSignature()` changed; otherwise `updateTimerDisplays()` updates the tablet timer in place. Don't add an unconditional `render()` to this loop. Extra fast loops: 25ms re-render for audience display, 50ms bingo cycling (state-keyed, skips re-render unless bingo state changed).
-- **Roulette (Pick-a-Value) rendering** uses `getRouletteFrame()` deterministic pseudo-random based on `round.roulette.seed`.
-- `maxPlayersPerRoom: 42`; `skipLobby: true`.
-- **PWA caching**: `npm run build` emits a service worker + `manifest.webmanifest` (via `VitePWA`, `registerType: 'autoUpdate'`). The SW only exists in built output — `npm run dev` has no SW. Testing PWA features requires `build` + `preview`. `dist/` is gitignored.
+## Quirks
+- **Hash collision**: `launchGame()` `history.replaceState` clears `#r` before `insertCoin` (PlayroomKit prefers hash over `roomCode`).
+- **Host tick**: 1s `setInterval` manages timers/screw/roulette/fibbage; only `render()` if `getUiSignature()` changed else `updateTimerDisplays()`. Extra loops: 25ms audience, 50ms bingo (state-keyed).
+- **PWA**: `manifest.webmanifest` + SW only after `build`; `dev` has no SW — test PWA with `build && preview`.
+- **Events**: re-bind `data-*` on every `render()`. No CSS-in-JS. `type:module` ESM only.
 
 ## Conventions
-- DOM event binding via `data-*` attributes, re-bound on every `render()` call.
-- No CSS modules or CSS-in-JS. Flat CSS with custom properties for theming.
-- `ESM` only (`"type": "module"` in package.json).
-- `vite.config.js` exists solely for the `VitePWA` plugin — no other Vite customization.
+- Verify via `npm run build` (CI does `npm ci && npm run build` on 20/22/24). No tests to run.
+- Use `workdir` param, not `cd &&`. Quote paths with spaces.
+- Prefer editing over new files; read before `edit`.
