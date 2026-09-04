@@ -1820,13 +1820,17 @@ body:has([data-fibbage-active]) {
   padding: 0;
   margin: 0.6rem 0;
   display: grid;
-  gap: 0.5rem;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 .fibbage-choices-list li {
-  padding: 0.6rem;
+  padding: 0.8rem;
   border: 1px solid var(--panel-border);
-  border-radius: 10px;
+  border-radius: 14px;
   background: rgba(255,255,255,0.04);
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
 }
 .fibbage-choice.is-truth {
   border-color: rgba(29,185,84,0.6);

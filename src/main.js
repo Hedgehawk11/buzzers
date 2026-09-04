@@ -5701,7 +5701,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" ? "disabled" : ""}>Fibbage</button>
-                <p class="setting-helper">The famous Jackbox fibbing game. Host sets truth (before/during/after lying), picks lie + vote timers (30/45/60) and multiplier (1x..5x). Players submit lies (blocked if matches truth), host blocks bad lies, shows shuffled lies+truth, players vote (can't pick own), host reveals one-by-one or Show All (green truth, red fooled, yellow unpicked). 500 per fool, 1000 for truth, multiplied.</p>
+                <p class="setting-helper">The famous Jackbox fibbing game. Host sets truth (before the players start lying). Players submit lies, shows shuffled lies+truth, players vote, host reveals one-by-one or Show All. 500 per fool, 1000 for truth, (configurable).</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage"
@@ -7390,8 +7390,10 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   }, 1000);
 
   // Fast re-render interval for audience display (no interaction, shows live timer)
+  // Paused when Fibbage spotlight is active so the dramatic card doesn't flicker
   setInterval(() => {
     if (!isAudienceDisplayClient()) return;
+    if (isFibbageMode() && getFibbage().revealed?.singleIdx !== null) return;
     render();
   }, 25);
 
