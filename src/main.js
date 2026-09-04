@@ -5,7 +5,7 @@
 import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
-import { scheduleRender, renderImmediate, initRenderer, delegate, getApp, computeAudienceTimerFrozenCs } from "./render.js";
+import { scheduleRender, renderImmediate, initRenderer, delegate, getApp, computeAudienceTimerFrozenCs, showToast, trackScoreSnapshot, applyScoreDeltas, startSmoothTimer, transitionMount } from "./render.js";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -136,6 +136,8 @@ function isFYouCorrectAnswer(round) {
 function setBuzzNotice(message) {
   buzzNotice = String(message || "");
   buzzNoticeTs = now();
+  // Feature 1: also surface as toast (limit 3 handled in render.js)
+  try { if (message) showToast(message, { ttlMs: 3500, variant: "info" }); } catch {}
 }
 
 function getRecentBuzzNotice(maxAgeMs = 4000) {
@@ -3504,12 +3506,12 @@ function renderBingoLessRandomToggle(settings) {
   const offCls = !isOn ? "is-active is-off-val" : "";
   return `
     <div class="toggle-group">
-      <span class="muted">Less random bingo</span>
+      <span class="muted">Less random cycles</span>
       <div class="toggle-switch">
         <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="bingoLessRandom" data-value="true">On</button>
         <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="bingoLessRandom" data-value="false">Off</button>
       </div>
-      <p class="muted">When on, every option appears once per full cycle instead of being picked randomly, so no option waits long gaps.</p>
+      <p class="muted">When on, every option appears once per full cycle instead of being picked randomly, so no option waits long gaps. HIGHLY RECCOMENDED</p>
     </div>`;
 }
 
@@ -3548,6 +3550,7 @@ function renderBingoHostPanel(settings, players) {
         ${wordInput}
         ${renderBingoAlternateViewersToggle(settings)}
         ${renderBingoLessRandomToggle(settings)}
+        ${renderBingoAllowMultipleCorrectToggle(settings)}
         <div class="host-actions"><button type="button" class="primary-action" data-bingo-init>Start ${isWen ? "Wen Dit Happn" : "Bingo"}</button><button type="button" data-bingo-exit>Return to buzzer mode</button></div>
       </section>`;
   }
@@ -3593,7 +3596,6 @@ function renderBingoHostPanel(settings, players) {
       </div>
       ${renderBingoAlternateViewersToggle(settings)}
       ${renderBingoLessRandomToggle(settings)}
-      ${renderBingoAllowMultipleCorrectToggle(settings)}
       ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
       ${isWen ? "" : `<div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>`}
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
@@ -4661,7 +4663,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `
         <section class="card player-card">
           <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
-          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong>${timeText}s</strong></p>
+          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
           <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
           <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>BUZZ</button>
         </section>
@@ -4684,7 +4686,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `
         <section class="card player-card">
           <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
-          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong>${timeText}s</strong></p>
+          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
           <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
           <div class="abxy-diamond">
             ${button(4, "pos-y")}
@@ -5819,8 +5821,8 @@ function renderScrewNotice(round) {
   return `
     <section class="card screw-card">
       <h3>Screw Timer</h3>
-      <p><strong>${round.screw.screwerName}</strong> is screwing over <strong>${round.screw.screeeName}</strong>.</p>
-      <p>Time left: <strong>${timeText}s</strong></p>
+      <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(round.screw.screeeName)}</strong>.</p>
+      <p>Time left: <strong data-screw-timer>${timeText}s</strong></p>
     </section>
   `;
 }
@@ -5878,7 +5880,7 @@ function renderScores(players, scores) {
       })
       .filter(Boolean)
       .sort((a, b) => b.teamScore - a.teamScore)
-      .map(({ teamColor, teamScore, memberNames }, index) => `<li class="team-score-row"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong>${teamScore}</strong></li>`)
+      .map(({ teamColor, teamScore, memberNames }, index) => `<li class="team-score-row" data-score-key="${escapeHtml(getTeamScoreKey(teamColor))}"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong data-score-value>${teamScore}</strong></li>`)
       .join("");
 
     return `
@@ -5897,7 +5899,7 @@ function renderScores(players, scores) {
       return { player, value, teamPill };
     })
     .sort((a, b) => b.value - a.value)
-    .map(({ player, value, teamPill }, index) => `<li><span>${getRankBadgeHtml(index + 1)}${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong>${value}</strong></li>`)
+    .map(({ player, value, teamPill }, index) => `<li data-score-key="${escapeHtml(player.id)}"><span>${getRankBadgeHtml(index + 1)}${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong data-score-value>${value}</strong></li>`)
     .join("");
 
   const teamTotals = settings.teamModeEnabled
@@ -5912,7 +5914,7 @@ function renderScores(players, scores) {
         })
         .filter(Boolean)
         .sort((a, b) => b.total - a.total)
-        .map(({ teamColor, total }, index) => `<li class="team-score-row"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span></span><strong>${total}</strong></li>`)
+        .map(({ teamColor, total }, index) => `<li class="team-score-row" data-score-key="${escapeHtml(getTeamScoreKey(teamColor))}"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span></span><strong data-score-value>${total}</strong></li>`)
         .join("")
     : "";
 
@@ -6009,6 +6011,9 @@ function render() {
   const settings = getSettings();
   const round = getRound();
   const scores = getScores();
+  // Feature 2: snapshot for delta animation (player-only, limit 3 via render.js)
+  let scoreDeltas = null;
+  try { if (!isAudienceDisplayClient()) scoreDeltas = trackScoreSnapshot(scores); } catch {}
   const gameLog = getLog();
   const timeLeftCs = round.screw.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
   const pendingLogId = getSafeState("pendingLogId", null);
@@ -6043,11 +6048,14 @@ function render() {
     const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
 
     if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
-      mount.innerHTML = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
+      const html = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
+      if (!transitionMount(mount, html, "tablet")) mount.innerHTML = html;
     } else {
-      mount.innerHTML = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
+      const html = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
+      if (!transitionMount(mount, html, "audience")) mount.innerHTML = html;
     }
     lastUiSignature = getUiSignature();
+    // audience never shows delta per spec
     return;
   }
 
@@ -6062,7 +6070,7 @@ function render() {
         ${renderTeamSelectPlayerPanel(settings, players, mePlayer)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
-    mount.innerHTML = `
+    const _html_teamselect = `
       <main class="layout" data-teamselect-active="true">
         <header class="hero">
           <div>
@@ -6079,7 +6087,9 @@ function render() {
         ${tsBody}
       </main>
     `;
+    if (!transitionMount(mount, _html_teamselect, "teamselect")) mount.innerHTML = _html_teamselect;
     lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
   }
 
@@ -6095,7 +6105,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
-    mount.innerHTML = `
+    const _html_bingo = `
       <main class="layout" data-bingo-active="true">
         <header class="hero">
           <div>
@@ -6111,7 +6121,9 @@ function render() {
         ${bingoBody}
       </main>
     `;
+    if (!transitionMount(mount, _html_bingo, "bingo")) mount.innerHTML = _html_bingo;
     lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
   }
 
@@ -6126,7 +6138,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
-    mount.innerHTML = `
+    const _html_disordat = `
       <main class="layout" data-disordat-active="true">
         <header class="hero">
           <div>
@@ -6142,7 +6154,9 @@ function render() {
         ${ddBody}
       </main>
     `;
+    if (!transitionMount(mount, _html_disordat, "disordat")) mount.innerHTML = _html_disordat;
     lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
   }
 
@@ -6160,7 +6174,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${fibScoresPlayer}
       </section>` ;
-    mount.innerHTML = `
+    const _html_fibbage = `
       <main class="layout" data-fibbage-active="true">
         <header class="hero">
           <div>
@@ -6176,11 +6190,13 @@ function render() {
         ${fibBody}
       </main>
     `;
+    if (!transitionMount(mount, _html_fibbage, "fibbage")) mount.innerHTML = _html_fibbage;
     lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
   }
 
-  mount.innerHTML = `
+  const _html_default = `
     <main class="layout"${round.screw.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
       <header class="hero">
         <div>
@@ -6193,7 +6209,6 @@ function render() {
           ${isCohost() ? `<span class="cohost-badge">${getSnark("player.misc.cohostBadge", "Co-host")}</span>` : ""}
           ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
           <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
-          <span>${getSnark("player.misc.roundLabel", "Round")}: <strong data-round-status>${escapeHtml(round.status || getSnark("shared.misc.statusUnknown", "unknown"))}</strong></span>
         </div>
       </header>
       
@@ -6210,7 +6225,9 @@ function render() {
     </main>
   `;
 
+  if (!transitionMount(mount, _html_default, "default")) mount.innerHTML = _html_default;
   lastUiSignature = getUiSignature();
+  requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
 }
 
 // =============================================================================
@@ -6640,10 +6657,11 @@ function renderPrejoinScreen(mode = "landing", error = "") {
   } catch (e) {}
   const savedName = getPrejoinNameDraft();
 
+  let prejoinHtml = "";
   if (mode === "host") {
     const isAlliance = hostPrejoinTeamSetting === "alliance";
     const isShared = hostPrejoinTeamSetting === "shared";
-    app.innerHTML = `
+    prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-host">
           <div class="prejoin-header">
@@ -6682,7 +6700,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   } else if (mode === "cohost") {
-    app.innerHTML = `
+    prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-join">
           <div class="prejoin-header">
@@ -6721,7 +6739,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   } else if (mode === "join") {
-    app.innerHTML = `
+    prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-join">
           <div class="prejoin-header">
@@ -6755,7 +6773,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   } else if (mode === "display") {
-    app.innerHTML = `
+    prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-display">
           <div class="prejoin-header">
@@ -6785,7 +6803,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   } else if (mode === "tablet_timer") {
-    app.innerHTML = `
+    prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-display">
           <div class="prejoin-header">
@@ -6815,7 +6833,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   } else {
-    app.innerHTML = `
+    prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-landing">
           <div class="prejoin-hero">
@@ -6844,6 +6862,9 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   }
+  const mount = getApp() || app;
+  const prejoinKey = `prejoin-${mode}` + (error ? "-error" : "");
+  if (!transitionMount(mount, prejoinHtml, prejoinKey)) mount.innerHTML = prejoinHtml;
 
   // Pre-join form submit + room-code uppercasing are handled via delegated handlers in bindEvents()
 }
@@ -7106,6 +7127,15 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 function boot() {
   // Bind delegated handlers once before any screen renders (prejoin needs them too)
   try { bindEvents(); } catch (e) { console.warn("[boot] bindEvents failed", e); }
+  // Feature 3: smooth rAF timer (display/tablet + player OPEN per spec)
+  try {
+    startSmoothTimer([
+      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]" },
+      { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]" },
+      { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]" },
+      { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]" },
+    ]);
+  } catch (e) { console.warn("[boot] smooth timer failed", e); }
   renderPrejoinScreen();
   probeRankBadges();
 }

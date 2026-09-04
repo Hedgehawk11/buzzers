@@ -32,8 +32,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 ### What's coming?
 In no particular order,\
  - Better UI 
- - Under-the-hood renderer re-write 
- - fibbage mode 
+ - Coopertition mode
  - more round types
  - whatever people ask via creating issues
  - YDKJ The Ride RNG for pick-a-value
