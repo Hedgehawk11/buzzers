@@ -505,6 +505,12 @@ function hasAudienceDisplay() {
   } catch { return false; }
 }
 
+function shouldHideFibbageScores() {
+  if (!isFibbageMode()) return false;
+  const fb = getFibbage();
+  return fb.active && ["lying","review","voting_ready","voting","results"].includes(fb.phase);
+}
+
 function freshFibbageState() {
   return {
     active: false,
@@ -1873,18 +1879,27 @@ function handleBingoBuzz(player, payload) {
   const playerItems = bingo.playerItems || {};
   const collected = playerItems[trackKey] || [];
   if (observedIndex === targetIndex) {
-    const alreadyCollected = collected.includes(targetIndex);
-    const newPlayerItems = { ...playerItems };
-    if (!alreadyCollected) {
-      newPlayerItems[trackKey] = [...collected, targetIndex];
-    }
-    const collectedCounts = { ...bingo.collectedCounts };
-    if (!alreadyCollected) {
-      collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
-    }
+    let newPlayerItems = playerItems;
+    let collectedCounts = bingo.collectedCounts || {};
     let winner = null;
-    if (!isWenDitHapnMode() && (collectedCounts[trackKey] || 0) >= bingo.items.length) {
-      winner = trackKey;
+    if (isWenDitHapnMode()) {
+      // Wen Dit Happn has no collection — just score, no tile ownership
+      newPlayerItems = playerItems;
+      collectedCounts = bingo.collectedCounts || {};
+      winner = null;
+    } else {
+      const alreadyCollected = collected.includes(targetIndex);
+      newPlayerItems = { ...playerItems };
+      if (!alreadyCollected) {
+        newPlayerItems[trackKey] = [...collected, targetIndex];
+      }
+      collectedCounts = { ...bingo.collectedCounts };
+      if (!alreadyCollected) {
+        collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
+      }
+      if ((collectedCounts[trackKey] || 0) >= bingo.items.length) {
+        winner = trackKey;
+      }
     }
     const scores = { ...getScores() };
     scores[scoreKey] = (scores[scoreKey] || 0) + BINGO_CORRECT_POINTS;
@@ -2096,9 +2111,20 @@ function finalizeDisOrDat() {
     for (const track of tracks) {
       const resps = responses[track] || [];
       const filled = resps.map(a => (a === "dis" || a === "dat" || a === "both") ? a : "none");
+      while (filled.length < DIS_OR_DAT_QUESTION_COUNT) filled.push("none");
       next[track] = filled;
     }
     responses = next;
+  } else {
+    // Host-paced: pad any missing trailing questions as "none" for penalty calc
+    for (const track of tracks) {
+      const resps = responses[track] || [];
+      if (resps.length < DIS_OR_DAT_QUESTION_COUNT) {
+        const padded = [...resps];
+        while (padded.length < DIS_OR_DAT_QUESTION_COUNT) padded.push("none");
+        responses[track] = padded;
+      }
+    }
   }
 
   const scores = { ...getScores() };
@@ -2106,16 +2132,22 @@ function finalizeDisOrDat() {
 
   for (const track of tracks) {
     const resps = responses[track] || [];
-    if (resps.length === 0) continue;
-    const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
+    // Pad to full length if needed
+    const padded = [...resps];
+    while (padded.length < DIS_OR_DAT_QUESTION_COUNT) padded.push("none");
+    if (padded.length === 0) continue;
+    const correctCount = padded.filter((a, i) => a === dd.answers[i]).length;
+    const missingCount = padded.filter(a => a === "none").length;
+    const penalty = missingCount * DIS_OR_DAT_CORRECT_POINTS;
     const base = correctCount * DIS_OR_DAT_CORRECT_POINTS;
     const bonus = dd.jackBonus[track] || 0;
-    const total = base + bonus;
+    const total = base - penalty + bonus;
     const isTeamTrack = TEAM_COLORS.includes(track);
     const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
     const teamColor = isTeamTrack ? track : null;
     const scoreKey = rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : track;
     scores[scoreKey] = Number(scores[scoreKey] || 0) + total;
+    const missedText = missingCount > 0 ? `, ${missingCount} missed (-${penalty})` : "";
     log.push({
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "disordat",
@@ -2126,7 +2158,7 @@ function finalizeDisOrDat() {
       scoreKey,
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (rep ? getPlayerName(rep) : track),
       option: null,
-      answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${isTimed && bonus ? ` + ${bonus} bonus` : ""}`,
+      answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedText}${isTimed && bonus ? ` + ${bonus} bonus` : ""} = ${total}`,
       timeLeftCs: 0,
       scoringMode: "uniform",
       jackMultiplier: settings.jackMultiplier,
@@ -2216,25 +2248,18 @@ function startFibbageLying() {
   if (!isHost()) return;
   if (!isFibbageMode()) return;
   let fb = getFibbage();
-  // Auto-apply draft truth if host typed but didn't press Set Truth
+  // Auto-apply draft truth if host typed but didn't press Set Truth (pre-lying only)
   const draftInput = document.querySelector("#fibbage-truth");
   const draftVal = draftInput ? String(draftInput.value || "").trim() : "";
-  if (draftVal && !String(fb.truth || "").trim()) {
+  if (draftVal && draftVal !== fb.truth) {
     fb = { ...fb, truth: draftVal };
     setState("fibbage", fb, true);
-  } else if (draftVal && draftVal !== fb.truth) {
-    // If draft differs from saved truth, update it
-    const normTruth = normalizeAnswerForCompare(draftVal);
-    const newLies = { ...fb.lies };
-    const newErrors = { ...fb.lieErrors };
-    Object.entries(newLies).forEach(([tk, lieText]) => {
-      if (normalizeAnswerForCompare(lieText) === normTruth) {
-        delete newLies[tk];
-        newErrors[tk] = "The truth is not a lie — try again";
-      }
-    });
-    fb = { ...fb, truth: draftVal, lies: newLies, lieErrors: newErrors };
-    setState("fibbage", fb, true);
+  }
+  fb = getFibbage();
+  if (!String(fb.truth || "").trim()) {
+    setBuzzNotice("Set the truth before entering lies.");
+    render();
+    return;
   }
   const eligible = getEligibleFibbageTrackKeys();
   if (eligible.length < 2) {
@@ -2262,6 +2287,12 @@ function startFibbageLying() {
 }
 function setFibbageTruth(val) {
   if (!isHost()) return;
+  const fb = getFibbage();
+  if (fb.active) {
+    setBuzzNotice("Truth can only be set before lying starts.");
+    render();
+    return;
+  }
   const raw = String(val || "").trim();
   if (!raw) {
     setBuzzNotice("Truth cannot be empty.");
@@ -2273,21 +2304,7 @@ function setFibbageTruth(val) {
     render();
     return;
   }
-  const fb = getFibbage();
-  const normTruth = normalizeAnswerForCompare(raw);
-  const newLies = { ...fb.lies };
-  const newBlocked = { ...fb.blocked };
-  const newErrors = { ...fb.lieErrors };
-  let culled = 0;
-  Object.entries(newLies).forEach(([trackKey, lieText]) => {
-    if (normalizeAnswerForCompare(lieText) === normTruth) {
-      delete newLies[trackKey];
-      newErrors[trackKey] = "The truth is not a lie — try again";
-      culled++;
-    }
-  });
-  setState("fibbage", { ...fb, truth: raw, lies: newLies, blocked: newBlocked, lieErrors: newErrors }, true);
-  if (culled) setBuzzNotice(`${culled} lie(s) matched the truth and were cleared.`);
+  setState("fibbage", { ...fb, truth: raw }, true);
   render();
 }
 function setFibbageLieTime(sec) {
@@ -2332,27 +2349,8 @@ function showFibbageResponses() {
   if (!isHost()) return;
   let fb = getFibbage();
   if (fb.phase !== "review") return;
-  // If host typed truth but hasn't pressed Set Truth yet, auto-apply it now
-  const draftInput = document.querySelector("#fibbage-truth");
-  const draftVal = draftInput ? String(draftInput.value || "").trim() : "";
-  if (!String(fb.truth || "").trim() && draftVal) {
-    const normTruth = normalizeAnswerForCompare(draftVal);
-    const newLies = { ...fb.lies };
-    const newErrors = { ...fb.lieErrors };
-    let culled = 0;
-    Object.entries(newLies).forEach(([tk, lieText]) => {
-      if (normalizeAnswerForCompare(lieText) === normTruth) {
-        delete newLies[tk];
-        newErrors[tk] = "The truth is not a lie — try again";
-        culled++;
-      }
-    });
-    setState("fibbage", { ...fb, truth: draftVal, lies: newLies, lieErrors: newErrors }, true);
-    fb = getFibbage();
-    if (culled) setBuzzNotice(`${culled} lie(s) matched the truth and were cleared.`);
-  }
   if (!String(fb.truth || "").trim()) {
-    setBuzzNotice("Enter the truth before showing responses.");
+    setBuzzNotice("Truth not set — it must be set before lying started.");
     render();
     return;
   }
@@ -3581,7 +3579,7 @@ function renderBingoHostPanel(settings, players) {
       ${renderBingoLessRandomToggle(settings)}
       ${renderBingoAllowMultipleCorrectToggle(settings)}
       ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
-      <div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>
+      ${isWen ? "" : `<div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>`}
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
       <button type="button" data-bingo-exit>Return to buzzer mode</button>
     </section>`;
@@ -3603,7 +3601,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   const activeViewer = isBingoActiveViewer(bingo, bingo.currentLitSlot, mePlayer.id, settings, assignments);
   const tilesHtml = items.map((item, i) => {
     const isLit = bingo.cycling && i === bingo.currentLitIndex && activeViewer;
-    const isMine = collected.includes(i);
+    const isMine = isWen ? false : collected.includes(i);
     let cls = "bingo-tile";
     if (isLit) cls += " is-lit";
     if (isMine) cls += " is-mine";
@@ -3673,7 +3671,10 @@ function renderBingoAudienceDisplay(settings, players) {
       }).filter(Boolean).join("");
   } else {
     const sorted = visible
-      .sort((a, b) => (bingo.collectedCounts?.[b.id] || 0) - (bingo.collectedCounts?.[a.id] || 0));
+      .sort((a, b) => {
+        if (isWen) return (scores[b.id] || 0) - (scores[a.id] || 0);
+        return (bingo.collectedCounts?.[b.id] || 0) - (bingo.collectedCounts?.[a.id] || 0);
+      });
     standings = sorted.map(p => {
       const c = (bingo.collectedCounts?.[p.id] || 0);
       const s = scores[p.id] || 0;
@@ -3790,7 +3791,10 @@ function renderDisOrDatHostPanel(settings, players) {
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
       const base = dd.pointsEarned[track] || 0;
       const bonus = dd.jackBonus[track] || 0;
-      const total = base + bonus;
+      const answered = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
+      const missing = dd.phase === "results" ? (DIS_OR_DAT_QUESTION_COUNT - answered) : 0;
+      const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
+      const total = base - penalty + bonus;
       const rep = nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
       const label = TEAM_COLORS.includes(track)
         ? `Team ${track}` + (rep ? ` <small>(${getPlayerName(rep)})</small>` : "")
@@ -3801,7 +3805,13 @@ function renderDisOrDatHostPanel(settings, players) {
 
   if (dd.phase === "results") {
     const rows = trackRows.map(({ track, correctCount, base, bonus, label }) => {
-      return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct, ${base} pts${isTimed ? ` + ${bonus} bonus` : ""} = <strong>${base + bonus} pts</strong></li>`;
+      const resps = (getDisOrDat().responses[track] || []);
+      const answered = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
+      const missing = DIS_OR_DAT_QUESTION_COUNT - answered;
+      const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
+      const total = base - penalty + bonus;
+      const missedTxt = missing > 0 ? `, ${missing} missed (-${penalty})` : "";
+      return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedTxt}, ${base} pts${isTimed ? ` + ${bonus} bonus` : ""} = <strong>${total} pts</strong></li>`;
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel">
@@ -3908,11 +3918,16 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
   let body;
   if (dd.phase === "results") {
     const correctCount = myResponses.filter((a, i) => a === dd.answers[i]).length;
+    const answered = myResponses.filter(a => a === "dis" || a === "dat" || a === "both").length;
+    const missing = DIS_OR_DAT_QUESTION_COUNT - answered;
+    const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
+    const total = points - penalty + bonus;
+    const missedTxt = missing > 0 ? `, ${missing} missed (-${penalty})` : "";
     body = `
       <div class="disordat-results">
         <h3>${getSnark("player.disdat.resultsTitle", "Results")}</h3>
-        <p class="muted">${getSnark("player.disdat.correctCount", `${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct`, { correct: correctCount, total: DIS_OR_DAT_QUESTION_COUNT })}</p>
-        <p>Base: <strong>${points}</strong>${isTimed ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${points + bonus}</strong> pts</p>
+        <p class="muted">${getSnark("player.disdat.correctCount", `${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct`, { correct: correctCount, total: DIS_OR_DAT_QUESTION_COUNT })}${missedTxt}</p>
+        <p>Base: <strong>${points}</strong>${missedTxt ? ` - <strong>${penalty}</strong> missed` : ""}${isTimed ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${total}</strong> pts</p>
         ${isTimed && answeredAll && bonus === 0 ? `<p class="muted">${getSnark("player.disdat.bonusHint", `Finish with ${DIS_OR_DAT_BONUS_MIN_CORRECT}+ correct to claim the time bonus.`, { min: DIS_OR_DAT_BONUS_MIN_CORRECT })}</p>` : ""}
         <p class="muted">${getSnark("player.disdat.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </div>
@@ -3967,16 +3982,22 @@ function renderDisOrDatAudienceDisplay(settings, players) {
     .map(track => {
       const resps = dd.responses[track] || [];
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
-      const total = (dd.pointsEarned[track] || 0) + (dd.jackBonus[track] || 0);
+      const answered = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
+      const missing = dd.phase === "results" ? (DIS_OR_DAT_QUESTION_COUNT - answered) : 0;
+      const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
+      const base = dd.pointsEarned[track] || 0;
+      const bonus = dd.jackBonus[track] || 0;
+      const total = base - penalty + bonus;
       const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
       const label = TEAM_COLORS.includes(track)
         ? `Team ${track}` + (rep ? ` <small>(${getPlayerName(rep)})</small>` : "")
         : getPlayerName(rep);
-      return { track, correctCount, total, label };
+      return { track, correctCount, total, label, missing, penalty };
     })
     .sort((a, b) => b.total - a.total);
-  const standings = tracks.map(({ correctCount, total, label }) => {
-    return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} — ${total} pts</li>`;
+  const standings = tracks.map(({ correctCount, total, label, missing }) => {
+    const missTxt = missing > 0 ? `, ${missing} missed` : "";
+    return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT}${missTxt} — ${total} pts</li>`;
   }).join("");
 
   const timerHtml = isTimed && dd.phase === "playing"
@@ -4016,7 +4037,7 @@ function renderFibbageHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage Setup</h2>
-        <p class="muted">Pick timers and multiplier, optionally set the truth. Then press Enter Lies. Players will submit fake answers. Host can block bad lies, ensure truth is set, then Show Responses.</p>
+        <p class="muted">Set the truth (required), pick timers and multiplier, then press Enter Lies. Players submit fakes, you block bad ones, then Show Responses.</p>
         <div class="control-grid">
           <label>Lie timer
             <select id="fibbage-lie-time">${timeOpts}</select>
@@ -4029,7 +4050,7 @@ function renderFibbageHostPanel(settings, players) {
             <p class="setting-helper">500 per fool, 1000 for truth, multiplied.</p>
           </label>
         </div>
-        <label>Truth (can be set before, during, or after lying)
+        <label>Truth (required before lying)
           <input type="text" id="fibbage-truth" maxlength="120" value="${escapeHtml(fb.truth||"")}" placeholder="The true answer" />
         </label>
         <div class="host-actions" style="margin-top:0.6rem">
@@ -4059,12 +4080,9 @@ function renderFibbageHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Lying (${timeLeft}s left)</h2>
-        <p class="muted">Players are submitting lies. Block bad ones. Truth can be set/changed now. “The truth is not a lie” clears matching lies.</p>
+        <p class="muted">Players are submitting lies. Block bad ones — truth is locked from before lying started.</p>
         <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${liesCount}/${eligibleTracks.length} lies</p>
-        <label>Truth
-          <input type="text" id="fibbage-truth" maxlength="120" value="${escapeHtml(fb.truth||"")}" placeholder="The true answer" />
-          <button type="button" data-fibbage-set-truth>Set Truth</button>
-        </label>
+        <p>Truth: <strong>"${escapeHtml(fb.truth)}"</strong></p>
         <div class="fibbage-lie-list">${lieRows}</div>
         <div class="host-actions">
           <button type="button" data-fibbage-end-lying>End Lying Early</button>
@@ -4083,19 +4101,13 @@ function renderFibbageHostPanel(settings, players) {
         <button type="button" class="toggle-chip ${isBlocked?"is-off":"is-on"}" data-fibbage-block="${trackKey}">${isBlocked?"Unblock":"Block"}</button>
       </div>`;
     }).join("");
-    const truthOk = String(fb.truth||"").trim().length>0;
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Review</h2>
-        <p class="muted">Lying ended. Set truth if needed, block rejects (final), then Show Responses to build shuffled choices.</p>
-        <label>Truth
-          <input type="text" id="fibbage-truth" maxlength="120" value="${escapeHtml(fb.truth||"")}" />
-          <button type="button" data-fibbage-set-truth>Set Truth</button>
-        </label>
-        ${!truthOk?'<p class="error-text">Truth required before showing responses.</p>':''}
+        <p class="muted">Lying ended. Truth is locked: <strong>"${escapeHtml(fb.truth)}"</strong> — block rejects (final), then Show Responses.</p>
         <div class="fibbage-lie-list">${lieRows || '<p class="muted">No lies.</p>'}</div>
         <div class="host-actions">
-          <button type="button" class="primary-action" data-fibbage-show-responses ${!truthOk?"disabled":""}>Show Responses</button>
+          <button type="button" class="primary-action" data-fibbage-show-responses>Show Responses</button>
           <button type="button" data-fibbage-reset>Reset Fibbage</button>
           <button type="button" data-fibbage-exit>Return to buzzer mode</button>
         </div>
@@ -4325,15 +4337,19 @@ function renderFibbageAudienceDisplay(settings, players) {
       const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
       const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
       let colorCls="";
-      if (c.isTruth) colorCls="is-truth";
-      else if (voters.length>0) colorCls="is-lie-picked";
-      else colorCls="is-lie-unpicked";
+      let badge="";
+      if (c.isTruth) { colorCls="is-truth"; badge="TRUTH"; }
+      else if (voters.length>0) { colorCls="is-lie-picked"; badge=`FOOLED ${voters.length}`; }
+      else { colorCls="is-lie-unpicked"; badge="UNPICKED"; }
       return `<main class="layout audience-layout" data-fibbage-active="true">
-        <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Spotlight</h1></div></header>
-        <section class="card fibbage-spotlight ${colorCls}" style="text-align:center; padding:2rem">
-          <h2 style="font-size:2rem">"${escapeHtml(c.text)}"</h2>
-          <p>Picked by: <strong>${escapeHtml(voterLabels)}</strong> (${voters.length})</p>
-          <p class="muted">— ${escapeHtml(authorLabels)}</p>
+        <header class="hero audience-hero" style="opacity:0.7"><div><p class="prejoin-kicker">Spotlight • ${badge}</p><h1 style="font-size:clamp(1.2rem,3vw,1.6rem); opacity:0.8">Fibbage</h1></div></header>
+        <section class="card fibbage-spotlight ${colorCls}">
+          <div>
+            <div style="letter-spacing:0.18em; font-weight:900; font-size:0.85rem; opacity:0.9; margin-bottom:1rem">${badge}</div>
+            <h2>"${escapeHtml(c.text)}"</h2>
+            <div class="spotlight-meta">Picked by <strong>${escapeHtml(voterLabels)}</strong> — ${voters.length} vote${voters.length===1?"":"s"}</div>
+            <div class="spotlight-author">— ${escapeHtml(authorLabels)}</div>
+          </div>
         </section>
       </main>`;
     }
@@ -4350,10 +4366,12 @@ function renderFibbageAudienceDisplay(settings, players) {
       const showAuthor = revealed.all ? ` — ${escapeHtml(authorLabels)}` : "";
       return `<li class="fibbage-choice ${cls}"><strong>${i+1}.</strong> "${escapeHtml(c.text)}"${showAuthor} <span class="muted">picked by ${escapeHtml(voterLabels)}</span></li>`;
     }).join("");
+    const hideScores = shouldHideFibbageScores();
+    const scoresHtml = hideScores ? "" : renderScores(players, getScores());
     return `<main class="layout audience-layout" data-fibbage-active="true">
       <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Results</h1></div></header>
       <section class="card"><h2>All Choices ${revealed.all?"(revealed)":""}</h2><ul class="fibbage-choices-list">${list}</ul></section>
-      ${renderScores(players, getScores())}
+      ${scoresHtml}
     </main>`;
   }
   return `<main class="layout audience-layout" data-fibbage-active="true"><header class="hero audience-hero"><div><h1>Fibbage</h1><p>${escapeHtml(fb.phase)}</p></div></header></main>`;
@@ -6127,15 +6145,18 @@ function render() {
   }
 
   if (isFibbageMode()) {
+    const hideScores = shouldHideFibbageScores();
+    const fibScoresHost = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : renderScores(players, scores);
+    const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       <section class="grid">
-        ${renderScores(players, scores)}
+        ${fibScoresHost}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+        ${fibScoresPlayer}
       </section>` ;
     app.innerHTML = `
       <main class="layout" data-fibbage-active="true">
