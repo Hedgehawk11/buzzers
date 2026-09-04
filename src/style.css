@@ -25,6 +25,8 @@ body {
     radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.2), transparent 58%),
     radial-gradient(1000px 520px at 100% 0%, rgba(34, 166, 242, 0.18), transparent 55%),
     linear-gradient(160deg, var(--bg-0), var(--bg-1));
+  /* fade between mode backgrounds (team, bingo, disordat, screw, fibbage) — longer fade per request */
+  transition: background 800ms ease, background-color 800ms ease, filter 800ms ease, background-image 800ms ease;
 }
 
 #app {
@@ -1265,6 +1267,146 @@ button.red {
 .toggle-switch-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* =============================================================================
+   Feature 1: Toast layer (limit 3, rAF, no full render)
+   ============================================================================= */
+#toast-layer {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+  max-width: min(380px, calc(100vw - 1rem));
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(6,17,26,0.92);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.35;
+  opacity: 0;
+  transform: translateY(-6px) scale(0.98);
+  transition: opacity 180ms ease, transform 180ms ease;
+  pointer-events: auto;
+}
+.toast.is-in { opacity: 1; transform: translateY(0) scale(1); }
+.toast.is-out { opacity: 0; transform: translateY(-6px) scale(0.98); }
+.toast-info { border-color: rgba(255,255,255,0.14); }
+.toast-success { border-color: rgba(29,185,84,0.35); background: rgba(10,40,24,0.92); }
+.toast-error { border-color: rgba(235,61,48,0.35); background: rgba(60,12,8,0.92); }
+.toast-msg { flex: 1; min-width: 0; word-break: break-word; }
+.toast-dismiss {
+  flex: none;
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.08);
+  font-size: 1.1rem; line-height: 1;
+  padding: 0;
+}
+@media (max-width: 600px) {
+  #toast-layer { left: 0.5rem; right: 0.5rem; }
+}
+
+/* =============================================================================
+   Feature 2: Score delta (player-only)
+   ============================================================================= */
+.score-card li[data-score-key] {
+  position: relative;
+  overflow: hidden;
+}
+.score-card li.is-delta {
+  animation: scorePop 320ms ease-out;
+}
+.score-card li.is-delta::after {
+  content: attr(data-delta);
+  position: absolute;
+  right: 0.7rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-weight: 900;
+  font-size: 0.85rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  animation: scoreDeltaFly 750ms ease-out forwards;
+  pointer-events: none;
+}
+.score-card li.is-plus::after {
+  background: rgba(29,185,84,0.22);
+  border: 1px solid rgba(29,185,84,0.35);
+  color: #d9ffe8;
+}
+.score-card li.is-minus::after {
+  background: rgba(235,61,48,0.22);
+  border: 1px solid rgba(235,61,48,0.35);
+  color: #ffd7d2;
+}
+@keyframes scorePop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.02); }
+  100% { transform: scale(1); }
+}
+@keyframes scoreDeltaFly {
+  0% { opacity: 0; transform: translateY(-50%) translateX(8px) scale(0.9); }
+  20% { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
+  80% { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-65%) translateX(0) scale(0.95); }
+}
+.audience-layout .score-card li.is-delta::after { display: none !important; }
+
+/* =============================================================================
+   Feature 4: Screen transition (160ms, respects uiAnims off) — fade out + fade in
+   ============================================================================= */
+@keyframes layoutFadeOut {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(4px); }
+}
+@keyframes layoutFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+#app[data-transition="out"] .layout,
+#app[data-transition="out"] .audience-layout,
+#app[data-transition="out"] .tablet-timer-layout {
+  animation: layoutFadeOut 250ms ease forwards;
+}
+#app[data-transition="in"] .layout,
+#app[data-transition="in"] .audience-layout,
+#app[data-transition="in"] .tablet-timer-layout {
+  animation: layoutFadeIn 250ms ease forwards;
+}
+/* Prejoin also uses .prejoin-layout */
+#app[data-transition="out"] .prejoin-layout {
+  animation: layoutFadeOut 250ms ease forwards;
+}
+#app[data-transition="in"] .prejoin-layout {
+  animation: layoutFadeIn 250ms ease forwards;
+}
+body[data-ui-anims="off"] #app .layout,
+body[data-ui-anims="off"] #app .prejoin-layout,
+body[data-ui-anims="off"] #app .audience-layout,
+body[data-ui-anims="off"] #app .tablet-timer-layout {
+  animation: none !important;
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  #app[data-transition] .layout,
+  #app[data-transition] .prejoin-layout,
+  #app[data-transition] .audience-layout,
+  #app[data-transition] .tablet-timer-layout { animation: none !important; transition: none !important; }
 }
 
 /* Helper text under settings */
