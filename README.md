@@ -15,7 +15,7 @@ Yes. yes there is, handwritten response too, try it, I dare ya
 Screw em' you as the host (or co-host) have as many as you need.
 
 ### Support for jack attack rounds? 
-I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6 or 8-choice mode, something like Full Stream would be possible.
+I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6/8-choice mode, something like Full Stream would be possible.
 
 ### Whats on said slide deck?
 Music, Questions, everything except a scoreboard, who buzzed etc.
@@ -34,8 +34,8 @@ In no particular order,\
  - Better UI 
  - Coopertition mode
  - more round types
+ - YDKJ The Ride RNG preset for pick-a-value
  - whatever people ask via creating issues
- - YDKJ The Ride RNG for pick-a-value
  - ~~whatever I think of the next time I shower~~ other cool stuff.
 
 ### How do you decide what to add?
@@ -60,7 +60,7 @@ well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 second
 ### Sample slideshow?
 IDK possibly
 
-### Complete feature list?
+### What's in this thing?
 (breathes in) 
 - 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off
 - Text response mode for gibberish/anagram questions (or lame fill in the blanks)
@@ -84,13 +84,13 @@ IDK possibly
 - and probably more (soon!)
 
 ### Why?
-Because jackbox doesn't have a large player count easily moddable version of JACK that I could use, and kahoot & similar pissed me off with the free limits or lack of question type variety (and screws).
+Because jackbox doesn't have a large player count, easily moddable version of JACK that I could use, and kahoot & similar pissed me off with the free limits and lack of question type variety (and screws).
 
 ### How can I ask for stuff?
-Right now? Just create an issue, I might set up some google form or something like that down the line
+Just create an issue
 
 ### How make work?
-Just run the thing as you would a node app, or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
+Just run the thing as you would a node app, as thats what it is or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
 
 USE NODE 20+
 

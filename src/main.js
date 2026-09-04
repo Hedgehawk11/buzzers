@@ -4132,7 +4132,7 @@ function renderFibbageHostPanel(settings, players) {
       </section>`;
   }
   if (fb.phase === "voting_ready") {
-    const choicesHtml = (fb.choices||[]).map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}" ${c.isTruth?'<span class="muted">(truth)</span>':`<span class="muted">by ${c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ")}</span>`}</li>`).join("");
+    const choicesHtml = (fb.choices||[]).map((c,i)=>`<li>"${escapeHtml(c.text)}" ${c.isTruth?'<span class="muted">(truth)</span>':`<span class="muted">by ${c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ")}</span>`}</li>`).join("");
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Responses Ready</h2>
@@ -4194,7 +4194,7 @@ function renderFibbageHostPanel(settings, players) {
       const authorPart = isRevealed ? `<span class="muted">— ${escapeHtml(authorLabels)}</span>` : "";
       const voterPart = isRevealed ? `<span class="muted">picked by: ${escapeHtml(voterLabels)} (${voters.length})</span>` : `<span class="muted">${voters.length} vote${voters.length===1?"":"s"} — hidden</span>`;
       return `<li class="fibbage-choice ${colorCls}" data-fibbage-choice="${i}">
-        <strong>${i+1}.</strong> "${escapeHtml(c.text)}"
+        "${escapeHtml(c.text)}"
         ${authorPart}
         ${voterPart}
         ${spotlightBtn}
@@ -4331,7 +4331,7 @@ function renderFibbageAudienceDisplay(settings, players) {
   }
   if (fb.phase === "voting_ready") {
     const choices = fb.choices||[];
-    const list = choices.map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}"</li>`).join("");
+    const list = choices.map((c,i)=>`<li>"${escapeHtml(c.text)}"</li>`).join("");
     return `<main class="layout audience-layout" data-fibbage-active="true">
       <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Vote</h1><p class="muted">Waiting for vote timer</p></div></header>
       <section class="card"><h2>Choices</h2><ul class="fibbage-choices-list">${list}</ul></section>
@@ -4340,7 +4340,7 @@ function renderFibbageAudienceDisplay(settings, players) {
   if (fb.phase === "voting") {
     const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
     const choices = fb.choices||[];
-    const list = choices.map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}"</li>`).join("");
+    const list = choices.map((c,i)=>`<li>"${escapeHtml(c.text)}"</li>`).join("");
     return `<main class="layout audience-layout" data-fibbage-active="true">
       <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Voting</h1></div><div class="hero-meta"><span class="audience-timer">${timeLeft}s</span></div></header>
       <section class="card"><h2>Choices</h2><ul class="fibbage-choices-list">${list}</ul></section>
@@ -4386,7 +4386,7 @@ function renderFibbageAudienceDisplay(settings, players) {
       }
       const showAuthor = revealed.all ? ` — ${escapeHtml(authorLabels)}` : "";
       const voterPart = revealed.all ? `<span class="muted">picked by ${escapeHtml(voterLabels)}</span>` : `<span class="muted">${voters.length} vote${voters.length===1?"":"s"} — hidden</span>`;
-      return `<li class="fibbage-choice ${cls}"><strong>${i+1}.</strong> "${escapeHtml(c.text)}"${showAuthor} ${voterPart}</li>`;
+      return `<li class="fibbage-choice ${cls}">"${escapeHtml(c.text)}"${showAuthor} ${voterPart}</li>`;
     }).join("");
     const hideScores = shouldHideFibbageScores();
     const scoresHtml = hideScores ? "" : renderScores(players, getScores());
@@ -6048,11 +6048,13 @@ function render() {
     const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
 
     if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
+      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? `tablet-fibbage-${getFibbage().phase}` : `tablet-${round.status}`;
       const html = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
-      if (!transitionMount(mount, html, "tablet")) mount.innerHTML = html;
+      if (!transitionMount(mount, html, tabletKey)) mount.innerHTML = html;
     } else {
+      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? `audience-disordat-${getDisOrDat().phase}` : isFibbageMode() ? `audience-fibbage-${getFibbage().phase}-${getFibbage().revealed?.singleIdx ?? "none"}` : `audience-${round.status}`;
       const html = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
-      if (!transitionMount(mount, html, "audience")) mount.innerHTML = html;
+      if (!transitionMount(mount, html, audienceKey)) mount.innerHTML = html;
     }
     lastUiSignature = getUiSignature();
     // audience never shows delta per spec

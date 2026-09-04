@@ -1378,10 +1378,14 @@ button.red {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
-#app[data-transition="out"] .layout {
+#app[data-transition="out"] .layout,
+#app[data-transition="out"] .audience-layout,
+#app[data-transition="out"] .tablet-timer-layout {
   animation: layoutFadeOut 250ms ease forwards;
 }
-#app[data-transition="in"] .layout {
+#app[data-transition="in"] .layout,
+#app[data-transition="in"] .audience-layout,
+#app[data-transition="in"] .tablet-timer-layout {
   animation: layoutFadeIn 250ms ease forwards;
 }
 /* Prejoin also uses .prejoin-layout */
@@ -1392,13 +1396,17 @@ button.red {
   animation: layoutFadeIn 250ms ease forwards;
 }
 body[data-ui-anims="off"] #app .layout,
-body[data-ui-anims="off"] #app .prejoin-layout {
+body[data-ui-anims="off"] #app .prejoin-layout,
+body[data-ui-anims="off"] #app .audience-layout,
+body[data-ui-anims="off"] #app .tablet-timer-layout {
   animation: none !important;
   transition: none !important;
 }
 @media (prefers-reduced-motion: reduce) {
   #app[data-transition] .layout,
-  #app[data-transition] .prejoin-layout { animation: none !important; transition: none !important; }
+  #app[data-transition] .prejoin-layout,
+  #app[data-transition] .audience-layout,
+  #app[data-transition] .tablet-timer-layout { animation: none !important; transition: none !important; }
 }
 
 /* Helper text under settings */
