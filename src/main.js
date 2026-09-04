@@ -91,6 +91,8 @@ let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
 let audienceTimerFrozenCs = null;
 let disOrDatRevealUntil = 0;
+let lastAudienceParticipantCount = 0;
+let audienceJoinRefreshTimeout = null;
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -758,6 +760,28 @@ function updateTimerDisplays() {
   const timeLeftText = `${formatSeconds(getTimeLeftCs(round, settings))}s`;
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
+  });
+  // audience mirrors live timer
+  document.querySelectorAll("[data-audience-time-left]").forEach((element) => {
+    const ms = getScrewTimerMs(round);
+    if (ms != null) {
+      element.textContent = `${formatSeconds(Math.ceil(ms/10))}s`;
+    } else if (round.screw.active) {
+      element.textContent = "SCREW";
+    } else {
+      element.textContent = timeLeftText;
+    }
+  });
+  // tablet mirrors live/screw
+  document.querySelectorAll("[data-tablet-time-left]").forEach((element) => {
+    const ms = getScrewTimerMs(round);
+    if (ms != null) {
+      element.textContent = `${formatSeconds(Math.ceil(ms/10))}s`;
+    } else if (round.screw.active) {
+      element.textContent = "SCREW";
+    } else {
+      element.textContent = timeLeftText;
+    }
   });
   if (isDisOrDatMode()) {
     const ddText = `${formatSeconds(getDisOrDatTimeLeftCs(getDisOrDat()))}s`;
@@ -4998,7 +5022,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
           <h2>${statusLabel}</h2>
         </div>
         <div class="audience-meta">
-          <span class="audience-timer">${timerDisplay}</span>
+          <span class="audience-timer" data-audience-time-left>${timerDisplay}</span>
           ${pointsUpForGrabs !== null ? `<span class="audience-points">${pointsLabel}</span>` : ""}
         </div>
       </div>
@@ -5137,12 +5161,12 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     if (fb.phase === "lying") {
       const cs = getFibbageLieTimeLeftCs(fb);
       const flash = isTabletTimerFlashing(cs);
-      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value">${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
     }
     if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
       const flash = isTabletTimerFlashing(cs);
-      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value">${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
     }
     return renderTabletTimerNotUseful();
   }
@@ -5156,7 +5180,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
       return `
         <main class="tablet-timer-layout"${flash ? ' data-flash="true"' : ""}>
           <div class="tablet-timer-container">
-            <div class="tablet-timer-value">${formatSeconds(ddCs)}s</div>
+            <div class="tablet-timer-value" data-tablet-time-left data-disordat-time-left>${formatSeconds(ddCs)}s</div>
             <div class="tablet-timer-players">Dis or Dat</div>
           </div>
         </main>
@@ -5204,7 +5228,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   return `
     <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""}>
       <div class="tablet-timer-container">
-        <div class="tablet-timer-value">${timerDisplay}</div>
+        <div class="tablet-timer-value" data-tablet-time-left data-audience-time-left>${timerDisplay}</div>
         <div class="tablet-timer-players">${getSnark("tablet.misc.tabletAnswered", `${buzzedCount}/${totalPlayers} players answered`, { buzzed: buzzedCount, total: totalPlayers })}</div>
       </div>
     </main>
@@ -6048,11 +6072,11 @@ function render() {
     const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
 
     if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
-      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? `tablet-fibbage-${getFibbage().phase}` : `tablet-${round.status}`;
+      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? "tablet-fibbage" : "tablet";
       const html = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
       if (!transitionMount(mount, html, tabletKey)) mount.innerHTML = html;
     } else {
-      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? `audience-disordat-${getDisOrDat().phase}` : isFibbageMode() ? `audience-fibbage-${getFibbage().phase}-${getFibbage().revealed?.singleIdx ?? "none"}` : `audience-${round.status}`;
+      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? "audience-disordat" : isFibbageMode() ? "audience-fibbage" : "audience";
       const html = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
       if (!transitionMount(mount, html, audienceKey)) mount.innerHTML = html;
     }
@@ -7104,13 +7128,33 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     try { updateTimerDisplays(); } catch (e) { console.warn("[timer] patch failed", e); }
   }, 1000);
 
-  // Fast re-render for audience/tablet timer — gated + rAF-batched
-  // Paused when Fibbage spotlight is active so the dramatic card doesn't flicker
+  // init audience join tracker to avoid spurious 1s refresh on first poll
+  try { lastAudienceParticipantCount = currentParticipants().length; } catch {}
+  // Audience/tablet polling — signature-aware so it doesn't thrash transitions
+  // Smooth timer handles live clock via rAF patchText; we only full-render when state changes
   setInterval(() => {
     if (!isAudienceDisplayClient()) return;
     if (isFibbageMode() && getFibbage().revealed?.singleIdx !== null) return;
-    scheduleRender(render);
-  }, 25);
+    const sig = getUiSignature();
+    if (sig !== lastUiSignature) {
+      scheduleRender(render);
+      // Refresh audience 1s after a player joins (displayName/state may arrive slightly after participant appears)
+      try {
+        const curCount = currentParticipants().length;
+        if (curCount > lastAudienceParticipantCount) {
+          clearTimeout(audienceJoinRefreshTimeout);
+          audienceJoinRefreshTimeout = setTimeout(() => {
+            try { scheduleRender(render); } catch {}
+          }, 1000);
+        }
+        lastAudienceParticipantCount = curCount;
+      } catch {}
+    } else {
+      // still keep timers crisp for audience even if smooth timer hasn't ticked yet
+      try { updateTimerDisplays(); } catch {}
+      try { lastAudienceParticipantCount = currentParticipants().length; } catch {}
+    }
+  }, 250);
 
   // Bingo mode re-render — only fires when the bingo state actually changes
   setInterval(() => {
@@ -7129,10 +7173,14 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 function boot() {
   // Bind delegated handlers once before any screen renders (prejoin needs them too)
   try { bindEvents(); } catch (e) { console.warn("[boot] bindEvents failed", e); }
-  // Feature 3: smooth rAF timer (display/tablet + player OPEN per spec)
+  // Feature 3: smooth rAF timer (display/tablet + player OPEN; audience/tablet reuse same timers)
   try {
     startSmoothTimer([
       { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]" },
+      // audience main timer mirrors live timer, but shows SCREW when screw active without timer
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]" },
+      // tablet main timer: screw overrides live, otherwise live; SCREW shows static text
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]" },
       { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]" },
       { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]" },
       { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]" },

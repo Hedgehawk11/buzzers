@@ -1,7 +1,7 @@
 # Buzzers — Agent guide
 
 ## Project
-Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows. PWA via `vite-plugin-pwa`. Node 20+ (CI matrix 20/22/24 on `npm ci && npm run build`).
+Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, test runner, or linter. Multiplayer buzzer system for live gameshows. PWA via `vite-plugin-pwa`. Node 20+ (CI matrix 20/22/24).
 
 ## Commands
 ```
@@ -10,13 +10,13 @@ npm run dev-server # vite --host (LAN multi-device)
 npm run build      # vite build → dist/ (verify before PR)
 npm run preview    # vite preview built output
 ```
-No typecheck/lint/format/test hooks. `dist/` gitignored. PWA SW only in `build` (`dev` has no SW — test PWA with `build && preview`).
+No typecheck/lint/format/test hooks. `dist/` gitignored. PWA SW only in `build`.
 
 ## Key structure
-- `src/main.js` (~7145 lines) — entire game: state, RPC, render assembly. Change here for game logic.
+- `src/main.js` (~7150 lines) — entire game: state, RPC, render assembly. Change here for game logic.
 - `src/render.js` (~395 lines) — resilient renderer: rAF scheduler, delegated bus, input preservation, `transitionMount`, `showToast`, score-delta, smooth timer. Imported by `main.js`.
 - `src/snark.json` (~1100 lines) — `screen.group.key → {en,snark1,snark2}` with `{token}`. All player strings via `getSnark()`.
-- `src/style.css` (~2076 lines) — flat CSS, custom properties. No modules. Includes toast, score-delta, `layoutFadeIn/Out` transitions, `buzzersOpenFlash`.
+- `src/style.css` (~2086 lines) — flat CSS, custom properties. No modules. Includes toast, score-delta, `layoutFadeIn/Out` (250ms), `buzzersOpenFlash`, body background `800ms` fade.
 - `index.html` — `<div id="app">` + `<div id="toast-layer">` + `src/main.js` + footer.
 - `vite.config.js` — `VitePWA` only. `public/` icons + optional `1.png/2.png/3.png` rank badges via `probeRankBadges()` in `boot()`.
 
@@ -28,11 +28,11 @@ No typecheck/lint/format/test hooks. `dist/` gitignored. PWA SW only in `build` 
 - `getUiSignature()` is dirty-check for 1s host tick; `updateTimerDisplays()` patches `data-*` timers without full `render()`.
 
 ## Renderer (new — do not revert to per-render rebinding)
-- `render()` in `main.js:5988` assembles HTML string and mounts via `getApp()` (`#app`) using `transitionMount(mount, html, modeKey)` `render.js:341` (140ms `layoutFadeOut` → 160ms `layoutFadeIn`, respects `uiAnimationsEnabled`/`prefers-reduced-motion`, interrupts pending). Mode keys: `prejoin-*`, `audience`/`tablet`, `teamselect`/`bingo`/`disordat`/`fibbage`/`default`.
+- `render()` in `main.js:5988` assembles HTML string and mounts via `getApp()` (`#app`) using `transitionMount(mount, html, modeKey)` `render.js:343` (250ms `layoutFadeOut` → 250ms `layoutFadeIn`, animates `.layout`/`.audience-layout`/`.tablet-timer-layout`/`.prejoin-layout`, respects `uiAnimationsEnabled`/`prefers-reduced-motion`, interrupts pending via `clearTimeout`). Mode keys: `prejoin-*`, `audience`/`tablet` (gamemode only), `teamselect`/`bingo`/`disordat`/`fibbage`/`default` — anims only between gamemodes, not between fibbage/disordat phases.
 - Delegated events: `bindEvents()` `main.js:6232` runs once (`delegatedBound` guard), calls `initRenderer` + `delegate(type, selector, fn)` `render.js:144` (`closest` on `appEl`). Do not add `querySelectorAll`+`addEventListener` per render.
-- Scheduler: `scheduleRender(render)` `render.js:90` coalesces multiple callers (hostTick + roulette 500ms + bingo 50ms + audience 25ms + RPC) into one `requestAnimationFrame` with `capturePreservedInputs`/`restorePreservedInputs`. Use `renderImmediate` only for prejoin.
+- Scheduler: `scheduleRender(render)` `render.js:90` coalesces multiple callers (hostTick 1s + roulette 500ms + bingo 50ms + audience 250ms + RPC) into one `requestAnimationFrame` with `capturePreservedInputs`/`restorePreservedInputs`. Use `renderImmediate` only for prejoin.
 - Input preservation: `PRESERVED_INPUT_IDS` `render.js:14` (fibbage-truth, answer-entry, correct-answer-entry, bingo-word, disordat-*, fibbage-lie-entry, prejoin-*, selects) + generic fallback for any focused input. `setBuzzNotice` also calls `showToast` `render.js:177`.
-- `prejoinHtml` via `renderPrejoinScreen` `main.js:6653` now uses `transitionMount` (`prejoin-${mode}`) with same scheduler.
+- `renderPrejoinScreen` `main.js:6653` now uses `transitionMount` (`prejoin-${mode}`) so switching host/join/display and joining game animates `prejoin-*` → `default` (250ms out + 250ms in). Initial `prejoin-landing` has no intro animation.
 
 ## Co-host
 - Host seeds 5-digit `cohostPassword`; claim via `claim-cohost` RPC → `cohostIds`. `hasHostPrivileges()=isHost()||isCohost()`. `cohostDispatch` relays via `cohost-action` to `HOST_ACTIONS` on host. Host-only modes: Bingo/Wen/Dis or Dat/Fibbage — cohost early-returns.
@@ -49,9 +49,9 @@ No typecheck/lint/format/test hooks. `dist/` gitignored. PWA SW only in `build` 
 ## Input modes (all switch via `settings.inputMode`, host-only, `hostTick` early-returns)
 - `buttons`: 1/2/4/6/8 options (8=`.eight-grid`), `correctOptions[]`.
 - `text`: free-text, `correctAnswer` string.
-- `bingo`/`wendithapn`: 5 tiles or 3×Before/Never/After, cycling `750ms`, `50ms` bingo re-render loop (state-keyed).
+- `bingo`/`wendithapn`: 5 tiles or 3×Before/Never/After, cycling `750ms`, `50ms` bingo re-render loop (state-keyed). Setup shows `bingo-word` (if not Wen) + `bingoAlternateViewers` + `bingoLessRandom` + `bingoAllowMultipleCorrect` (moved from active to setup); active shows only alternate+lessRandom + target/cycling/progress.
 - `disordat`: 7 Qs, 300pts each + time bonus 5+ correct (`disordat` state, host presets `answers[7]`).
-- `fibbage`: lie game (see below).
+- `fibbage`: lie game (see below). Host/audience no longer shows `1.` numeric prefix on choices.
 
 ## Fibbage
 - **Truth** locked after `Enter Lies` (`setFibbageTruth` early-returns if `active`). `Show Responses`/`Enter Lies` auto-apply draft `#fibbage-truth` via generic preservation `render.js:14`. Timers via `getFibbageLie/VoteTimeLeftCs`, `handleFibbageTick` in `hostTick` (skips full `render()` when truth input focused, only `updateTimerDisplays`).
@@ -70,18 +70,21 @@ No typecheck/lint/format/test hooks. `dist/` gitignored. PWA SW only in `build` 
 
 ## New renderer features (do not bypass)
 - **Toast**: `showToast(text,{ttlMs:3500})` `render.js:177` appends to `#toast-layer` (outside `#app`), limit 3 (drop oldest), `is-in`/`is-out` 180ms, `role="status"`. `setBuzzNotice` auto-toasts. Do not add buzz notices via `render()` inline only.
-- **Score delta**: `trackScoreSnapshot`/`applyScoreDeltas` `render.js:234/249` — `renderScores` emits `data-score-key`/`data-score-value`; after `mount.innerHTML`, `requestAnimationFrame` adds `is-delta is-plus/is-minus` + `data-delta` (900ms) with `scorePop`/`scoreDeltaFly`. Guarded `!isAudienceDisplayClient()` and `.audience-layout` CSS `display:none` — never show on audience per spec.
-- **Smooth timer**: `startSmoothTimer([...])` `render.js:276` rAF loop patching `[data-live-time-left]`/`[data-disordat-time-left]`/`[data-fibbage-time-left]`/`[data-screw-timer]` via `patchText`. Started in `boot()` `main.js:7124` for display/tablet **and** player when `OPEN`. Keep 1s `hostTick` authoritative; rAF is display-only.
-- **Transitions**: `layoutFadeIn` 160ms / `layoutFadeOut` 140ms `style.css` on `#app[data-transition]` for `.layout` and `.prejoin-layout`. Respects `body[data-ui-anims="off"]` and `prefers-reduced-motion`. `transitionMount` interrupts pending (clears timeouts).
+- **Score delta**: `trackScoreSnapshot`/`applyScoreDeltas` `render.js:234/249` — `renderScores` emits `data-score-key`/`data-score-value`; after `mount.innerHTML`, `requestAnimationFrame` adds `is-delta is-plus/is-minus` + `data-delta` (900ms) with `scorePop`/`scoreDeltaFly`. Guarded `!isAudienceDisplayClient()` and `.audience-layout` CSS `display:none` — never show on audience.
+- **Smooth timer**: `startSmoothTimer([...])` `render.js:276` rAF loop patching `[data-live-time-left]`/`[data-audience-time-left]`/`[data-tablet-time-left]`/`[data-disordat-time-left]`/`[data-fibbage-time-left]`/`[data-screw-timer]` via `patchText`. Started in `boot()` `main.js:7124` for display/tablet **and** player when `OPEN`. Keep 1s `hostTick` authoritative; rAF is display-only. `updateTimerDisplays()` also patches audience/tablet and handles `"SCREW"` text.
+- **Transitions**: `layoutFadeIn`/`layoutFadeOut` 250ms `style.css` on `#app[data-transition]` for `.layout`/`.audience-layout`/`.tablet-timer-layout`/`.prejoin-layout`. Respects `body[data-ui-anims="off"]` and `prefers-reduced-motion`. `transitionMount` interrupts pending (clears timeouts). Anims only between gamemodes.
+- **Background fade**: `body {transition: background 800ms ease}` `style.css:28` — team/bingo/disordat/screw/fibbage/buzzers-open gradients fade over 800ms.
+- **Audience refresh**: `main.js:7131` audience/tablet poll `250ms` signature-aware + extra `setTimeout 1000ms` re-render when `currentParticipants().length` increases (displayName arrives late). No anim on timer tick.
 
 ## Snark / Scoreboard / Animations
 - `getSnark(section,fallbackEn,vars)` — `snarkMode off|1|2` (2→1→en fallback, blank skips). Now `escapeHtml(vars[k])` in `main.js:218`. New strings must route through it and add to `snark.json`.
 - `renderScores()` sorted desc, emits `data-score-key` for delta. Alliance totals and shared-team scores included. `1/2/3.*` in `public/` → `rankBadgeUrls` via `probeRankBadges()` in `boot()`.
 - Flash `data-buzzers-open` when `OPEN && buttons && !screw` → `buzzersOpenFlash`. `uiAnimationsEnabled` → `body[data-ui-anims="off"] * {animation:none!important}`.
+- Hero no longer shows `Round: …` debug (removed from `main.js:6212`).
 
 ## Quirks
-- **Prejoin fade**: `renderPrejoinScreen` now uses `transitionMount` (`prejoin-${mode}`), so joining game animates `prejoin-*` → `default` (out 140ms + in 160ms). Initial `prejoin-landing` has no intro animation.
-- **Host tick**: 1s `setInterval` manages timers/screw/roulette/fibbage; only `scheduleRender(render)` if signature changed else `updateTimerDisplays()`. rAF timer supplements patching. Extra loops: 25ms audience (still gated, now `scheduleRender`), 50ms bingo (state-keyed).
+- **Prejoin fade**: `renderPrejoinScreen` now uses `transitionMount` (`prejoin-${mode}`), so joining game animates `prejoin-*` → `default`/`audience` (out 250ms + in 250ms). Initial `prejoin-landing` has no intro animation.
+- **Host tick**: 1s `setInterval` manages timers/screw/roulette/fibbage; only `scheduleRender(render)` if signature changed else `updateTimerDisplays()`. rAF timer supplements patching. Extra loops: `250ms` audience/tablet (signature-aware + 1s join refresh), `50ms` bingo (state-keyed).
 - **PWA**: SW only after `build`; `dev` has no SW — test PWA with `build && preview`.
 - **Escape**: `getSnark` vars and `getPlayerName` interpolated HTML now escaped (`escapeHtml`). Do not add raw `playerName` to HTML.
 - **Null `me()`**: `isControllerPlayer`/`isCohost` use `me()?.id`; `render()` early-returns to `renderPrejoinScreen` if `!me()`. `assignControllerIfNeeded` guards `me()?.id`.

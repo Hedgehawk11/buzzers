@@ -31,7 +31,9 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 
 ### What's coming?
 In no particular order,\
+ - Some love to the main buzzers
  - Better UI 
+ - Companion timer app with remakes of some jackbox timers (probably in different repo)
  - Coopertition mode
  - more round types
  - YDKJ The Ride RNG preset for pick-a-value
