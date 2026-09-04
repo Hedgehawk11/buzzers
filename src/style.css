@@ -2084,3 +2084,157 @@ body:has([data-fibbage-active]) {
   from { filter: brightness(1); }
   to   { filter: brightness(1.08); }
 }
+
+/* =============================================================================
+   Coopertition mode — per-slot columns, horizontal score strip, avatars/faces
+   ============================================================================= */
+.coop-buzz-row {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+}
+.coop-buzz-1 { grid-template-columns: 1fr; }
+.coop-buzz-2 { grid-template-columns: 1fr 1fr; }
+.coop-buzz-3 { grid-template-columns: 1fr 1fr 1fr; }
+.coop-slot {
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 0.5rem;
+  background: rgba(255,255,255,0.02);
+}
+.coop-slot-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.coop-slot-head kbd,
+.coop-strip-cell kbd {
+  font-size: 0.7rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  background: rgba(255,255,255,0.06);
+}
+.coop-opt-grid {
+  display: grid;
+  gap: 0.35rem;
+}
+.coop-opt-4 .coop-opt-grid, .coop-opt-grid.coop-opt-4 { grid-template-columns: 1fr 1fr; }
+.coop-opt-6 .coop-opt-grid, .coop-opt-grid.coop-opt-6 { grid-template-columns: 1fr 1fr 1fr; }
+.coop-opt-8 .coop-opt-grid, .coop-opt-grid.coop-opt-8 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.coop-opt {
+  font-size: 1.05rem;
+  font-weight: 800;
+  padding: 0.55rem 0.2rem;
+  border-radius: 8px;
+}
+.coop-slot-state { margin: 0.35rem 0 0; font-size: 0.8rem; }
+
+/* Horizontal personal score strip — same column order as the buzzers. */
+.coop-strip {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+.coop-strip-1 { grid-template-columns: 1fr; }
+.coop-strip-2 { grid-template-columns: 1fr 1fr; }
+.coop-strip-3 { grid-template-columns: 1fr 1fr 1fr; }
+.coop-strip-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 0.4rem 0.55rem;
+  background: rgba(255,255,255,0.03);
+}
+.coop-strip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coop-strip-cell.is-muted, .coop-slot.is-locked { opacity: 0.55; }
+
+/* Picker highlight — telegraphs the pick-a-value rep (dance asset or glow). */
+.coop-slot.is-picker, .coop-strip-cell.is-picker {
+  border-color: rgba(234,179,8,0.9);
+  box-shadow: 0 0 18px rgba(234,179,8,0.45);
+}
+
+/* Character avatars + one-shot face spritesheets (freeze on final frame). */
+.coop-avatar {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  flex: none;
+}
+.coop-avatar-strip {
+  display: inline-block;
+  background-repeat: no-repeat;
+  background-size: auto 100%;
+  animation: coopFacePlay 0.9s steps(var(--coop-frames, 4)) forwards;
+}
+@keyframes coopFacePlay {
+  from { background-position-x: 0; }
+  to { background-position-x: 100%; }
+}
+
+/* Grouped scoreboard. */
+.coop-group-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+.coop-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 1.05rem;
+}
+.coop-sub-list { list-style: none; margin: 0.3rem 0 0; padding: 0 0 0 0.6rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.coop-sub-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.92rem;
+}
+.coop-sub-row > span { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
+.coop-sub-row .coop-avatar { width: 30px; height: 30px; }
+.coop-sub-row.is-muted, .coop-sub-row.is-frozen { opacity: 0.55; }
+.coop-mute-row { margin-top: 0.4rem; }
+.coop-text-tabs { display: flex; gap: 0.4rem; margin: 0.5rem 0; flex-wrap: wrap; }
+
+.prejoin-check { display: flex !important; align-items: center; gap: 0.5rem; }
+.prejoin-check input { width: auto; }
+
+/* Screen-bottom player notice bar (replaces inline card notices). */
+.screen-notice-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 0.9rem;
+  transform: translateX(-50%);
+  z-index: 60;
+  max-width: min(92vw, 560px);
+  padding: 0.55rem 1rem;
+  border-radius: 999px;
+  background: rgba(10, 10, 14, 0.88);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  font-size: 0.92rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Jeopardy buzz-in button + control highlight. */
+.coop-buzzin {
+  width: 100%;
+  font-size: 1.15rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  padding: 0.55rem 0.2rem;
+  border-radius: 8px;
+  margin-bottom: 0.35rem;
+}
+.coop-slot.is-control {
+  border-color: rgba(29, 185, 84, 0.9);
+  box-shadow: 0 0 18px rgba(29, 185, 84, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coop-avatar-strip { animation-duration: 0.01s; }
+}

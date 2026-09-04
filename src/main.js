@@ -34,6 +34,9 @@ const DEFAULT_SETTINGS = {
   rouletteSinglePlayerTarget: "random",
   teamModeEnabled: false,
   teamScoringMode: "alliance",
+  coopertitionEnabled: false,
+  coopAllowEdit: false,
+  disabledCoopSlots: [],
   bingoAlternateViewers: false,
   bingoLessRandom: true,
   bingoAllowMultipleCorrect: false,
@@ -86,6 +89,7 @@ let rouletteAnimationInterval = null;
 let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
+let hostPrejoinCoopSetting = false;
 let bingoCycleInterval = null;
 let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
@@ -93,6 +97,11 @@ let audienceTimerFrozenCs = null;
 let disOrDatRevealUntil = 0;
 let lastAudienceParticipantCount = 0;
 let audienceJoinRefreshTimeout = null;
+let coopKeydownBound = false;
+let coopTextSlot = 0;
+let coopEditing = false;
+const COOP_COUNT_KEY = "buzzer_coop_count";
+const COOP_NAMES_KEY = "buzzer_coop_names";
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -324,6 +333,173 @@ function getAllBuzzedTeamMemberIds(playerId, players, assignments) {
   return getTeamMembers(teamColor, players, assignments).map((player) => player.id);
 }
 
+// =============================================================================
+// Coopertition mode — up to 3 sub-players per device, each with their own
+// score key (coop:{deviceId}:{slot}). 1-slot devices keep the legacy pid key.
+// =============================================================================
+function isCoopMode(settings = getSettings()) {
+  return Boolean(settings.coopertitionEnabled);
+}
+
+function getCoopRosters() {
+  return getSafeState("coopRosters", {});
+}
+
+function getCoopRoster(deviceId) {
+  const rosters = getCoopRosters();
+  const roster = rosters?.[deviceId];
+  if (!roster || !Array.isArray(roster.slots)) return null;
+  return roster;
+}
+
+function getMyCoopRoster() {
+  const self = me();
+  if (!self?.id) return null;
+  return getCoopRoster(self.id);
+}
+
+function getCoopSlotCount(deviceId) {
+  const roster = getCoopRoster(deviceId);
+  if (!roster) return 1;
+  return clamp(roster.slots.length, 1, 3);
+}
+
+function getCoopGroupName(deviceId, fallback = "") {
+  const roster = getCoopRoster(deviceId);
+  const group = roster?.group;
+  if (typeof group === "string" && group.trim()) return group.trim();
+  return fallback;
+}
+
+// Individual sub-player name. Single-slot devices just use the group name.
+function getCoopSlotName(deviceId, slot, fallbackGroup = "") {
+  const count = getCoopSlotCount(deviceId);
+  const group = getCoopGroupName(deviceId, fallbackGroup);
+  if (count <= 1) return group || fallbackGroup || "Player 1";
+  const roster = getCoopRoster(deviceId);
+  const name = roster?.slots?.[slot];
+  if (typeof name === "string" && name.trim()) return name.trim();
+  return `Player ${slot + 1}`;
+}
+
+function getCoopScoreKey(deviceId, slot) {
+  if (getCoopSlotCount(deviceId) <= 1 && slot === 0) return deviceId;
+  return `coop:${deviceId}:${slot}`;
+}
+
+function isCoopScoreKey(key) {
+  return typeof key === "string" && key.startsWith("coop:");
+}
+
+function parseCoopScoreKey(key) {
+  if (!isCoopScoreKey(key)) return null;
+  const rest = key.slice("coop:".length);
+  const sep = rest.lastIndexOf(":");
+  if (sep < 0) return null;
+  const deviceId = rest.slice(0, sep);
+  const slot = Number(rest.slice(sep + 1));
+  if (!deviceId || !Number.isInteger(slot) || slot < 0 || slot > 2) return null;
+  return { deviceId, slot };
+}
+
+// A score key whose slot no longer exists on the device (device shrank).
+// Its points stay on the board (frozen) but it can never buzz again.
+function isCoopSlotFrozen(deviceId, slot) {
+  if (!isCoopMode()) return false;
+  const count = getCoopSlotCount(deviceId);
+  return slot >= count;
+}
+
+function getCoopGroupTotal(deviceId, scores = getScores()) {
+  const count = getCoopSlotCount(deviceId);
+  let total = 0;
+  for (let slot = 0; slot < 3; slot++) {
+    const key = slot < count ? getCoopScoreKey(deviceId, slot) : `coop:${deviceId}:${slot}`;
+    total += Number(scores[key] || 0);
+  }
+  return total;
+}
+
+function getCoopMoods() {
+  return getSafeState("coopMoods", {});
+}
+
+function normalizeDisabledCoopSlots(disabledSlots, players) {
+  const validDevices = new Set(players.map((p) => p.id));
+  return [...new Set((disabledSlots || []).filter((key) => {
+    const parsed = parseCoopScoreKey(key);
+    return parsed && validDevices.has(parsed.deviceId);
+  }))];
+}
+
+function isCoopSlotMuted(settings, deviceId, slot) {
+  const key = `coop:${deviceId}:${slot}`;
+  const list = normalizeDisabledCoopSlots(settings.disabledCoopSlots, currentParticipants());
+  return list.includes(key);
+}
+
+// Score key for a device slot in any mode: coop key when coop is on,
+// otherwise the legacy team/player mapping.
+function getScoreKeyForSlot(deviceId, slot, settings = getSettings(), assignments = getTeamAssignments()) {
+  if (isCoopMode(settings)) return getCoopScoreKey(deviceId, slot);
+  return getScoreKeyForPlayer(deviceId, settings, assignments);
+}
+
+// Track key for bingo/disordat responses. Shared-team mode is blocked in
+// coop, so coop tracks are always per-slot.
+function getCoopTrackKey(deviceId, slot, settings = getSettings(), assignments = getTeamAssignments()) {
+  if (isCoopMode(settings)) return getCoopScoreKey(deviceId, slot);
+  return getTeamTrackKey(deviceId, settings, assignments);
+}
+
+// Display name of the slot currently holding Jeopardy control ("").
+function getCoopControlName(round) {
+  const parsed = parseCoopScoreKey(round?.coopControl);
+  if (!parsed) return "";
+  return getCoopSlotName(parsed.deviceId, parsed.slot);
+}
+
+// Q/B/P keyboard mapping: 2 players -> Q,P. 3 players -> Q,B,P.
+function getCoopSlotForCode(code, slotCount) {
+  if (slotCount <= 1) return 0;
+  if (slotCount === 2) {
+    if (code === "KeyQ") return 0;
+    if (code === "KeyP") return 1;
+    return null;
+  }
+  if (code === "KeyQ") return 0;
+  if (code === "KeyB") return 1;
+  if (code === "KeyP") return 2;
+  return null;
+}
+
+function getCoopKeyHint(slot, slotCount) {
+  if (slotCount <= 1) return "";
+  if (slotCount === 2) return slot === 0 ? "Q" : "P";
+  return ["Q", "B", "P"][slot] || "";
+}
+
+function isMobileDevice() {
+  try {
+    if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches && window.matchMedia("(max-width: 820px)").matches) return true;
+    if (typeof window.ontouchstart !== "undefined" && window.innerWidth <= 820 && !window.matchMedia("(pointer: fine)").matches) return true;
+  } catch {}
+  return false;
+}
+
+function getSavedCoopCount() {
+  const n = Number(localStorage.getItem(COOP_COUNT_KEY));
+  return n >= 1 && n <= 3 ? n : 1;
+}
+
+function getSavedCoopNames() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COOP_NAMES_KEY) || "[]");
+    if (Array.isArray(parsed)) return parsed.map((n) => String(n || "").slice(0, 32));
+  } catch {}
+  return [];
+}
+
 function normalizeDisabledOptions(options, optionCount) {
   const max = Number(optionCount) || 0;
   return [...new Set((options || []).map(Number).filter((opt) => Number.isInteger(opt) && opt >= 1 && opt <= max))];
@@ -352,14 +528,22 @@ function isPlayerBuzzerEnabled(settings, playerId) {
 function getEligibleBuzzerPlayerIds(settings) {
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
-  return currentParticipants()
-    .filter(
-      (p) =>
-        p.id !== controllerId &&
-        !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) &&
-        isPlayerBuzzerEnabled(settings, p.id)
-    )
-    .map((p) => p.id);
+  const devices = currentParticipants().filter(
+    (p) =>
+      p.id !== controllerId &&
+      !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) &&
+      isPlayerBuzzerEnabled(settings, p.id)
+  );
+  if (!isCoopMode(settings)) return devices.map((p) => p.id);
+  // Coop: one entry per live slot (frozen removals and muted slots excluded).
+  const ids = [];
+  devices.forEach((p) => {
+    const count = getCoopSlotCount(p.id);
+    for (let slot = 0; slot < count; slot++) {
+      if (!isCoopSlotMuted(settings, p.id, slot)) ids.push(getCoopScoreKey(p.id, slot));
+    }
+  });
+  return ids;
 }
 
 function isAllEligibleBuzzed(buzzedPlayerIds, settings) {
@@ -393,6 +577,10 @@ function getRound() {
     winnerOption: null,
     winnerAnswer: null,
     winnerName: null,
+    // Coopertition Jeopardy control: score key of the slot that buzzed in
+    // first this round (null until someone buzzes). Only that slot's options
+    // unlock; cleared whenever buzzers open/close/reset.
+    coopControl: null,
     buzzedPlayerIds: [],
     buzzCounts: {},
     roulette: {
@@ -484,6 +672,83 @@ function probeRankBadgeCandidates(rank, index) {
 function getRankBadgeHtml(rank) {
   const url = rankBadgeUrls[rank];
   return url ? `<img class="rank-badge" src="${url}" alt="${rank}" loading="lazy" />` : "";
+}
+
+// =============================================================================
+// Coopertition character art — /public holds per-slot images using the same
+// extensions as rank badges. Naming: 1.png (base/idle), 1-buzz.*, 1-dance.*,
+// 1-correct.*, 1-wrong.* (slots 1..3). Correct/wrong should be horizontal
+// spritesheets with square frames (frame count auto-detected); plain GIFs are
+// accepted as fallback but loop instead of freezing. See public/avatars.md.
+// =============================================================================
+const COOP_CHAR_STATES = ["base", "buzz", "dance", "correct", "wrong"];
+const coopCharUrls = { 1: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 2: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 3: { base: null, buzz: null, dance: null, correct: null, wrong: null } };
+const coopCharFrames = { 1: { correct: 0, wrong: 0 }, 2: { correct: 0, wrong: 0 }, 3: { correct: 0, wrong: 0 } };
+let coopCharsProbed = false;
+
+function coopCharFileBase(slot, state) {
+  return state === "base" ? `/${slot}` : `/${slot}-${state}`;
+}
+
+function probeCoopChars() {
+  if (coopCharsProbed) return;
+  coopCharsProbed = true;
+  [1, 2, 3].forEach((slot) => {
+    COOP_CHAR_STATES.forEach((state) => probeCoopCharCandidates(slot, state, 0));
+  });
+}
+
+function probeCoopCharCandidates(slot, state, index) {
+  if (index >= RANK_BADGE_EXTENSIONS.length) return;
+  const url = `${coopCharFileBase(slot, state)}.${RANK_BADGE_EXTENSIONS[index]}`;
+  const img = new Image();
+  img.onload = () => {
+    coopCharUrls[slot][state] = url;
+    if ((state === "correct" || state === "wrong") && img.naturalHeight > 0 && img.naturalWidth > img.naturalHeight) {
+      coopCharFrames[slot][state] = Math.max(1, Math.round(img.naturalWidth / img.naturalHeight));
+    }
+    if (gameLaunched) render();
+  };
+  img.onerror = () => probeCoopCharCandidates(slot, state, index + 1);
+  img.src = url;
+}
+
+function getCoopCharMoodForKey(scoreKey, round) {
+  // Audience/tablet displays stay idle 24/7 — faces are player/host only.
+  try { if (isAudienceDisplayClient()) return "idle"; } catch {}
+  const moods = getCoopMoods();
+  const mood = moods?.[scoreKey];
+  if (mood === "correct" || mood === "wrong") {
+    // The active pick-a-value dancer wins over a stored face during roulette.
+    if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+      const rep = getRouletteRepForDevice(round.roulette, scoreKey);
+      if (rep) return "dance";
+    }
+    return mood;
+  }
+  if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+    const rep = getRouletteRepForDevice(round.roulette, scoreKey);
+    if (rep) return "dance";
+  }
+  if ((round?.buzzedPlayerIds || []).includes(scoreKey)) return "buzz";
+  return "idle";
+}
+
+// Returns avatar HTML for a coop slot (1-based character number = slot+1).
+// Spritesheet moods (correct/wrong) render as stepped background divs that
+// freeze on the final frame; plain images render as <img>.
+function getCoopCharHtml(slot, mood = "idle", extraClass = "") {
+  const charNum = clamp(slot + 1, 1, 3);
+  const entry = coopCharUrls[charNum] || {};
+  const want = mood === "correct" || mood === "wrong" ? mood : mood === "buzz" || mood === "dance" ? mood : "base";
+  const url = entry[want] || entry.base;
+  if (!url) return "";
+  const cls = `coop-avatar coop-avatar-${want} ${extraClass}`.trim();
+  if ((want === "correct" || want === "wrong") && coopCharFrames[charNum][want] > 1) {
+    const frames = coopCharFrames[charNum][want];
+    return `<span class="${cls} coop-avatar-strip" style="background-image:url('${url}');--coop-frames:${frames}" role="img" aria-label="player ${charNum} ${want}"></span>`;
+  }
+  return `<img class="${cls}" src="${url}" alt="player ${charNum}" loading="lazy" />`;
 }
 
 function isBingoMode() {
@@ -662,8 +927,9 @@ async function cohostDispatch(fnName, ...args) {
   }
 }
 
-// =============================================================================
-// Authorization — check if a given player can buzz for a given option
+// Authorization — check if a given player can buzz for a given option.
+// playerId may be a legacy participant id or a coop composite key
+// (coop:{deviceId}:{slot}); all downstream bookkeeping uses the key as-is.
 // =============================================================================
 function canBuzz(playerId, option) {
   const round = getRound();
@@ -671,14 +937,24 @@ function canBuzz(playerId, option) {
   const settings = getSettings();
   const participants = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, controllerId);
-  if (playerId === controllerId) {
+  // Resolve coop composite keys to their owning device.
+  let deviceId = playerId;
+  let slot = 0;
+  let isCoopKey = false;
+  const parsed = parseCoopScoreKey(playerId);
+  if (parsed) {
+    deviceId = parsed.deviceId;
+    slot = parsed.slot;
+    isCoopKey = true;
+  }
+  if (deviceId === controllerId) {
     return false;
   }
   const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) {
+  if (Array.isArray(cohostIds) && cohostIds.includes(deviceId)) {
     return false;
   }
-  if (settings.teamModeEnabled && !getPlayerTeamColor(playerId, assignments)) {
+  if (settings.teamModeEnabled && !getPlayerTeamColor(deviceId, assignments)) {
     return false;
   }
   if (round.status !== ROUND_STATUSES.OPEN) {
@@ -698,13 +974,25 @@ function canBuzz(playerId, option) {
   if (!settings.rebuzzAllowed && round.buzzedPlayerIds.includes(playerId)) {
     return false;
   }
-  if (!settings.rebuzzAllowed && settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+  if (!settings.rebuzzAllowed && !isCoopMode(settings) && settings.teamModeEnabled && settings.teamScoringMode === "shared") {
     const teamMemberIds = getAllBuzzedTeamMemberIds(playerId, participants, assignments);
     if (teamMemberIds.some((memberId) => round.buzzedPlayerIds.includes(memberId))) {
       return false;
     }
   }
-  if (!isPlayerBuzzerEnabled(settings, playerId)) {
+  // Coopertition: validate the slot (range, frozen removals, per-slot mutes).
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(deviceId);
+    if (isCoopKey) {
+      if (slot < 0 || slot >= count) return false;
+      if (isCoopSlotFrozen(deviceId, slot)) return false;
+      if (isCoopSlotMuted(settings, deviceId, slot)) return false;
+    } else if (count > 1) {
+      // Multi-slot devices must buzz with an explicit coop key.
+      return false;
+    }
+  }
+  if (!isPlayerBuzzerEnabled(settings, deviceId)) {
     return false;
   }
   if (option !== undefined) {
@@ -812,10 +1100,12 @@ function getUiSignature() {
       closesAt: round.closesAt,
       remainingCs: round.remainingCs,
       winnerId: round.winnerId,
+      winnerCoopKey: round.winnerCoopKey,
       winnerTeam: round.winnerTeam,
       winnerOption: round.winnerOption,
       winnerAnswer: round.winnerAnswer,
       winnerName: round.winnerName,
+      coopControl: round.coopControl,
       buzzedPlayerIds: round.buzzedPlayerIds,
       roulette: round.roulette,
       screw: round.screw,
@@ -841,10 +1131,15 @@ showScoresToPlayers: settings.showScoresToPlayers,
       rouletteSinglePlayerTarget: settings.rouletteSinglePlayerTarget,
       teamModeEnabled: settings.teamModeEnabled,
       teamScoringMode: settings.teamScoringMode,
+      coopertitionEnabled: settings.coopertitionEnabled,
+      coopAllowEdit: settings.coopAllowEdit,
+      disabledCoopSlots: settings.disabledCoopSlots,
       bingoAlternateViewers: settings.bingoAlternateViewers,
       bingoLessRandom: settings.bingoLessRandom,
       snarkMode: settings.snarkMode,
     },
+    coopRosters: getCoopRosters(),
+    coopMoods: getCoopMoods(),
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
     pendingLogId,
@@ -865,6 +1160,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
         itemStates: b.itemStates,
         playerItems: b.playerItems,
         collectedCounts: b.collectedCounts,
+        coopLockout: b.coopLockout,
         winner: b.winner,
       };
     })(),
@@ -1006,6 +1302,41 @@ function getSelectedRouletteTarget(settings, players) {
   return players[randomIndex] || null;
 }
 
+// Coopertition pick-a-value: each group fields one rep — the slot that most
+// recently earned a correct buzz ruling (fallback slot 0). Stored per device.
+function getCoopLastCorrect() {
+  return getSafeState("coopLastCorrect", {});
+}
+
+function getCoopRepSlot(deviceId) {
+  const stored = Number((getCoopLastCorrect() || {})[deviceId]);
+  const count = getCoopSlotCount(deviceId);
+  if (Number.isInteger(stored) && stored >= 0 && stored < count && !isCoopSlotFrozen(deviceId, stored)) return stored;
+  return 0;
+}
+
+function getRouletteRepKeyForDevice(roulette, deviceId) {
+  const map = roulette?.repCoopKeys || {};
+  if (typeof map[deviceId] === "string" && map[deviceId]) return map[deviceId];
+  return getCoopScoreKey(deviceId, getCoopRepSlot(deviceId));
+}
+
+// Truthy when the given score key (or device id) is its device's rep for
+// this roulette phase. Used for dance faces + picker highlight.
+function getRouletteRepForDevice(roulette, scoreKeyOrDeviceId) {
+  if (!roulette) return null;
+  if (isCoopScoreKey(scoreKeyOrDeviceId)) {
+    const parsed = parseCoopScoreKey(scoreKeyOrDeviceId);
+    if (!parsed) return null;
+    const rep = getRouletteRepKeyForDevice(roulette, parsed.deviceId);
+    return rep === scoreKeyOrDeviceId ? rep : null;
+  }
+  if (typeof scoreKeyOrDeviceId === "string" && scoreKeyOrDeviceId) {
+    return getRouletteRepKeyForDevice(roulette, scoreKeyOrDeviceId);
+  }
+  return null;
+}
+
 // When all expected players have locked in, compute final value and close
 function maybeFinalizeRoulettePhase() {
   if (!isHost()) {
@@ -1027,6 +1358,9 @@ function maybeFinalizeRoulettePhase() {
   const settings = getSettings();
   const finalValue = clamp(getRouletteFinalValue(roulette), 1, roulette.ceiling || normalizeRouletteTopAmount(settings.rouletteTopAmount));
   const finishedAt = now();
+
+  // Leaving pick-a-value drops coop faces back to idle.
+  setState("coopMoods", {}, true);
 
   setState(
     "round",
@@ -1075,6 +1409,12 @@ function startRoulettePhase() {
     ? Math.max(1, Math.floor(topAmount / Math.max(1, players.length || 1)))
     : topAmount;
   const targetPlayer = getSelectedRouletteTarget(settings, players);
+  const repCoopKeys = {};
+  if (isCoopMode(settings)) {
+    players.forEach((player) => {
+      repCoopKeys[player.id] = getCoopScoreKey(player.id, getCoopRepSlot(player.id));
+    });
+  }
 
   if (players.length === 0) {
     setState(
@@ -1090,6 +1430,7 @@ function startRoulettePhase() {
         winnerOption: null,
         winnerAnswer: null,
         winnerName: null,
+        coopControl: null,
         roulette: {
           ...round.roulette,
           active: false,
@@ -1126,6 +1467,7 @@ function startRoulettePhase() {
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      coopControl: null,
       buzzedPlayerIds: [],
       buzzCounts: {},
       roulette: {
@@ -1137,6 +1479,7 @@ function startRoulettePhase() {
         seed,
         targetPlayerId: targetPlayer ? targetPlayer.id : null,
         targetPlayerName: targetPlayer ? getPlayerName(targetPlayer) : null,
+        repCoopKeys,
         selections: {},
         completedPlayerIds: [],
         finalValue: null,
@@ -1154,6 +1497,7 @@ function startRoulettePhase() {
     true,
   );
   setState("pendingLogId", null, true);
+  startRouletteAnimationLoop();
   render();
   return {
     ok: true,
@@ -1188,11 +1532,23 @@ function renderRoulettePanel(settings, round, mePlayer) {
   const completedLabel = expectedCount > 0
     ? getSnark("player.roulette.playersLocked", `${completedCount}/${expectedCount} players locked in.`, { completed: completedCount, expected: expectedCount })
     : getSnark("player.roulette.waitingPlayers", "Waiting for players.");
+  // Coopertition: telegraph this device's rep (last-correct slot) with dance/highlight.
+  let coopRepLine = "";
+  if (isCoopMode(settings) && !isControllerPlayer() && !isCohost()) {
+    const repKey = getRouletteRepKeyForDevice(roulette, mePlayer.id);
+    const repSlot = parseCoopScoreKey(repKey)?.slot ?? 0;
+    const repName = getCoopSlotName(mePlayer.id, repSlot, getPlayerName(mePlayer));
+    coopRepLine = `
+      <div class="coop-slot is-picker">
+        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round))}<strong>${escapeHtml(repName)}</strong><span class="muted">${getSnark("player.coop.repStopsShort", "stops for your group")}</span></div>
+      </div>`;
+  }
 
   return `
     <section class="card player-card roulette-card">
       <h2>${getSnark("player.roulette.title", "Pick a Value")}</h2>
       <p class="muted">${modeLabel} mode · Top amount ${roulette.topAmount || normalizeRouletteTopAmount(settings.rouletteTopAmount)} · Ceiling ${roulette.ceiling || 0}</p>
+      ${coopRepLine}
       <div class="roulette-display" aria-live="polite">
         <span class="roulette-value">${displayedValue}</span>
         <span class="roulette-label">${displayedLabel}</span>
@@ -1254,6 +1610,35 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 
   setState("scores", scores, true);
   setState("gameLog", updatedLog, true);
+
+  // Coopertition faces + last-correct rep tracking. Faces are multiple-choice
+  // only (option set); text corrects still advance the last-correct rep.
+  try {
+    if (isCoopMode(settings) && entry.type === "buzz" && nextAwarded > 0 && isCoopScoreKey(entryScoreKey)) {
+      const parsedKey = parseCoopScoreKey(entryScoreKey);
+      if (parsedKey) setState("coopLastCorrect", { ...getCoopLastCorrect(), [parsedKey.deviceId]: parsedKey.slot }, true);
+    }
+    if (isCoopMode(settings) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && isCoopScoreKey(entryScoreKey)) {
+      if (nextAwarded > 0) {
+        setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "correct" }, true);
+        // Correct plays once, then back to idle.
+        setTimeout(() => {
+          try {
+            if (!isHost()) return;
+            const cur = getCoopMoods();
+            if (cur?.[entryScoreKey] === "correct") {
+              const nextMoods = { ...cur };
+              delete nextMoods[entryScoreKey];
+              setState("coopMoods", nextMoods, true);
+              render();
+            }
+          } catch {}
+        }, 1500);
+      } else if (nextAwarded < 0) {
+        setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "wrong" }, true);
+      }
+    }
+  } catch {}
 
   const pendingId = getSafeState("pendingLogId", null);
   if (pendingId === logId) {
@@ -1399,21 +1784,30 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
 // =============================================================================
 // Record a buzz event into the game log
 // =============================================================================
-function pushBuzzLogEntry(player, { option = null, answerText = null }, timeLeftCs) {
+function pushBuzzLogEntry(player, { option = null, answerText = null, coopSlot = null, coopKey = null } = {}, timeLeftCs) {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const teamColor = getPlayerTeamColor(player.id, assignments);
-  const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  let scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  let displayName = getPlayerName(player);
+  if (isCoopMode(settings) && coopKey) {
+    scoreKey = coopKey;
+    displayName = coopSlot !== null && coopSlot !== undefined
+      ? getCoopSlotName(player.id, coopSlot, getPlayerName(player))
+      : getCoopGroupName(player.id, getPlayerName(player));
+  }
   const points = computeBasePoints(settings, timeLeftCs);
   const entry = {
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: "buzz",
     ts: now(),
     playerId: player.id,
-    playerName: getPlayerName(player),
+    playerName: displayName,
     teamColor,
     scoreKey,
-    scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
+    coopSlot,
+    coopKey,
+    scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : displayName,
     option,
     answerText,
     timeLeftCs,
@@ -1467,6 +1861,30 @@ function hostHandleBuzz(player, payload) {
   let validOption = null;
   let answerText = null;
 
+  // Coopertition: resolve the buzzing slot → composite score key.
+  let buzzKey = player.id;
+  let coopSlot = null;
+  const coopActive = isCoopMode(settings);
+  if (coopActive) {
+    const count = getCoopSlotCount(player.id);
+    if (count > 1) {
+      coopSlot = Number(payload?.coopSlot);
+      if (!Number.isInteger(coopSlot) || coopSlot < 0 || coopSlot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+      if (isCoopSlotFrozen(player.id, coopSlot) || isCoopSlotMuted(settings, player.id, coopSlot)) {
+        return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+      }
+    } else {
+      coopSlot = 0;
+    }
+    buzzKey = getCoopScoreKey(player.id, coopSlot);
+  }
+
+  if (settings.teamModeEnabled && !playerTeamColor) {
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  }
+
   if (usingTextEntry) {
     answerText = String(payload?.answerText || "").trim();
     if (!answerText) {
@@ -1475,6 +1893,25 @@ function hostHandleBuzz(player, payload) {
     if (answerText.length > 120) {
       return { ok: false, reason: getSnark("player.buzzer.answerTooLong", "Answer is too long.") };
     }
+  } else if (coopActive && (payload?.buzzIn === true || payload?.option === undefined || payload?.option === null)) {
+    // Jeopardy buzz-in (Q/B/P key or slot BUZZ button): claims control of the
+    // round for this slot without answering. No log entry — the later option
+    // pick is the scored buzz.
+    if (!canBuzz(buzzKey)) {
+      return { ok: false, reason: getSnark("player.buzzer.buzzNotAllowed", "Buzzers are not open, disabled, or you already buzzed.") };
+    }
+    if (round.coopControl) {
+      if (round.coopControl === buzzKey) {
+        const holderName = getCoopSlotName(player.id, coopSlot, getPlayerName(player));
+        return { ok: true, message: getSnark("player.coop.haveControl", `${holderName} has control — pick an answer.`, { player: holderName }) };
+      }
+      const holder = getCoopControlName(round);
+      return { ok: false, reason: getSnark("player.coop.hasControl", `${holder} has control.`, { player: holder }) };
+    }
+    const holderName = getCoopSlotName(player.id, coopSlot, getPlayerName(player));
+    setState("round", { ...round, coopControl: buzzKey }, true);
+    render();
+    return { ok: true, message: getSnark("player.coop.buzzedIn", `${holderName} buzzed in!`, { player: holderName }) };
   } else {
     validOption = Number(payload?.option);
     if (!Number.isInteger(validOption) || validOption < 1 || validOption > settings.optionCount) {
@@ -1482,38 +1919,56 @@ function hostHandleBuzz(player, payload) {
     }
   }
 
-  if (settings.teamModeEnabled && !playerTeamColor) {
-    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  // Jeopardy control: only the controlling slot may answer.
+  if (coopActive && round.coopControl && round.coopControl !== buzzKey) {
+    const holder = getCoopControlName(round);
+    return { ok: false, reason: getSnark("player.coop.hasControl", `${holder} has control.`, { player: holder }) };
   }
 
-  if (!canBuzz(player.id, validOption === null ? undefined : validOption)) {
+  if (!canBuzz(buzzKey, validOption === null ? undefined : validOption)) {
     return { ok: false, reason: getSnark("player.buzzer.buzzNotAllowed", "Buzzers are not open, disabled, or you already buzzed.") };
   }
 
   const timeLeftCs = round.screw.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
+  const buzzDisplayName = coopActive ? getCoopSlotName(player.id, coopSlot, getPlayerName(player)) : getPlayerName(player);
   const logEntry = pushBuzzLogEntry(
     player,
     {
       option: validOption,
       answerText,
+      coopSlot,
+      coopKey: coopActive ? buzzKey : null,
     },
     timeLeftCs,
   );
-  const newlyBuzzedIds = settings.teamModeEnabled && settings.teamScoringMode === "shared"
-    ? getAllBuzzedTeamMemberIds(player.id, players, assignments)
-    : [player.id];
+  const newlyBuzzedIds = coopActive
+    ? [buzzKey]
+    : settings.teamModeEnabled && settings.teamScoringMode === "shared"
+      ? getAllBuzzedTeamMemberIds(player.id, players, assignments)
+      : [player.id];
   const buzzedPlayerIds = [...new Set([...(round.buzzedPlayerIds || []), ...newlyBuzzedIds])];
+
+  // A fresh buzz clears any stored correct/wrong face for that slot.
+  if (coopActive) {
+    const moods = { ...getCoopMoods() };
+    if (moods[buzzKey] !== undefined) {
+      delete moods[buzzKey];
+      setState("coopMoods", moods, true);
+    }
+  }
 
   const nextRound = {
     ...round,
     buzzedPlayerIds,
+    // Answering releases Jeopardy control so the next slot can buzz in.
+    coopControl: coopActive ? null : round.coopControl,
     ...(validOption !== null && settings.rebuzzAllowed
       ? {
           buzzCounts: {
             ...(round.buzzCounts || {}),
-            [player.id]: {
-              ...((round.buzzCounts || {})[player.id] || {}),
-              [validOption]: getPlayerOptionBuzzCount(round, player.id, validOption) + 1,
+            [buzzKey]: {
+              ...((round.buzzCounts || {})[buzzKey] || {}),
+              [validOption]: getPlayerOptionBuzzCount(round, buzzKey, validOption) + 1,
             },
           },
         }
@@ -1530,10 +1985,11 @@ function hostHandleBuzz(player, payload) {
           ...nextRound,
           status: ROUND_STATUSES.LOCKED,
           winnerId: player.id,
+          winnerCoopKey: coopActive ? buzzKey : null,
           winnerTeam: playerTeamColor,
           winnerOption: validOption,
           winnerAnswer: answerText,
-          winnerName: getPlayerName(player),
+          winnerName: buzzDisplayName,
           remainingCs: timeLeftCs,
           screw: { ...round.screw, screwTimerMs: 0 },
         },
@@ -1571,10 +2027,11 @@ function hostHandleBuzz(player, payload) {
         ...nextRound,
         status: ROUND_STATUSES.LOCKED,
         winnerId: player.id,
+        winnerCoopKey: coopActive ? buzzKey : null,
         winnerTeam: playerTeamColor,
         winnerOption: validOption,
         winnerAnswer: answerText,
-        winnerName: getPlayerName(player),
+        winnerName: buzzDisplayName,
         remainingCs: timeLeftCs,
         screw: { ...round.screw, screwTimerMs: 0 },
       },
@@ -1613,11 +2070,11 @@ function hostHandleBuzz(player, payload) {
     ok: true,
     message: shouldLockAfterBuzz
       ? usingTextEntry
-        ? getSnark("player.buzzer.lockedInAnswer", `${getPlayerName(player)} locked in an answer.`, { player: getPlayerName(player) })
-        : getSnark("player.buzzer.lockedInOption", `${getPlayerName(player)} locked in option ${validOption}.`, { player: getPlayerName(player), option: validOption })
+        ? getSnark("player.buzzer.lockedInAnswer", `${buzzDisplayName} locked in an answer.`, { player: buzzDisplayName })
+        : getSnark("player.buzzer.lockedInOption", `${buzzDisplayName} locked in option ${validOption}.`, { player: buzzDisplayName, option: validOption })
       : usingTextEntry
-        ? getSnark("player.buzzer.submittedAnswer", `${getPlayerName(player)} submitted an answer.`, { player: getPlayerName(player) })
-        : getSnark("player.buzzer.buzzedOption", `${getPlayerName(player)} buzzed option ${validOption}.`, { player: getPlayerName(player), option: validOption }),
+        ? getSnark("player.buzzer.submittedAnswer", `${buzzDisplayName} submitted an answer.`, { player: buzzDisplayName })
+        : getSnark("player.buzzer.buzzedOption", `${buzzDisplayName} buzzed option ${validOption}.`, { player: buzzDisplayName, option: validOption }),
   };
 }
 
@@ -1678,6 +2135,18 @@ function openBuzzers() {
     render();
     return;
   }
+  // Coopertition without lock-after-buzz needs a pre-set answer so correct
+  // picks auto-award while the round stays open.
+  if (isCoopMode(settings) && !settings.lockAfterBuzz) {
+    const hasPreset = settings.inputMode === "text"
+      ? Boolean(String(round.correctAnswer || "").trim())
+      : Array.isArray(round.correctOptions) && round.correctOptions.length > 0;
+    if (!hasPreset) {
+      setBuzzNotice("Set a pre-set correct answer first — or enable lock-after-buzz — before opening buzzers.");
+      render();
+      return;
+    }
+  }
   const openedAt = now();
   const closesAt = openedAt + settings.timeOpen * 1000;
   setState(
@@ -1693,6 +2162,7 @@ function openBuzzers() {
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      coopControl: null,
       buzzedPlayerIds: [],
       buzzCounts: {},
       roulette: {
@@ -1741,6 +2211,7 @@ function closeBuzzers() {
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      coopControl: null,
       roulette: {
         ...round.roulette,
         active: false,
@@ -1817,7 +2288,8 @@ function setBingoTarget(index) {
   if (!isHost()) return;
   const bingo = getBingo();
   if (index < 0 || index >= bingo.items.length) return;
-  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0 }, true);
+  // A new target re-arms locked-out coop siblings.
+  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {} }, true);
   render();
 }
 
@@ -1903,8 +2375,33 @@ function handleBingoBuzz(player, payload) {
   if (settings.teamModeEnabled && !teamColor) {
     return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   }
-  const trackKey = getTeamTrackKey(player.id, settings, assignments);
-  const scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  // Coopertition: resolve the buzzing slot; siblings of a correct scorer wait
+  // for the next target.
+  let coopSlot = 0;
+  let trackKey = getTeamTrackKey(player.id, settings, assignments);
+  let scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  let buzzName = getPlayerName(player);
+  const coopActive = isCoopMode(settings);
+  if (coopActive) {
+    const count = getCoopSlotCount(player.id);
+    if (count > 1) {
+      coopSlot = Number(payload?.coopSlot);
+      if (!Number.isInteger(coopSlot) || coopSlot < 0 || coopSlot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+      if (isCoopSlotMuted(settings, player.id, coopSlot)) {
+        return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+      }
+    }
+    const myKey = getCoopScoreKey(player.id, coopSlot);
+    const lockout = bingo.coopLockout || {};
+    if (lockout[player.id] && lockout[player.id] !== myKey) {
+      return { ok: false, reason: getSnark("player.coop.bingoSiblingLocked", "Your teammate collected that one — wait for the next round.") };
+    }
+    trackKey = myKey;
+    scoreKey = myKey;
+    buzzName = getCoopSlotName(player.id, coopSlot, getPlayerName(player));
+  }
   if (!isBingoActiveViewer(bingo, payload?.litSlot, player.id, settings, assignments)) {
     return { ok: false, reason: getSnark("player.bingo.notYourTurn", "Not your turn — wait for your teammate to call the letter!") };
   }
@@ -1945,9 +2442,11 @@ function handleBingoBuzz(player, payload) {
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "bingo", ts: now(), playerId: player.id,
-      playerName: getPlayerName(player), teamColor,
+      playerName: coopActive ? buzzName : getPlayerName(player), teamColor,
       scoreKey,
-      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
+      coopSlot: coopActive ? coopSlot : null,
+      coopKey: coopActive ? scoreKey : null,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (coopActive ? buzzName : getPlayerName(player)),
       item: bingo.items[targetIndex],
       result: "correct", points: BINGO_CORRECT_POINTS,
     }], true);
@@ -1955,9 +2454,12 @@ function handleBingoBuzz(player, payload) {
     bingoCycleQueue = [];
     const settings = getSettings();
     const shouldStopCycling = !settings.bingoAllowMultipleCorrect;
+    // Coop sibling lockout: teammates of the scorer wait for the next target.
+    const nextLockout = coopActive ? { ...(bingo.coopLockout || {}), [player.id]: scoreKey } : bingo.coopLockout;
     setState("bingo", {
       ...bingo, playerItems: newPlayerItems,
       collectedCounts, winner, cycling: shouldStopCycling, currentLitIndex: -1, currentLitSlot: 0,
+      coopLockout: nextLockout,
     }, true);
     render();
     return { ok: true, message: getSnark("player.outcome.bingoCorrect", "Correct! +500") };
@@ -1969,9 +2471,11 @@ function handleBingoBuzz(player, payload) {
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "bingo", ts: now(), playerId: player.id,
-      playerName: getPlayerName(player), teamColor,
+      playerName: coopActive ? buzzName : getPlayerName(player), teamColor,
       scoreKey,
-      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : getPlayerName(player),
+      coopSlot: coopActive ? coopSlot : null,
+      coopKey: coopActive ? scoreKey : null,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (coopActive ? buzzName : getPlayerName(player)),
       item: bingo.items[observedIndex],
       result: "incorrect", points: BINGO_INCORRECT_POINTS,
     }], true);
@@ -1983,10 +2487,58 @@ function handleBingoBuzz(player, payload) {
 // =============================================================================
 // Dis or Dat — host-only game logic (no cycling, static questions)
 // =============================================================================
+// All live response tracks (coop-aware: one per slot; shared-team blocked in
+// coop so tracks are always per-slot there).
+function getDisOrDatTracks(settings = getSettings(), assignments = getTeamAssignments(), participants = null) {
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  if (!isCoopMode(settings)) {
+    return [...new Set(list.map((p) => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  }
+  const tracks = [];
+  list.forEach((p) => {
+    const count = getCoopSlotCount(p.id);
+    for (let slot = 0; slot < count; slot++) {
+      if (!isCoopSlotMuted(settings, p.id, slot)) tracks.push(getCoopScoreKey(p.id, slot));
+    }
+  });
+  return tracks;
+}
+
+// Lowest-scoring live individual (coop key) for timed one-play auto-pick.
+// Ties break by earliest-joined device, lowest slot.
+function getDisOrDatLowestCoopKey(settings = getSettings()) {
+  const scores = getScores();
+  const tracks = getDisOrDatTracks(settings);
+  let best = null;
+  let bestScore = Infinity;
+  tracks.forEach((key) => {
+    const s = Number(scores[key] || 0);
+    if (s < bestScore) {
+      bestScore = s;
+      best = key;
+    }
+  });
+  return best;
+}
+
+function getCoopKeyDisplayName(key, participants = currentParticipants()) {
+  const parsed = parseCoopScoreKey(key);
+  if (!parsed) {
+    const p = participants.find((pp) => pp.id === key);
+    return p ? getPlayerName(p) : key;
+  }
+  const group = getCoopGroupName(parsed.deviceId);
+  const sub = getCoopSlotName(parsed.deviceId, parsed.slot);
+  return group && sub !== group ? `${group} — ${sub}` : sub;
+}
+
 function startDisOrDat(mode, playerId) {
   if (!isHost()) return;
   const dd = getDisOrDat();
   if (dd.answers.some(a => a !== "dis" && a !== "dat" && a !== "both")) return;
+  const coopActive = isCoopMode();
   const isTimed = mode === "onePlayTimed" || mode === "allPlayTimed";
   const timedSeconds = dd.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
   setState("disordat", {
@@ -1994,7 +2546,8 @@ function startDisOrDat(mode, playerId) {
     active: true,
     phase: "playing",
     mode,
-    activePlayerId: mode === "onePlayTimed" ? playerId : null,
+    activePlayerId: mode === "onePlayTimed" ? (coopActive ? (parseCoopScoreKey(playerId)?.deviceId || playerId) : playerId) : null,
+    activeCoopKey: mode === "onePlayTimed" && coopActive ? playerId : null,
     pendingPick: false,
     timeEndsAt: isTimed ? now() + timedSeconds * 1000 : null,
     currentQuestion: 0,
@@ -2002,6 +2555,7 @@ function startDisOrDat(mode, playerId) {
     pointsEarned: {},
     jackBonus: {},
     finishedPlayerIds: [],
+    claims: {},
   }, true);
   render();
 }
@@ -2021,19 +2575,47 @@ function handleDisOrDatAnswer(player, payload) {
   }
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
-  const trackKey = getTeamTrackKey(player.id, settings, assignments);
-  const isSharedTeam = trackKey !== player.id;
+  const coopActive = isCoopMode(settings);
+  let trackKey = getTeamTrackKey(player.id, settings, assignments);
+  if (coopActive) {
+    const count = getCoopSlotCount(player.id);
+    let slot = 0;
+    if (count > 1) {
+      slot = Number(payload?.coopSlot);
+      if (!Number.isInteger(slot) || slot < 0 || slot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+      if (isCoopSlotFrozen(player.id, slot) || isCoopSlotMuted(settings, player.id, slot)) {
+        return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+      }
+    }
+    trackKey = getCoopScoreKey(player.id, slot);
+  }
+  const isSharedTeam = !coopActive && trackKey !== player.id;
   if (settings.teamModeEnabled && !getPlayerTeamColor(player.id, assignments)) {
     return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   }
   if (dd.mode === "onePlayTimed") {
-    const activeTrackKey = isSharedTeam ? getTeamTrackKey(dd.activePlayerId, settings, assignments) : dd.activePlayerId;
-    if (player.id !== dd.activePlayerId && trackKey !== activeTrackKey) {
-      return { ok: false, reason: getSnark("player.disdat.notActivePlayer", "You're not the active player.") };
+    if (coopActive) {
+      if (trackKey !== dd.activeCoopKey) {
+        return { ok: false, reason: getSnark("player.disdat.notActivePlayer", "You're not the active player.") };
+      }
+    } else {
+      const activeTrackKey = isSharedTeam ? getTeamTrackKey(dd.activePlayerId, settings, assignments) : dd.activePlayerId;
+      if (player.id !== dd.activePlayerId && trackKey !== activeTrackKey) {
+        return { ok: false, reason: getSnark("player.disdat.notActivePlayer", "You're not the active player.") };
+      }
     }
   }
   if (dd.mode === "allPlayHostPaced" && q !== dd.currentQuestion) {
     return { ok: false, reason: getSnark("player.disdat.notLiveYet", "That question isn't live yet.") };
+  }
+  // Coop host-paced is buzz-and-select: a slot must claim the question first.
+  if (coopActive && dd.mode === "allPlayHostPaced") {
+    const claims = dd.claims || {};
+    if (claims[q] !== trackKey) {
+      return { ok: false, reason: getSnark("player.disdat.claimFirst", "Buzz in to claim this question first.") };
+    }
   }
   if (dd.timeEndsAt && now() > dd.timeEndsAt) {
     return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
@@ -2082,7 +2664,9 @@ function handleDisOrDatAnswer(player, payload) {
   const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
   let activeTracks;
   if (dd.mode === "onePlayTimed") {
-    activeTracks = [getTeamTrackKey(dd.activePlayerId, settings, assignments)].filter(Boolean);
+    activeTracks = coopActive
+      ? [dd.activeCoopKey].filter(Boolean)
+      : [getTeamTrackKey(dd.activePlayerId, settings, assignments)].filter(Boolean);
   } else if (isSharedTeam) {
     activeTracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
   } else {
@@ -2098,6 +2682,44 @@ function handleDisOrDatAnswer(player, payload) {
   return { ok: true, message: isCorrect ? getSnark("player.outcome.disdatCorrect", "Correct! +300") : getSnark("player.outcome.disdatIncorrect", "Incorrect.") };
 }
 
+// Coop host-paced buzz-and-select: a slot buzzes in to claim the live
+// question, then only that slot's answers are accepted for it.
+function handleDisOrDatClaim(player, payload) {
+  const dd = getDisOrDat();
+  if (!dd.active || dd.phase !== "playing" || dd.mode !== "allPlayHostPaced") {
+    return { ok: false, reason: getSnark("player.disdat.notActive", "Dis or Dat isn't active.") };
+  }
+  const settings = getSettings();
+  if (!isCoopMode(settings)) {
+    return { ok: false, reason: getSnark("player.disdat.noClaimNeeded", "Just answer — no claim needed.") };
+  }
+  const q = Number(payload?.q);
+  if (!Number.isInteger(q) || q !== dd.currentQuestion) {
+    return { ok: false, reason: getSnark("player.disdat.notLiveYet", "That question isn't live yet.") };
+  }
+  const count = getCoopSlotCount(player.id);
+  let slot = 0;
+  if (count > 1) {
+    slot = Number(payload?.coopSlot);
+    if (!Number.isInteger(slot) || slot < 0 || slot >= count) {
+      return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+    }
+    if (isCoopSlotFrozen(player.id, slot) || isCoopSlotMuted(settings, player.id, slot)) {
+      return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+    }
+  }
+  const key = getCoopScoreKey(player.id, slot);
+  const claims = { ...(dd.claims || {}) };
+  if (claims[q] && claims[q] !== key) {
+    return { ok: false, reason: getSnark("player.disdat.alreadyClaimed", "That question is already claimed.") };
+  }
+  claims[q] = key;
+  setState("disordat", { ...dd, claims }, true);
+  render();
+  const name = getCoopSlotName(player.id, slot, getPlayerName(player));
+  return { ok: true, message: getSnark("player.disdat.claimed", `${name} claimed question ${q + 1}.`, { player: name, q: q + 1 }) };
+}
+
 function nextDisOrDatQuestion() {
   if (!isHost()) return;
   const dd = getDisOrDat();
@@ -2109,7 +2731,7 @@ function nextDisOrDatQuestion() {
   const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
-  const tracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  const tracks = getDisOrDatTracks(settings, assignments, participants);
   for (const track of tracks) {
     const resps = nextResponses[track] || [];
     if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
@@ -2140,7 +2762,7 @@ function finalizeDisOrDat() {
 
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
-  const tracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  const tracks = getDisOrDatTracks(settings, assignments, participants);
 
   let responses = dd.responses || {};
   if (isTimed) {
@@ -2180,20 +2802,25 @@ function finalizeDisOrDat() {
     const bonus = dd.jackBonus[track] || 0;
     const total = base - penalty + bonus;
     const isTeamTrack = TEAM_COLORS.includes(track);
-    const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
-    const teamColor = isTeamTrack ? track : null;
-    const scoreKey = rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : track;
+    const parsedTrack = parseCoopScoreKey(track);
+    const rep = parsedTrack
+      ? participants.find((p) => p.id === parsedTrack.deviceId) || null
+      : participants.find((p) => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const teamColor = isTeamTrack ? track : (rep ? getPlayerTeamColor(rep.id, assignments) : null);
+    const scoreKey = parsedTrack ? track : (rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : track);
     scores[scoreKey] = Number(scores[scoreKey] || 0) + total;
     const missedText = missingCount > 0 ? `, ${missingCount} missed (-${penalty})` : "";
+    const trackDisplayName = parsedTrack ? getCoopKeyDisplayName(track, participants) : (rep ? getPlayerName(rep) : track);
     log.push({
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "disordat",
       ts: now(),
       playerId: rep?.id || track,
-      playerName: rep ? getPlayerName(rep) : track,
+      playerName: trackDisplayName,
       teamColor,
       scoreKey,
-      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (rep ? getPlayerName(rep) : track),
+      coopKey: parsedTrack ? track : null,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : trackDisplayName,
       option: null,
       answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedText}${isTimed && bonus ? ` + ${bonus} bonus` : ""} = ${total}`,
       timeLeftCs: 0,
@@ -2226,6 +2853,7 @@ function resetDisOrDat() {
     phase: "playing",
     mode: null,
     activePlayerId: null,
+    activeCoopKey: null,
     pendingPick: false,
     timeEndsAt: null,
     currentQuestion: 0,
@@ -2233,6 +2861,7 @@ function resetDisOrDat() {
     pointsEarned: {},
     jackBonus: {},
     finishedPlayerIds: [],
+    claims: {},
   }, true);
   render();
 }
@@ -2645,6 +3274,7 @@ function resetRound() {
     true,
   );
   setState("pendingLogId", null, true);
+  setState("coopMoods", {}, true);
   render();
 }
 
@@ -3013,12 +3643,96 @@ function hostTick() {
         winnerOption: null,
         winnerAnswer: null,
         winnerName: null,
+        coopControl: null,
       },
       true,
     );
     setState("pendingLogId", null, true);
     render();
   }
+}
+
+// =============================================================================
+// Coopertition roster + score migration (host only)
+// =============================================================================
+// Enabling coop carries each device's legacy pid score into its slot 0 so no
+// points are lost. Disabling folds every coop slot back into the pid score.
+function migrateScoresForCoopToggle(enable) {
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const scores = { ...getScores() };
+  const rosters = { ...getCoopRosters() };
+  players.forEach((player) => {
+    if (player.id === controllerId || (Array.isArray(cohostIds) && cohostIds.includes(player.id))) return;
+    if (enable) {
+      if (!rosters[player.id] || !Array.isArray(rosters[player.id].slots)) {
+        const name = getPlayerName(player);
+        rosters[player.id] = { group: name, slots: [name] };
+      }
+      const count = clamp(rosters[player.id].slots.length, 1, 3);
+      const slot0Key = count <= 1 ? player.id : `coop:${player.id}:0`;
+      if (slot0Key !== player.id) {
+        scores[slot0Key] = Number(scores[slot0Key] || 0) + Number(scores[player.id] || 0);
+        delete scores[player.id];
+      }
+    } else {
+      let total = Number(scores[player.id] || 0);
+      for (let slot = 0; slot < 3; slot++) {
+        const key = `coop:${player.id}:${slot}`;
+        total += Number(scores[key] || 0);
+        delete scores[key];
+      }
+      scores[player.id] = total;
+    }
+  });
+  setState("scores", scores, true);
+  setState("coopRosters", rosters, true);
+}
+
+// Player-facing: set/confirm this device's group roster while coop is on.
+function handleCoopRoster(senderPlayer, payload) {
+  if (!isCoopMode()) {
+    return { ok: false, reason: "Coopertition mode is not enabled." };
+  }
+  if (senderPlayer.id === getControllerId()) {
+    return { ok: false, reason: "The host does not need a group." };
+  }
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id)) {
+    return { ok: false, reason: "Co-hosts do not need a group." };
+  }
+  const existing = getCoopRoster(senderPlayer.id);
+  const settings = getSettings();
+  if (existing && !settings.coopAllowEdit) {
+    return { ok: false, reason: "Group editing is locked. Ask the host to allow edits." };
+  }
+  const count = clamp(Number(payload?.count) || 1, 1, 3);
+  const group = String(payload?.group || "").trim().slice(0, 32) || getPlayerName(senderPlayer);
+  const rawNames = Array.isArray(payload?.names) ? payload.names : [];
+  const slots = [];
+  for (let i = 0; i < count; i++) {
+    if (count === 1) {
+      slots.push(group);
+    } else {
+      slots.push(String(rawNames[i] || "").trim().slice(0, 32) || `Player ${i + 1}`);
+    }
+  }
+  const rosters = { ...getCoopRosters(), [senderPlayer.id]: { group, slots } };
+  setState("coopRosters", rosters, true);
+  // Seed zero scores so new slots appear on the board immediately.
+  const scores = { ...getScores() };
+  let touched = false;
+  slots.forEach((_, slot) => {
+    const key = count <= 1 ? senderPlayer.id : `coop:${senderPlayer.id}:${slot}`;
+    if (scores[key] === undefined) {
+      scores[key] = 0;
+      touched = true;
+    }
+  });
+  if (touched) setState("scores", scores, true);
+  render();
+  return { ok: true, message: count <= 1 ? `Group "${group}" confirmed.` : `Group "${group}" set with ${count} players.` };
 }
 
 // =============================================================================
@@ -3042,8 +3756,68 @@ function setHostSetting(key, value) {
   if (key === "scoringMode" && value === "roulette") {
     next.valueSelectionMethod = "roulette";
   }
+  // --- Coopertition gates: JACK, screws, rebuzz, small option counts and
+  // shared-team scoring are all off limits while coop is on. ---
+  if (isCoopMode(next)) {
+    if (key === "scoringMode" && value === "jack") {
+      setBuzzNotice("JACK scoring is disabled in coopertition mode.");
+      render();
+      return;
+    }
+    if (key === "allowScrewing" && value === true) {
+      setBuzzNotice("Screws are disabled in coopertition mode.");
+      render();
+      return;
+    }
+    if (key === "rebuzzAllowed" && value === true) {
+      setBuzzNotice("Re-buzz is disabled in coopertition mode (one response per player).");
+      render();
+      return;
+    }
+    if (key === "teamScoringMode" && value === "shared") {
+      setBuzzNotice("Shared team scoring is disabled in coopertition mode (alliances only).");
+      render();
+      return;
+    }
+    if (key === "inputMode" && (value === "fibbage" || value === "bingo" || value === "wendithapn" || value === "disordat")) {
+      setBuzzNotice("That mode is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+      render();
+      return;
+    }
+  }
   if (key === "optionCount") {
-    next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
+    if (isCoopMode(next) && Number(value) < 4) {
+      next.optionCount = 4;
+      next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, 4);
+    } else {
+      next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
+    }
+  }
+  if (key === "coopertitionEnabled") {
+    if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text") {
+      setBuzzNotice("Switch modes from buzzer mode: return to buttons/text before enabling coopertition.");
+      render();
+      return;
+    }
+    next.coopertitionEnabled = Boolean(value);
+    if (next.coopertitionEnabled) {
+      // Coop locks: screws off, one response per player, uniform-style scoring, alliances only.
+      next.allowScrewing = false;
+      next.rebuzzAllowed = false;
+      next.maxBuzzesPerOption = 1;
+      if (next.scoringMode === "jack") {
+        next.scoringMode = "uniform";
+        next.valueSelectionMethod = "standard";
+      }
+      if (next.teamScoringMode === "shared") next.teamScoringMode = "alliance";
+      if (Number(next.optionCount) < 4) {
+        next.optionCount = 4;
+        next.disabledOptions = normalizeDisabledOptions(next.disabledOptions, 4);
+      }
+      migrateScoresForCoopToggle(true);
+    } else {
+      migrateScoresForCoopToggle(false);
+    }
   }
   if (key === "inputMode") {
     if (value !== "bingo" && value !== "wendithapn") {
@@ -3058,7 +3832,7 @@ function setHostSetting(key, value) {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
         remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
@@ -3071,7 +3845,7 @@ function setHostSetting(key, value) {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
         remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
@@ -3098,7 +3872,7 @@ function setHostSetting(key, value) {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
         remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
         roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
@@ -3222,6 +3996,28 @@ function togglePlayerBuzzer(playerId) {
     {
       ...settings,
       disabledPlayerIds: nextDisabled,
+    },
+    true,
+  );
+  render();
+}
+
+// Host mutes/unmutes a single coop slot (whole devices mute via togglePlayerBuzzer).
+function toggleCoopSlot(coopKey) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "toggleCoopSlot", args: [coopKey] }, RPC.Mode.HOST);
+    return;
+  }
+  const parsed = parseCoopScoreKey(coopKey);
+  if (!parsed) return;
+  const settings = getSettings();
+  const current = normalizeDisabledCoopSlots(settings.disabledCoopSlots, currentParticipants());
+  const next = current.includes(coopKey) ? current.filter((k) => k !== coopKey) : [...current, coopKey];
+  setState(
+    "settings",
+    {
+      ...settings,
+      disabledCoopSlots: next,
     },
     true,
   );
@@ -3441,10 +4237,18 @@ function ensureHostInit() {
         ...DEFAULT_SETTINGS,
         teamModeEnabled,
         teamScoringMode,
+        coopertitionEnabled: Boolean(hostPrejoinCoopSetting),
       },
       true,
     );
   }
+  // Coop + shared-team scoring can never coexist (alliances only).
+  try {
+    const s = getSettings();
+    if (s.coopertitionEnabled && s.teamScoringMode === "shared") {
+      setState("settings", { ...s, teamScoringMode: "alliance" }, true);
+    }
+  } catch {}
   if (!getState("round")) {
     resetRound();
   }
@@ -3462,6 +4266,26 @@ function ensureHostInit() {
   }
   if (!getState("teamSelect")) {
     setState("teamSelect", freshTeamSelect(), true);
+  }
+  if (!getState("coopRosters")) {
+    setState("coopRosters", {}, true);
+  } else {
+    // Prune rosters for devices that left the room.
+    const activeIds = new Set(currentParticipants().map((p) => p.id));
+    const rosters = getCoopRosters();
+    const pruned = {};
+    Object.entries(rosters || {}).forEach(([id, roster]) => {
+      if (activeIds.has(id)) pruned[id] = roster;
+    });
+    if (Object.keys(pruned).length !== Object.keys(rosters || {}).length) {
+      setState("coopRosters", pruned, true);
+    }
+  }
+  if (!getState("coopMoods")) {
+    setState("coopMoods", {}, true);
+  }
+  if (!getState("coopLastCorrect")) {
+    setState("coopLastCorrect", {}, true);
   }
   if (!getState("fibbage")) {
     setState("fibbage", freshFibbageState(), true);
@@ -3598,11 +4422,10 @@ function renderBingoHostPanel(settings, players) {
         const count = (bingo.collectedCounts?.[p.id] || 0);
         return `<div><strong>${escapeHtml(getPlayerName(p))}</strong>: ${collected || "none"} (${count}/${items.length})</div>`;
       }).join("");
-  const winnerLabel = bingo.winner
-    ? TEAM_COLORS.includes(bingo.winner)
-      ? `Team ${bingo.winner}`
-      : (players.find(p => p.id === bingo.winner) ? escapeHtml(getPlayerName(players.find(p => p.id === bingo.winner))) : null)
-    : null;
+  const winnerLabel = (() => {
+    const raw = getCoopBingoWinnerLabel(bingo.winner, players);
+    return raw ? escapeHtml(raw) : null;
+  })();
   return `
     <section class="card host-panel bingo-host-panel">
       <h2>${isWen ? "Wen Dit Happn" : "Bingo"} — Active</h2>
@@ -3650,30 +4473,68 @@ function renderBingoPlayerPanel(settings, mePlayer) {
     return `<span class="${cls}">${item}</span>`;
   }).join("");
   const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isCohost() && activeViewer;
+  const coopActive = isCoopMode(settings);
   const waitHint = bingo.active && bingo.cycling && settings.bingoAlternateViewers && isSharedTeam && !activeViewer
     ? `<p class="muted bingo-wait-hint">${getSnark("player.bingo.waitForTeammate", "Wait for your teammate to call the letter!")}</p>`
     : "";
   const notice = getRecentBuzzNotice();
   const scores = getScores();
-  const myScore = scores[getScoreKeyForPlayer(mePlayer.id, settings, assignments)] || 0;
-  const winnerLabel = bingo.winner
-    ? TEAM_COLORS.includes(bingo.winner)
-      ? `Team ${bingo.winner}`
-      : (currentParticipants().find(p => p.id === bingo.winner) ? escapeHtml(getPlayerName(currentParticipants().find(p => p.id === bingo.winner))) : null)
-    : null;
+  const myScore = coopActive
+    ? getCoopGroupTotal(mePlayer.id, scores)
+    : scores[getScoreKeyForPlayer(mePlayer.id, settings, assignments)] || 0;
+  const winnerLabel = (() => {
+    const raw = getCoopBingoWinnerLabel(bingo.winner, currentParticipants());
+    return raw ? escapeHtml(raw) : null;
+  })();
   return `
     <section class="card player-card bingo-player-card">
       <h2>${isWen ? "Wen Dit Happn" : "Bingo"} ${teamPill}</h2>
       ${isWen ? "" : `<p class="muted">${getSnark("player.bingo.collectedLabel", "Collected")}: ${collected.length}/${items.length}</p>`}
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
+      ${coopActive && !isControllerPlayer() && !isCohost() ? renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz) : `
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
         ${waitHint}
         ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
-      </div>
+      </div>`}
       <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: `<strong>${myScore}</strong>` })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
     </section>`;
+}
+
+// Coop bingo buzz row — one BUZZ button per live slot with its own name, key
+// hint and collected count. Siblings of a correct scorer stay locked until
+// the host sets the next target.
+function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz) {
+  const deviceId = mePlayer.id;
+  const count = getCoopSlotCount(deviceId);
+  const lockout = bingo.coopLockout || {};
+  const cols = [];
+  for (let slot = 0; slot < count; slot++) {
+    const key = getCoopScoreKey(deviceId, slot);
+    const name = getCoopSlotName(deviceId, slot);
+    const hint = getCoopKeyHint(slot, count);
+    const collected = ((bingo.playerItems || {})[key] || []).length;
+    const locked = lockout[deviceId] && lockout[deviceId] !== key;
+    const muted = isCoopSlotMuted(settings, deviceId, slot);
+    const off = !canBuzz || !activeViewer || locked || muted;
+    cols.push(`
+      <div class="coop-slot${locked ? " is-locked" : ""}">
+        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()))}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
+        <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : ""}</p>
+        <button type="button" class="bingo-buzz-btn" data-bingo-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
+      </div>`);
+  }
+  return `<div class="bingo-buzz-area"><div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div></div>`;
+}
+
+function getCoopBingoWinnerLabel(winner, players) {
+  if (!winner) return null;
+  if (TEAM_COLORS.includes(winner)) return `Team ${winner}`;
+  const parsed = parseCoopScoreKey(winner);
+  if (parsed) return getCoopSlotName(parsed.deviceId, parsed.slot);
+  const found = players.find((p) => p.id === winner);
+  return found ? getPlayerName(found) : null;
 }
 
 function renderBingoAudienceDisplay(settings, players) {
@@ -3711,6 +4572,23 @@ function renderBingoAudienceDisplay(settings, players) {
         const names = members.map(m => escapeHtml(getPlayerName(m))).join(", ");
         return `<li><span class="team-pill team-${teamColor}">${teamColor}</span> <small>(${names})</small> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
       }).filter(Boolean).join("");
+  } else if (isCoopMode(settings)) {
+    const entries = [];
+    visible.forEach((p) => {
+      const count = getCoopSlotCount(p.id);
+      for (let slot = 0; slot < count; slot++) {
+        const key = getCoopScoreKey(p.id, slot);
+        entries.push({
+          label: `${escapeHtml(getCoopGroupName(p.id, getPlayerName(p)))} — ${escapeHtml(getCoopSlotName(p.id, slot))}`,
+          c: (bingo.collectedCounts?.[key] || 0),
+          s: scores[key] || 0,
+        });
+      }
+    });
+    entries.sort((a, b) => isWen ? b.s - a.s : b.c - a.c);
+    standings = entries.map(({ label, c, s }) => {
+      return `<li><strong>${label}</strong> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
+    }).join("");
   } else {
     const sorted = visible
       .sort((a, b) => {
@@ -3723,11 +4601,10 @@ function renderBingoAudienceDisplay(settings, players) {
       return `<li><strong>${escapeHtml(getPlayerName(p))}</strong> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
     }).join("");
   }
-  const winnerLabel = bingo.winner
-    ? TEAM_COLORS.includes(bingo.winner)
-      ? `Team ${bingo.winner}`
-      : (players.find(p => p.id === bingo.winner) ? escapeHtml(getPlayerName(players.find(p => p.id === bingo.winner))) : null)
-    : null;
+  const winnerLabel = (() => {
+    const raw = getCoopBingoWinnerLabel(bingo.winner, players);
+    return raw ? escapeHtml(raw) : null;
+  })();
   return `
     <main class="layout audience-layout" data-bingo-active="true">
       <header class="hero audience-hero">
@@ -3774,7 +4651,16 @@ function renderDisOrDatHostPanel(settings, players) {
         </div>
       `;
     }).join("");
-    const pickButtons = isSharedTeam
+    // Coopertition timed one-play: the lowest-scoring individual is auto-picked
+    // (host may override by picking any sub-player below).
+    const coopActive = isCoopMode(settings);
+    const autoPickKey = coopActive ? getDisOrDatLowestCoopKey(settings) : null;
+    const pickButtons = coopActive
+      ? getDisOrDatTracks(settings, assignments, nonController).map((key) => {
+          const auto = key === autoPickKey ? " is-auto" : "";
+          return `<button type="button" class="primary-action${auto}" data-disordat-pick-player="${escapeHtml(key)}">${escapeHtml(getCoopKeyDisplayName(key, nonController))}${auto ? " (last place)" : ""}</button>`;
+        }).join("") || '<p class="muted">No players in the room yet.</p>'
+      : isSharedTeam
       ? TEAM_COLORS.map(teamColor => {
           const members = getTeamMembers(teamColor, players, assignments);
           if (members.length === 0) return "";
@@ -3824,10 +4710,11 @@ function renderDisOrDatHostPanel(settings, players) {
     `;
   }
 
+  const coopActivePanel = isCoopMode(settings);
   const activeTrack = dd.mode === "onePlayTimed"
-    ? getTeamTrackKey(dd.activePlayerId, settings, assignments)
+    ? (coopActivePanel ? dd.activeCoopKey : getTeamTrackKey(dd.activePlayerId, settings, assignments))
     : null;
-  const trackRows = (activeTrack ? [activeTrack] : [...new Set(nonController.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))])
+  const trackRows = (activeTrack ? [activeTrack] : getDisOrDatTracks(settings, assignments, nonController))
     .map(track => {
       const resps = dd.responses[track] || [];
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
@@ -3838,9 +4725,11 @@ function renderDisOrDatHostPanel(settings, players) {
       const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
       const total = base - penalty + bonus;
       const rep = nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
-      const label = TEAM_COLORS.includes(track)
-        ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
-        : escapeHtml(getPlayerName(rep) || track);
+      const label = coopActivePanel
+        ? escapeHtml(getCoopKeyDisplayName(track, nonController))
+        : TEAM_COLORS.includes(track)
+          ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
+          : escapeHtml(getPlayerName(rep) || track);
       return { track, correctCount, base, bonus, total, label };
     })
     .sort((a, b) => b.total - a.total);
@@ -3872,12 +4761,16 @@ function renderDisOrDatHostPanel(settings, players) {
     const answeredCount = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
     return `<div><strong>${label}</strong>: ${answeredCount}/${DIS_OR_DAT_QUESTION_COUNT} answered, ${correctCount} correct${isTimed ? `, ${bonus} bonus` : ""} — ${total} pts</div>`;
   }).join("");
-  const activePlayer = trackRows.length > 0 && dd.mode === "onePlayTimed"
+  const activePlayer = trackRows.length > 0 && dd.mode === "onePlayTimed" && !coopActivePanel
     ? nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === trackRows[0].track)
     : null;
-  const activeLabel = dd.mode === "onePlayTimed" && trackRows.length > 0 && TEAM_COLORS.includes(trackRows[0].track)
-    ? `Team <strong>${escapeHtml(trackRows[0].track)}</strong>`
-    : activePlayer ? `Player: <strong>${escapeHtml(getPlayerName(activePlayer))}</strong>` : "";
+  const activeLabel = dd.mode === "onePlayTimed" && trackRows.length > 0
+    ? (coopActivePanel
+        ? `Player: <strong>${escapeHtml(getCoopKeyDisplayName(trackRows[0].track, nonController))}</strong>`
+        : TEAM_COLORS.includes(trackRows[0].track)
+          ? `Team <strong>${escapeHtml(trackRows[0].track)}</strong>`
+          : activePlayer ? `Player: <strong>${escapeHtml(getPlayerName(activePlayer))}</strong>` : "")
+    : "";
 
   return `
     <section class="card host-panel bingo-host-panel">
@@ -3902,6 +4795,10 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
 
   if (!dd.active) {
     return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${getSnark("player.disdat.waitingHost", "Waiting for the host to start...")}</p></section>`;
+  }
+
+  if (isCoopMode(settings) && !isControllerPlayer() && !isCohost()) {
+    return renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePlay);
   }
 
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -3992,6 +4889,127 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
       ${body}
     </section>
   `;
+}
+
+// Coop Dis or Dat player panel. Timed one-play is answered by the picked slot
+// only; host-paced is buzz-and-select per slot; timed all-play gives every
+// slot its own diamond.
+function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePlay) {
+  const deviceId = mePlayer.id;
+  const count = getCoopSlotCount(deviceId);
+  const group = getCoopGroupName(deviceId, getPlayerName(mePlayer));
+  const head = `<h2>Dis or Dat — ${escapeHtml(group)}</h2>
+    <div class="disordat-labels"><span class="dis">${escapeHtml(dd.disLabel || "Dis")}</span> or <span class="dat">${escapeHtml(dd.datLabel || "Dat")}</span></div>`;
+
+  const diamondFor = (slot, q) => {
+    const key = getCoopScoreKey(deviceId, slot);
+    const myResponses = dd.responses[key] || [];
+    const bothShown = dd.answers.some((a) => a === "both");
+    const myAnswer = myResponses[q];
+    const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
+    const isCorrect = answered && myAnswer === dd.answers[q];
+    const btn = (value, pos, label) => {
+      const chosen = myAnswer === value;
+      const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+      const chosenCls = chosen ? " is-chosen" : "";
+      return `<button type="button" class="disordat-answer-btn ${pos}${resultCls}${chosenCls}" data-disordat-answer data-q="${q}" data-answer="${value}" data-coop-slot="${slot}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+    };
+    return `
+      <div class="abxy-diamond disordat-diamond">
+        ${btn("dis", "pos-x", dd.disLabel || "Dis")}
+        ${btn("dat", "pos-b", dd.datLabel || "Dat")}
+        ${bothShown ? btn("both", "pos-a", "Both") : ""}
+        <div class="diamond-center disordat-diamond-center">${answered ? (isCorrect ? "✓" : "✗") : `Q${q + 1}`}</div>
+      </div>`;
+  };
+
+  const resultsFor = (slot) => {
+    const key = getCoopScoreKey(deviceId, slot);
+    const myResponses = dd.responses[key] || [];
+    const correctCount = myResponses.filter((a, i) => a === dd.answers[i]).length;
+    const answered = myResponses.filter((a) => a === "dis" || a === "dat" || a === "both").length;
+    const missing = DIS_OR_DAT_QUESTION_COUNT - answered;
+    const points = dd.pointsEarned[key] || 0;
+    const bonus = dd.jackBonus[key] || 0;
+    const total = points - missing * DIS_OR_DAT_CORRECT_POINTS + bonus;
+    return `<div class="coop-slot"><div class="coop-slot-head"><strong>${escapeHtml(getCoopSlotName(deviceId, slot))}</strong></div>
+      <p class="muted">${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct = <strong>${total}</strong> pts</p></div>`;
+  };
+
+  if (dd.phase === "results") {
+    const cols = [];
+    for (let slot = 0; slot < count; slot++) cols.push(resultsFor(slot));
+    return `<section class="card player-card disordat-player-card">${head}
+      <h3>${getSnark("player.disdat.resultsTitle", "Results")}</h3>
+      <div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div>
+      <p class="muted">${getSnark("player.disdat.waitingHostContinue", "Waiting for the host to continue...")}</p></section>`;
+  }
+
+  if (isOnePlay) {
+    const myKeys = [];
+    for (let slot = 0; slot < count; slot++) myKeys.push(getCoopScoreKey(deviceId, slot));
+    if (!myKeys.includes(dd.activeCoopKey)) {
+      const activeLabel = dd.activeCoopKey ? escapeHtml(getCoopKeyDisplayName(dd.activeCoopKey)) : "A player";
+      return `<section class="card player-card">${head}<p class="muted">${getSnark("player.disdat.watchPlayer", `${activeLabel} is playing this round. Sit back and watch!`, { player: activeLabel })}</p></section>`;
+    }
+    const slot = parseCoopScoreKey(dd.activeCoopKey)?.slot ?? 0;
+    const key = getCoopScoreKey(deviceId, slot);
+    const myResponses = dd.responses[key] || [];
+    const answeredCount = myResponses.filter((a) => a === "dis" || a === "dat" || a === "both").length;
+    const answeredAll = answeredCount >= DIS_OR_DAT_QUESTION_COUNT;
+    const revealShowing = answeredCount > 0 && now() < disOrDatRevealUntil;
+    const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
+    return `<section class="card player-card disordat-player-card">${head}
+      <p class="muted">${escapeHtml(getCoopSlotName(deviceId, slot))} is playing — <span data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</span> left</p>
+      <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : ""}</div>
+      ${answeredAll && !revealShowing ? `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>` : ""}</section>`;
+  }
+
+  if (!isTimed) {
+    // Host-paced buzz-and-select.
+    const q = dd.currentQuestion;
+    const claims = dd.claims || {};
+    const myClaimSlot = (() => {
+      for (let slot = 0; slot < count; slot++) {
+        if (claims[q] === getCoopScoreKey(deviceId, slot)) return slot;
+      }
+      return null;
+    })();
+    if (myClaimSlot !== null) {
+      return `<section class="card player-card disordat-player-card">${head}
+        <p class="muted">${getSnark("player.disdat.questionHostPaced", `Question ${q + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.`, { current: q + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>
+        <p class="muted">${escapeHtml(getCoopSlotName(deviceId, myClaimSlot))} claimed Q${q + 1} — answer now.</p>
+        <div class="disordat-diamond-wrap">${diamondFor(myClaimSlot, q)}</div></section>`;
+    }
+    if (claims[q]) {
+      const claimLabel = escapeHtml(getCoopKeyDisplayName(claims[q]));
+      return `<section class="card player-card">${head}<p class="muted">${getSnark("player.disdat.claimedWait", `${claimLabel} claimed this question.`, { player: claimLabel })}</p></section>`;
+    }
+    const claimBtns = [];
+    for (let slot = 0; slot < count; slot++) {
+      if (isCoopSlotMuted(settings, deviceId, slot)) continue;
+      claimBtns.push(`<button type="button" class="bingo-buzz-btn" data-disordat-claim data-q="${q}" data-coop-slot="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count)}</kbd></button>`);
+    }
+    return `<section class="card player-card disordat-player-card">${head}
+      <p class="muted">${getSnark("player.disdat.claimPrompt", `Question ${q + 1}: buzz in to claim it!`, { current: q + 1 })}</p>
+      <div class="coop-buzz-row coop-buzz-${count}">${claimBtns.map((b) => `<div class="coop-slot">${b}</div>`).join("")}</div></section>`;
+  }
+
+  // Timed all-play: every slot answers its own track.
+  const cols = [];
+  for (let slot = 0; slot < count; slot++) {
+    const key = getCoopScoreKey(deviceId, slot);
+    const myResponses = dd.responses[key] || [];
+    const answeredCount = myResponses.filter((a) => a === "dis" || a === "dat" || a === "both").length;
+    const answeredAll = answeredCount >= DIS_OR_DAT_QUESTION_COUNT;
+    const revealShowing = answeredCount > 0 && now() < disOrDatRevealUntil;
+    const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
+    cols.push(`<div class="coop-slot"><div class="coop-slot-head"><strong>${escapeHtml(getCoopSlotName(deviceId, slot))}</strong><kbd>${getCoopKeyHint(slot, count)}</kbd></div>
+      <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>`}</div></div>`);
+  }
+  return `<section class="card player-card disordat-player-card">${head}
+    <div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+    <div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div></section>`;
 }
 
 function renderDisOrDatAudienceDisplay(settings, players) {
@@ -4602,10 +5620,259 @@ function renderTeamSelectAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
+// Coopertition player area — group setup gate, per-slot buzzers, shared text
+// box, horizontal personal score strip. Slot order left-to-right: Q | B | P.
+// =============================================================================
+// Returns a blocking card (setup / mobile) when the device cannot play yet,
+// otherwise null so the caller falls through to the mode-specific panel.
+function renderCoopGate(settings, mePlayer) {
+  if (!isCoopMode(settings)) return null;
+  const roster = getMyCoopRoster();
+  if (!roster || coopEditing) return renderCoopSetupCard(settings, mePlayer, roster);
+  const count = getCoopSlotCount(mePlayer.id);
+  if (count > 1 && isMobileDevice()) {
+    return `
+      <section class="card player-card coop-blocked-card">
+        <h2>${getSnark("player.coop.mobileBlockedTitle", "Desktop play required")}</h2>
+        <p class="muted">${getSnark("player.coop.mobileBlockedBody", "Groups of 2–3 need a keyboard (Q/B/P). Switch this device to 1 player or join from a computer.")}</p>
+        <div class="host-actions"><button type="button" data-coop-edit>${getSnark("player.coop.editGroupButton", "Edit group")}</button></div>
+      </section>
+    `;
+  }
+  return null;
+}
+
+function renderCoopSetupCard(settings, mePlayer, roster) {
+  const mount = getApp() || app;
+  let count = getSavedCoopCount();
+  try {
+    const domCount = parseInt(mount?.querySelector("#coop-count")?.value, 10);
+    if (domCount >= 1 && domCount <= 3) count = domCount;
+  } catch {}
+  if (roster && coopEditing && !mount?.querySelector("#coop-count")) {
+    count = clamp(roster.slots.length, 1, 3);
+  }
+  const savedNames = getSavedCoopNames();
+  const groupDefault = roster?.group || getPlayerName(mePlayer) || "";
+  const nameFields = count > 1
+    ? [0, 1, 2].slice(0, count).map((i) => {
+        const hint = getCoopKeyHint(i, count);
+        const prefill = roster?.slots?.[i] || savedNames[i] || "";
+        return `
+          <label>Player ${i + 1} name (key ${hint})
+            <input data-coop-input id="coop-name-${i}" type="text" maxlength="32" value="${escapeHtml(prefill)}" placeholder="Player ${i + 1}" />
+          </label>`;
+      }).join("")
+    : `<p class="muted">${getSnark("player.coop.singlePlayerHint", "With 1 player the group name is used as-is.")}</p>`;
+  return `
+    <section class="card player-card coop-setup-card">
+      <h2>${roster ? getSnark("player.coop.editTitle", "Edit group") : getSnark("player.coop.setupTitle", "Set up your group")}</h2>
+      <p class="muted">${getSnark("player.coop.setupBody", "The group name shows on the scoreboard. Each player gets their own buzzer and score.")}</p>
+      <label>Group name
+        <input data-coop-input id="coop-group" type="text" maxlength="32" value="${escapeHtml(mount?.querySelector("#coop-group")?.value ?? groupDefault)}" placeholder="Group name" />
+      </label>
+      <label>Players on this device
+        <select data-coop-input id="coop-count">
+          <option value="1" ${count === 1 ? "selected" : ""}>1</option>
+          <option value="2" ${count === 2 ? "selected" : ""}>2</option>
+          <option value="3" ${count === 3 ? "selected" : ""}>3</option>
+        </select>
+      </label>
+      ${nameFields}
+      <div class="host-actions" style="margin-top:0.6rem">
+        <button type="button" class="primary-action" data-coop-submit>${getSnark("player.coop.saveButton", "Save group")}</button>
+        ${roster ? `<button type="button" data-coop-cancel>${getSnark("player.coop.cancelButton", "Cancel")}</button>` : ""}
+      </div>
+    </section>
+  `;
+}
+
+// Horizontal personal score strip — one cell per live slot, same left-to-right
+// order as the buzzers above it.
+function renderCoopStrip(settings, round, deviceId, count) {
+  const scores = getScores();
+  const isRepPhase = round.status === ROUND_STATUSES.ROULETTE && round.roulette?.active;
+  const repKey = isRepPhase ? getRouletteRepKeyForDevice(round.roulette, deviceId) : null;
+  const cells = [];
+  for (let slot = 0; slot < count; slot++) {
+    const key = getCoopScoreKey(deviceId, slot);
+    const name = getCoopSlotName(deviceId, slot);
+    const hint = getCoopKeyHint(slot, count);
+    const score = Number(scores[key] || 0);
+    const mood = getCoopCharMoodForKey(key, round);
+    const muted = isCoopSlotMuted(settings, deviceId, slot);
+    const picker = repKey === key ? " is-picker" : "";
+    cells.push(`
+      <div class="coop-strip-cell${picker}${muted ? " is-muted" : ""}" data-score-key="${escapeHtml(key)}">
+        ${getCoopCharHtml(slot, mood)}
+        <span class="coop-strip-name">${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span>
+        <strong data-score-value>${score}</strong>
+      </div>`);
+  }
+  return `<div class="coop-strip coop-strip-${count}">${cells.join("")}</div>`;
+}
+
+function renderCoopSlotButtons(settings, round, deviceId, slot, count, timeLeftCs) {
+  const key = getCoopScoreKey(deviceId, slot);
+  const name = getCoopSlotName(deviceId, slot);
+  const hint = getCoopKeyHint(slot, count);
+  const mood = getCoopCharMoodForKey(key, round);
+  const alreadyBuzzed = (round.buzzedPlayerIds || []).includes(key);
+  const rebuzzAllowed = Boolean(settings.rebuzzAllowed);
+  const playerDisabled = !isPlayerBuzzerEnabled(settings, deviceId) || isCoopSlotMuted(settings, deviceId, slot);
+  const closed = round.status !== ROUND_STATUSES.OPEN;
+  // Jeopardy rules (multi-slot only): options stay locked until this slot
+  // buzzes in (Q/B/P key or BUZZ button). First slot in takes control.
+  const needsBuzzIn = count > 1;
+  const control = round.coopControl || null;
+  const hasControl = control === key;
+  const controlTaken = Boolean(control) && !hasControl;
+  const controlName = controlTaken ? getCoopControlName(round) : "";
+  const optionsUnlocked = !needsBuzzIn || hasControl;
+  const buzzInOff = closed || controlTaken || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled || round.screw.active;
+  const disabledAll = closed || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled || round.screw.active || !optionsUnlocked;
+  const opts = [];
+  for (let opt = 1; opt <= settings.optionCount; opt++) {
+    const off = disabledAll || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, key, opt);
+    opts.push(`<button type="button" class="coop-opt" data-coop-buzz="${opt}" data-coop-slot="${slot}" ${off ? "disabled" : ""}>${settings.optionCount === 4 ? optionButtonLabel(opt) : opt}</button>`);
+  }
+  const stateLine = playerDisabled
+    ? getSnark("player.coop.slotDisabled", "Disabled by the host.")
+    : closed
+      ? getSnark("player.buzzer.buzzersClosed", "Buzzers are currently closed.")
+      : !rebuzzAllowed && alreadyBuzzed
+        ? getSnark("player.buzzer.alreadyBuzzed", "You already buzzed this round.")
+        : controlTaken
+          ? getSnark("player.coop.hasControl", `${controlName} has control.`, { player: controlName })
+          : hasControl && needsBuzzIn
+            ? getSnark("player.coop.haveControl", `${name} has control — pick an answer.`, { player: name })
+            : needsBuzzIn
+              ? getSnark("player.coop.buzzInHint", `Buzz in with ${hint || "your key"}!`, { key: hint })
+              : getSnark("player.buzzer.buzzNow", "Buzz now.");
+  const isRepPhase = round.status === ROUND_STATUSES.ROULETTE && round.roulette?.active;
+  const picker = isRepPhase && getRouletteRepKeyForDevice(round.roulette, deviceId) === key ? " is-picker" : "";
+  return `
+    <div class="coop-slot${picker}${hasControl ? " is-control" : ""}">
+      <div class="coop-slot-head">${getCoopCharHtml(slot, mood)}<strong>${escapeHtml(name)}</strong>${hint ? `<kbd>${hint}</kbd>` : ""}</div>
+      ${needsBuzzIn ? `<button type="button" class="coop-buzzin" data-coop-buzzin data-coop-slot="${slot}" ${buzzInOff ? "disabled" : ""}>${hasControl ? getSnark("player.coop.controlButton", "CONTROL") : "BUZZ"}</button>` : ""}
+      <div class="coop-opt-grid coop-opt-${settings.optionCount}">${opts.join("")}</div>
+      <p class="muted coop-slot-state">${stateLine}</p>
+    </div>`;
+}
+
+function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
+  const deviceId = mePlayer.id;
+  const count = getCoopSlotCount(deviceId);
+  const group = getCoopGroupName(deviceId, getPlayerName(mePlayer));
+  const timeText = formatSeconds(timeLeftCs);
+  const editBtn = settings.coopAllowEdit
+    ? `<div class="host-actions"><button type="button" data-coop-edit>${getSnark("player.coop.editGroupButton", "Edit group")}</button></div>`
+    : "";
+
+  if (round.status === ROUND_STATUSES.ROULETTE) {
+    return renderCoopRoulettePanel(settings, round, mePlayer, count, group, editBtn);
+  }
+
+  if (settings.inputMode === "text") {
+    const activeSlot = clamp(coopTextSlot, 0, count - 1);
+    const alreadyBuzzed = (round.buzzedPlayerIds || []).includes(getCoopScoreKey(deviceId, activeSlot));
+    const rebuzzAllowed = Boolean(settings.rebuzzAllowed);
+    const playerDisabled = !isPlayerBuzzerEnabled(settings, deviceId);
+    const closed = round.status !== ROUND_STATUSES.OPEN;
+    const controlTakenByOther = count > 1 && round.coopControl && round.coopControl !== getCoopScoreKey(deviceId, activeSlot);
+    const controlName = controlTakenByOther ? getCoopControlName(round) : "";
+    const disabledAttr = closed || (!rebuzzAllowed && alreadyBuzzed) || playerDisabled || controlTakenByOther ? "disabled" : "";
+    const tabs = count > 1
+      ? `<div class="coop-text-tabs">${[0, 1, 2].slice(0, count).map((slot) => {
+          const on = slot === activeSlot ? "is-on" : "";
+          return `<button type="button" class="toggle-chip ${on}" data-coop-text-tab="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count)}</kbd></button>`;
+        }).join("")}</div>`
+      : "";
+    const helper = playerDisabled
+      ? getSnark("player.buzzer.answerDisabledByHost", "Your answer input is disabled by the Host.")
+      : closed
+        ? getSnark("player.buzzer.answersClosed", "Answers are currently closed.")
+        : !rebuzzAllowed && alreadyBuzzed
+          ? getSnark("player.buzzer.alreadyAnswered", "You already submitted an answer this round.")
+          : controlTakenByOther
+            ? getSnark("player.coop.hasControl", `${controlName} has control.`, { player: controlName })
+            : getSnark("player.buzzer.typeAnswerSubmit", "Type your answer and submit.");
+    return `
+      <section class="card player-card coop-player-card">
+        <h2>${escapeHtml(group)}</h2>
+        <p class="muted">${helper}</p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        ${tabs}
+        <div class="text-entry">
+          <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
+          <button data-answer-submit ${disabledAttr}>${getSnark("player.buzzer.submitAnswerButton", "Submit Answer")}</button>
+        </div>
+        ${renderCoopStrip(settings, round, deviceId, count)}
+        ${editBtn}
+      </section>
+    `;
+  }
+
+  const slots = [];
+  for (let slot = 0; slot < count; slot++) {
+    slots.push(renderCoopSlotButtons(settings, round, deviceId, slot, count, timeLeftCs));
+  }
+  return `
+    <section class="card player-card coop-player-card">
+      <h2>${escapeHtml(group)}</h2>
+      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+      <div class="coop-buzz-row coop-buzz-${count}">${slots.join("")}</div>
+      ${renderCoopStrip(settings, round, deviceId, count)}
+      ${editBtn}
+    </section>
+  `;
+}
+
+// Coop pick-a-value panel — the device's rep (last correct slot) stops for
+// the whole group. Dance face + highlight telegraph the picker.
+function renderCoopRoulettePanel(settings, round, mePlayer, count, group, editBtn) {
+  const roulette = round.roulette || {};
+  const deviceId = mePlayer.id;
+  const repKey = getRouletteRepKeyForDevice(roulette, deviceId);
+  const repSlot = parseCoopScoreKey(repKey)?.slot ?? 0;
+  const repName = getCoopSlotName(deviceId, repSlot, getPlayerName(mePlayer));
+  const currentFrame = getRouletteFrame(roulette);
+  const playerSelection = roulette.selections?.[deviceId] || null;
+  const completedCount = Array.isArray(roulette.completedPlayerIds) ? roulette.completedPlayerIds.length : 0;
+  const expectedCount = getRouletteExpectedCount(roulette);
+  const canStop = isRoulettePlayerAllowed(roulette, deviceId) && !playerSelection;
+  const displayedValue = playerSelection ? Number(playerSelection.value || 0) : currentFrame.value;
+  const displayedLabel = playerSelection ? getSnark("player.roulette.lockedLabel", "Locked") : currentFrame.label;
+  return `
+    <section class="card player-card roulette-card coop-player-card">
+      <h2>${getSnark("player.roulette.title", "Pick a Value")}</h2>
+      <p class="muted">${getSnark("player.coop.repStops", `${repName} stops for ${group}.`, { rep: repName, group })}</p>
+      <div class="coop-slot is-picker">
+        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round))}<strong>${escapeHtml(repName)}</strong></div>
+      </div>
+      <div class="roulette-display" aria-live="polite">
+        <span class="roulette-value">${displayedValue}</span>
+        <span class="roulette-label">${displayedLabel}</span>
+      </div>
+      <p class="muted">${getSnark("player.roulette.playersLocked", `${completedCount}/${expectedCount} players locked in.`, { completed: completedCount, expected: expectedCount })}</p>
+      ${playerSelection
+        ? `<p class="roulette-locked-note">${getSnark("player.roulette.youLocked", `You locked in ${Number(playerSelection.value || 0)}.`, { value: Number(playerSelection.value || 0) })}</p>`
+        : `<button type="button" class="roulette-stop" data-roulette-stop ${canStop ? "" : "disabled"}>${getSnark("player.roulette.stopButton", "STOP")}</button>`}
+      ${renderCoopStrip(settings, round, deviceId, count)}
+      ${editBtn}
+    </section>
+  `;
+}
+
+// =============================================================================
 // Player buzzer panel — shows appropriate UI depending on game state
 // (roulette, screw, buttons, text entry, etc.)
 // =============================================================================
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
+  if (isCoopMode(settings) && !isControllerPlayer() && !isCohost()) {
+    const gate = renderCoopGate(settings, mePlayer);
+    if (gate) return gate;
+  }
   if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
@@ -4617,6 +5884,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <p>You are ${isCohost() ? "a Co-host" : "the Host"} and do not have a buzzer input.</p>
       </section>
     `;
+  }
+  if (isCoopMode(settings)) {
+    return renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs);
   }
 
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -5308,11 +6578,33 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
     })
     .join("");
 
+  // Coopertition: per-slot mutes under each multi-slot device (whole-device
+  // mute stays on the chip above).
+  let coopSlotToggles = "";
+  if (isCoopMode(settings)) {
+    const rows = nonControllerPlayers
+      .map((player) => {
+        const count = getCoopSlotCount(player.id);
+        if (count <= 1) return "";
+        const chips = [];
+        for (let slot = 0; slot < count; slot++) {
+          const key = getCoopScoreKey(player.id, slot);
+          const on = !isCoopSlotMuted(settings, player.id, slot);
+          chips.push(`<button class="toggle-chip ${on ? "is-on" : "is-off"}" data-toggle-coop-slot="${escapeHtml(key)}" ${settingDisabledAttr}>${escapeHtml(getCoopSlotName(player.id, slot))} ${on ? "On" : "Off"}</button>`);
+        }
+        return `<div class="coop-mute-row"><span class="muted">${escapeHtml(getCoopGroupName(player.id, getPlayerName(player)))}</span><div class="toggle-list">${chips.join("")}</div></div>`;
+      })
+      .filter(Boolean)
+      .join("");
+    if (rows) coopSlotToggles = `<div class="toggle-group"><span class="muted">Coop players</span>${rows}</div>`;
+  }
+
   return `
     <div class="toggle-group">
       <span class="muted">Player buzzers</span>
       <div class="toggle-list">${toggles}</div>
     </div>
+    ${coopSlotToggles}
   `;
 }
 
@@ -5411,6 +6703,12 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const missingTeamAssignments = hasUnassignedTeamPlayers(settings, players, teamAssignments);
+  // Coopertition without lock-after-buzz requires a pre-set answer to open.
+  const coopNeedsPreset = isCoopMode(settings)
+    && !settings.lockAfterBuzz
+    && !(settings.inputMode === "text"
+      ? Boolean(String(round.correctAnswer || "").trim())
+      : Array.isArray(round.correctOptions) && round.correctOptions.length > 0);
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
 
@@ -5463,8 +6761,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               }
               <label>
                 Re-buzz allowed
-                ${toggleSwitch("rebuzzAllowed", settings.rebuzzAllowed)}
-                <p class="setting-helper">Let the same player buzz multiple times per round.</p>
+                ${isCoopMode(settings)
+                  ? `<p class="setting-helper">Off — coopertition allows one response per player per question.</p>`
+                  : toggleSwitch("rebuzzAllowed", settings.rebuzzAllowed)}
+                ${isCoopMode(settings) ? "" : `<p class="setting-helper">Let the same player buzz multiple times per round.</p>`}
               </label>
               ${
                 settings.rebuzzAllowed
@@ -5500,13 +6800,13 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   : `<label>
                       Option count
                       <select data-setting="optionCount" ${settingDisabledAttr}>
-                        <option value="1" ${settings.optionCount === 1 ? "selected" : ""}>1</option>
-                        <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>
+                        ${isCoopMode(settings) ? "" : `<option value="1" ${settings.optionCount === 1 ? "selected" : ""}>1</option>
+                        <option value="2" ${settings.optionCount === 2 ? "selected" : ""}>2</option>`}
                         <option value="4" ${settings.optionCount === 4 ? "selected" : ""}>4</option>
                         <option value="6" ${settings.optionCount === 6 ? "selected" : ""}>6</option>
                         <option value="8" ${settings.optionCount === 8 ? "selected" : ""}>8</option>
                       </select>
-                      <p class="setting-helper">How many buzzer buttons each player sees.</p>
+                      <p class="setting-helper">How many buzzer buttons each player sees.${isCoopMode(settings) ? " Coopertition locks this to 4+." : ""}</p>
                     </label>`
               }
             </div>
@@ -5553,10 +6853,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 Scoring mode
                 <select data-setting="scoringMode" ${settingDisabledAttr}>
                   <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
-                  <option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>
+                  ${isCoopMode(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
                   <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Pick-a-value (player-determined)</option>
                 </select>
-                <p class="setting-helper">How each buzz is valued.</p>
+                <p class="setting-helper">How each buzz is valued.${isCoopMode(settings) ? " JACK is disabled in coopertition mode." : ""}</p>
               </label>
               ${
                 settings.scoringMode === "uniform"
@@ -5603,14 +6903,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                     </label>
                     ${settings.rouletteMode === "single-player"
                       ? `<label>
-                          Target player
+                          Target ${isCoopMode(settings) ? "group" : "player"}
                           <select data-setting="rouletteSinglePlayerTarget" ${settingDisabledAttr}>
-                            <option value="random" ${settings.rouletteSinglePlayerTarget === "random" ? "selected" : ""}>Random player</option>
+                            <option value="random" ${settings.rouletteSinglePlayerTarget === "random" ? "selected" : ""}>Random ${isCoopMode(settings) ? "group" : "player"}</option>
                             ${nonControllerPlayers
-                              .map((player) => `<option value="${player.id}" ${settings.rouletteSinglePlayerTarget === player.id ? "selected" : ""}>${escapeHtml(getPlayerName(player))}</option>`)
+                              .map((player) => `<option value="${player.id}" ${settings.rouletteSinglePlayerTarget === player.id ? "selected" : ""}>${escapeHtml(isCoopMode(settings) ? getCoopGroupName(player.id, getPlayerName(player)) : getPlayerName(player))}</option>`)
                               .join("")}
                           </select>
-                          <p class="setting-helper">Which player stops the pick-a-value.</p>
+                          <p class="setting-helper">Which ${isCoopMode(settings) ? "group stops the pick-a-value (their last-correct player taps STOP)" : "player stops the pick-a-value"}.</p>
                         </label>`
                       : ""}
                     <span class="roulette-help muted">Ceiling per player: ${rouletteCeiling}.</span>
@@ -5637,9 +6937,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                     Team scoring
                     <select data-setting="teamScoringMode" ${settingDisabledAttr}>
                       <option value="alliance" ${settings.teamScoringMode === "alliance" ? "selected" : ""}>Alliance (individual + team totals)</option>
-                      <option value="shared" ${settings.teamScoringMode === "shared" ? "selected" : ""}>Shared (one buzzer per team)</option>
+                      ${isCoopMode(settings) ? "" : `<option value="shared" ${settings.teamScoringMode === "shared" ? "selected" : ""}>Shared (one buzzer per team)</option>`}
                     </select>
-                    <p class="setting-helper">"Alliance" keeps individual scores + tallies teams. "Shared" gives each team one buzzer.</p>
+                    <p class="setting-helper">"Alliance" keeps individual scores + tallies teams. "Shared" gives each team one buzzer.${isCoopMode(settings) ? " Shared is disabled in coopertition mode." : ""}</p>
                   </label>`
                 : ""}
             </div>
@@ -5656,6 +6956,29 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         </details>
       </div>
 
+      <!-- Section: Coopertition -->
+      <div class="settings-section">
+        <details ${settingsLocked ? "" : "open"}>
+          <summary>Coopertition</summary>
+          <div class="section-body">
+            <div class="control-grid">
+              <label>
+                Coopertition mode
+                ${toggleSwitch("coopertitionEnabled", settings.coopertitionEnabled)}
+                <p class="setting-helper">Up to 3 players per device (Q/B/P keys). Switchable only from buzzer mode — locks screws, JACK, re-buzz and shared teams.</p>
+              </label>
+              ${settings.coopertitionEnabled
+                ? `<label>
+                    Allow group edits
+                    ${toggleSwitch("coopAllowEdit", settings.coopAllowEdit)}
+                    <p class="setting-helper">Let devices change player count/names mid-game.</p>
+                  </label>`
+                : ""}
+            </div>
+          </div>
+        </details>
+      </div>
+
       <!-- Section: Extras -->
       <div class="settings-section">
         <details ${settingsLocked ? "" : "open"}>
@@ -5664,8 +6987,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Screw mechanic
-                ${toggleSwitch("allowScrewing", settings.allowScrewing)}
-                <p class="setting-helper">Players can force another player to answer under a 5s timer. Screwer gains 1000 if screwee gets it wrong, loses 1000 if they get it right.</p>
+                ${isCoopMode(settings)
+                  ? `<p class="setting-helper">Off — screws are disabled in coopertition mode.</p>`
+                  : toggleSwitch("allowScrewing", settings.allowScrewing)}
+                ${isCoopMode(settings) ? "" : `<p class="setting-helper">Players can force another player to answer under a 5s timer. Screwer gains 1000 if screwee gets it wrong, loses 1000 if they get it right.</p>`}
               </label>
               ${
                 settings.allowScrewing
@@ -5739,8 +7064,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)</p>
               </div>
               <div>
-                <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" ? "disabled" : ""}>Fibbage</button>
-                <p class="setting-helper">The famous Jackbox fibbing game. Host sets truth (before the players start lying). Players submit lies, shows shuffled lies+truth, players vote, host reveals one-by-one or Show All. 500 per fool, 1000 for truth, (configurable).</p>
+                <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" || isCoopMode(settings) ? "disabled" : ""}>Fibbage</button>
+                <p class="setting-helper">The famous Jackbox fibbing game. Host sets truth (before the players start lying). Players submit lies, shows shuffled lies+truth, players vote, host reveals one-by-one or Show All. 500 per fool, 1000 for truth, (configurable).${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage"
@@ -5756,7 +7081,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           ${settings.scoringMode === "roulette"
             ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
             : ""}
-          <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments ? "disabled" : ""}>Open Buzzers</button>
+          <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
           <button type="button" data-host-action="close">Close Buzzers</button>
           <button type="button" data-host-action="reset">Reset Round</button>
         </div>
@@ -5790,6 +7115,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Pick-a-value is running.</span>" : ""}
         ${settings.teamModeEnabled && missingTeamAssignments
           ? "<span>Assign every player to a team before opening buzzers.</span>"
+          : ""}
+        ${coopNeedsPreset
+          ? "<span>Set a pre-set correct answer (or enable lock-after-buzz) to open buzzers.</span>"
           : ""}
         ${settingsLocked ? "<span>Settings are locked while buzzers are open.</span>" : ""}
       </div>
@@ -5862,7 +7190,7 @@ function renderLockedRuling(settings, pendingEntry) {
   const plusVal = pendingEntry.basePoints;
   const minusVal = -pendingEntry.basePoints;
 
-  const renderedAnswer = pendingEntry.answerText ? `\"${escapeHtml(pendingEntry.answerText)}\"` : pendingEntry.option;
+  const renderedAnswer = pendingEntry.answerText ? `\"${escapeHtml(pendingEntry.answerText)}\"` : (pendingEntry.option ?? "in");
 
   return `
     <section class="card ruling-card">
@@ -5884,12 +7212,92 @@ function renderLockedRuling(settings, pendingEntry) {
 // =============================================================================
 // Scoreboard — supports individual, team-shared, and alliance modes
 // =============================================================================
+// Coopertition scoreboard — group rows sorted by group total, each with its
+// sub-player breakdown (avatar, name, key hint, score). Removed slots stay
+// greyed in place; rank badges keep their 1st/2nd/3rd meaning on groups.
+function renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments) {
+  const round = getRound();
+  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const groups = devices
+    .map((player) => {
+      const deviceId = player.id;
+      const count = getCoopSlotCount(deviceId);
+      const groupName = getCoopGroupName(deviceId, getPlayerName(player));
+      const teamColor = getPlayerTeamColor(deviceId, assignments);
+      const slots = [];
+      for (let slot = 0; slot < count; slot++) {
+        const key = getCoopScoreKey(deviceId, slot);
+        slots.push({
+          slot, key,
+          name: getCoopSlotName(deviceId, slot),
+          score: Number(scores[key] || 0),
+          mood: getCoopCharMoodForKey(key, round),
+          muted: isCoopSlotMuted(settings, deviceId, slot),
+          frozen: false,
+        });
+      }
+      // Frozen removals: slots that left the group but keep points.
+      for (let slot = count; slot < 3; slot++) {
+        const key = `coop:${deviceId}:${slot}`;
+        if (Number(scores[key] || 0) === 0) continue;
+        slots.push({
+          slot, key,
+          name: `${getCoopSlotName(deviceId, slot)} (left)`,
+          score: Number(scores[key] || 0),
+          mood: "idle",
+          muted: true,
+          frozen: true,
+        });
+      }
+      return { deviceId, groupName, teamColor, total: getCoopGroupTotal(deviceId, scores), slots };
+    })
+    .sort((a, b) => b.total - a.total);
+
+  const items = groups
+    .map(({ deviceId, groupName, teamColor, total, slots }, index) => {
+      const teamPill = teamColor ? `<span class="team-pill team-${teamColor}">${teamColor}</span>` : "";
+      const subRows = slots
+        .map(({ slot, key, name, score, mood, muted, frozen }) => {
+          const hint = !frozen ? getCoopKeyHint(slot, slots.filter((s) => !s.frozen).length || getCoopSlotCount(deviceId)) : "";
+          return `<li class="coop-sub-row${muted ? " is-muted" : ""}${frozen ? " is-frozen" : ""}" data-score-key="${escapeHtml(key)}"><span>${getCoopCharHtml(slot, mood)}${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span><strong data-score-value>${score}</strong></li>`;
+        })
+        .join("");
+      return `<li class="coop-group" data-coop-group="${escapeHtml(deviceId)}"><div class="coop-group-head"><span>${getRankBadgeHtml(index + 1)}<strong>${escapeHtml(groupName)}</strong> ${teamPill}</span><strong>${total}</strong></div><ul class="coop-sub-list">${subRows || `<li class="muted">No players yet.</li>`}</ul></li>`;
+    })
+    .join("");
+
+  const allianceTotals = settings.teamModeEnabled
+    ? TEAM_COLORS
+        .map((teamColor) => {
+          const devs = groups.filter((g) => g.teamColor === teamColor);
+          if (devs.length === 0) return "";
+          return { teamColor, total: devs.reduce((sum, g) => sum + g.total, 0) };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.total - a.total)
+        .map(({ teamColor, total }, index) => `<li class="team-score-row" data-score-key="${escapeHtml(getTeamScoreKey(teamColor))}"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span></span><strong data-score-value>${total}</strong></li>`)
+        .join("")
+    : "";
+
+  return `
+    <section class="card score-card">
+      <h2>${getSnark("shared.scores.coopTitle", "Group Scores")}</h2>
+      <ul class="coop-group-list">${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
+      ${allianceTotals ? `<h3>${getSnark("shared.scores.allianceTotalsTitle", "Alliance totals")}</h3><ul>${allianceTotals}</ul>` : ""}
+    </section>
+  `;
+}
+
 function renderScores(players, scores) {
   const settings = getSettings();
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
   const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+
+  if (isCoopMode(settings)) {
+    return renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments);
+  }
 
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
     const teamItems = TEAM_COLORS
@@ -5978,7 +7386,9 @@ function renderLog(log, settings) {
               ${
                 entry.answerText
                   ? `Answer \"${escapeHtml(entry.answerText)}\"`
-                  : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
+                  : entry.option === null || entry.option === undefined
+                    ? `Buzzed in`
+                    : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
               }
             </span>
             <span>${formatSeconds(entry.timeLeftCs)}s</span>
@@ -6013,6 +7423,14 @@ function renderHiddenPanel(title, helper) {
       <p class="muted">${helper}</p>
     </section>
   `;
+}
+
+// Player notices (buzz results, control changes) live in a fixed bar at the
+// bottom of the screen — not inside the answer cards.
+function renderScreenNoticeBar() {
+  const notice = getRecentBuzzNotice();
+  if (!notice) return "";
+  return `<div class="screen-notice-bar" role="status">${escapeHtml(notice)}</div>`;
 }
 
 // =============================================================================
@@ -6145,6 +7563,7 @@ function render() {
           </div>
         </header>
         ${bingoBody}
+        ${renderScreenNoticeBar()}
       </main>
     `;
     if (!transitionMount(mount, _html_bingo, "bingo")) mount.innerHTML = _html_bingo;
@@ -6178,6 +7597,7 @@ function render() {
           </div>
         </header>
         ${ddBody}
+        ${renderScreenNoticeBar()}
       </main>
     `;
     if (!transitionMount(mount, _html_disordat, "disordat")) mount.innerHTML = _html_disordat;
@@ -6248,6 +7668,7 @@ function render() {
 
       ${renderLockedRuling(settings, pendingEntry)}
       ${showAdminData ? renderLog(gameLog, settings) : renderHiddenPanel(getSnark("player.scores.logTitle", "Game Log"), getSnark("player.scores.logHidden", "Only the Host can view the game log."))}
+      ${renderScreenNoticeBar()}
     </main>
   `;
 
@@ -6276,16 +7697,54 @@ function bindEvents() {
     document.addEventListener("keydown", handleRouletteKeydown);
     rouletteKeydownBound = true;
   }
+  if (!coopKeydownBound) {
+    document.addEventListener("keydown", handleCoopBuzzKeydown);
+    coopKeydownBound = true;
+  }
 
   // --- Delegated handlers below ---
   delegate("pointerdown", "[data-buzz]", (e, btn) => {
     e.preventDefault();
     submitResponse({ option: Number(btn.dataset.buzz) });
   });
+  delegate("pointerdown", "[data-coop-buzz]", (e, btn) => {
+    e.preventDefault();
+    submitResponse({ option: Number(btn.dataset.coopBuzz), coopSlot: Number(btn.dataset.coopSlot) });
+  });
+  delegate("pointerdown", "[data-coop-buzzin]", (e, btn) => {
+    e.preventDefault();
+    submitResponse({ coopSlot: Number(btn.dataset.coopSlot), buzzIn: true });
+  });
+  delegate("click", "[data-coop-submit]", async () => {
+    const mount = getApp() || app;
+    const group = mount.querySelector("#coop-group")?.value?.trim() || "";
+    const count = clamp(parseInt(mount.querySelector("#coop-count")?.value, 10) || 1, 1, 3);
+    const names = [0, 1, 2].map((i) => mount.querySelector(`#coop-name-${i}`)?.value?.trim() || "");
+    try {
+      localStorage.setItem(COOP_COUNT_KEY, String(count));
+      localStorage.setItem(COOP_NAMES_KEY, JSON.stringify(names));
+    } catch {}
+    try {
+      const result = await RPC.call("coop-roster", { group, count, names }, RPC.Mode.HOST);
+      if (result?.ok === false) setBuzzNotice(result.reason || "Could not save group.");
+      else {
+        if (result?.message) setBuzzNotice(result.message);
+        coopEditing = false;
+      }
+    } catch { setBuzzNotice("Could not save group. Check connection/room."); }
+    scheduleRender(render);
+  });
+  delegate("click", "[data-coop-edit]", () => { coopEditing = true; scheduleRender(render); });
+  delegate("click", "[data-coop-cancel]", () => { coopEditing = false; scheduleRender(render); });
+  delegate("change", "#coop-count", () => { scheduleRender(render); });
   delegate("click", "[data-answer-submit]", () => {
     const input = (getApp() || app).querySelector("#answer-entry");
     const answerText = String(input?.value || "").trim();
-    submitResponse({ answerText });
+    const payload = { answerText };
+    if (isCoopMode() && getCoopSlotCount(me()?.id) > 1) {
+      payload.coopSlot = clamp(coopTextSlot, 0, getCoopSlotCount(me()?.id) - 1);
+    }
+    submitResponse(payload);
     if (input) input.value = "";
   });
   delegate("click", "[data-roulette-stop]", () => submitRouletteStop());
@@ -6301,7 +7760,11 @@ function bindEvents() {
     if (e.key !== "Enter") return;
     e.preventDefault();
     const answerText = String(e.target.value || "").trim();
-    submitResponse({ answerText });
+    const payload = { answerText };
+    if (isCoopMode() && getCoopSlotCount(me()?.id) > 1) {
+      payload.coopSlot = clamp(coopTextSlot, 0, getCoopSlotCount(me()?.id) - 1);
+    }
+    submitResponse(payload);
     e.target.value = "";
   });
   // Host-only delegated (guard at runtime)
@@ -6362,6 +7825,7 @@ function bindEvents() {
   delegate("click", "[data-set-mode]", requireHost((e, btn) => setHostSetting("inputMode", btn.dataset.setMode)));
   delegate("click", "[data-toggle-option]", requireHost((e, btn) => toggleBuzzerOption(Number(btn.dataset.toggleOption))));
   delegate("click", "[data-toggle-player]", requireHost((e, btn) => togglePlayerBuzzer(btn.dataset.togglePlayer)));
+  delegate("click", "[data-toggle-coop-slot]", requireHost((e, btn) => toggleCoopSlot(btn.dataset.toggleCoopSlot)));
   delegate("click", "[data-set-correct-text]", requireHost(() => {
     const input = (getApp() || app).querySelector("#correct-answer-entry");
     const val = String(input?.value || "").trim();
@@ -6428,17 +7892,12 @@ function bindEvents() {
   delegate("click", "[data-bingo-cycle]", requireHost(() => startBingoCycling()));
   delegate("click", "[data-bingo-stop-cycle]", requireHost(() => stopBingoCycling()));
   delegate("click", "[data-bingo-exit]", requireHost(() => { endBingo(); setHostSetting("inputMode", "buttons"); }));
-  delegate("pointerdown", "[data-bingo-buzz]", async (e) => {
+  delegate("pointerdown", "[data-bingo-buzz]", async (e, btn) => {
     e.preventDefault();
     if (isControllerPlayer() || isCohost()) return;
-    const bState = getBingo();
-    const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
-    try {
-      const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
-      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
-      else if (result?.message) setBuzzNotice(result.message);
-    } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
-    scheduleRender(render);
+    const slotRaw = btn?.dataset?.coopSlot;
+    const slot = slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw);
+    await submitBingoBuzz(Number.isInteger(slot) ? slot : null);
   });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
   // DisOrDat host
@@ -6471,14 +7930,33 @@ function bindEvents() {
     if (isControllerPlayer() || isCohost()) return;
     const q = Number(btn.dataset.q);
     const answer = btn.dataset.answer;
+    const slotRaw = btn?.dataset?.coopSlot;
+    const payload = { q, answer };
+    if (slotRaw !== undefined && slotRaw !== "") payload.coopSlot = Number(slotRaw);
     try {
-      const result = await RPC.call("disordat-answer", { q, answer }, RPC.Mode.HOST);
+      const result = await RPC.call("disordat-answer", payload, RPC.Mode.HOST);
       if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
       else if (result?.message) setBuzzNotice(result.message);
       disOrDatRevealUntil = now() + DIS_OR_DAT_REVEAL_MS;
       scheduleRender(render);
       setTimeout(() => scheduleRender(render), DIS_OR_DAT_REVEAL_MS + 30);
     } catch { setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer.")); scheduleRender(render); }
+  });
+  delegate("click", "[data-disordat-claim]", async (e, btn) => {
+    if (isControllerPlayer() || isCohost()) return;
+    const q = Number(btn.dataset.q);
+    const slotRaw = btn?.dataset?.coopSlot;
+    await submitDisOrDatClaim(q, slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw));
+  });
+  delegate("click", "[data-coop-text-tab]", (e, btn) => {
+    const slot = Number(btn?.dataset?.coopTextTab);
+    if (Number.isInteger(slot)) {
+      coopTextSlot = slot;
+      scheduleRender(render);
+      try {
+        setTimeout(() => document.querySelector("#answer-entry")?.focus(), 60);
+      } catch {}
+    }
   });
   // Fibbage host
   delegate("click", "[data-fibbage-enter-lies]", requireHost(() => startFibbageLying()));
@@ -6565,6 +8043,7 @@ function bindEvents() {
     if (mode === "host") {
       const selectedTeamSetting = String(teamModeInput?.value || "off");
       hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
+      hostPrejoinCoopSetting = mount.querySelector("#prejoin-coop")?.checked === true;
     }
     const submitButton = form.querySelector("button[type='submit']");
     if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
@@ -6640,6 +8119,81 @@ function submitRouletteStop() {
       render();
     });
 }
+
+// =============================================================================
+// Coopertition keyboard buzzers — Q/B/P select a slot (2P: Q,P. 3P: Q,B,P).
+// In buttons mode the key is a generic "buzz in" for that slot (no option);
+// precise options use the on-screen per-slot buttons. In text mode the key
+// switches the shared answer box tab. Bingo buzzes that slot directly.
+// =============================================================================
+function handleCoopBuzzKeydown(event) {
+  const code = event?.code;
+  if (code !== "KeyQ" && code !== "KeyB" && code !== "KeyP") return;
+  if (isEditingControl()) return;
+  if (isControllerPlayer() || isCohost() || isAudienceDisplayClient()) return;
+  if (!isCoopMode()) return;
+  const self = me();
+  if (!self?.id) return;
+  const count = getCoopSlotCount(self.id);
+  if (count <= 1) return;
+  const slot = getCoopSlotForCode(code, count);
+  if (slot === null || slot === undefined) return;
+
+  if (isBingoMode()) {
+    const bState = getBingo();
+    if (!bState.active || !bState.cycling) return;
+    event.preventDefault();
+    submitBingoBuzz(slot);
+    return;
+  }
+  if (isDisOrDatMode()) {
+    const dd = getDisOrDat();
+    if (dd.active && dd.phase === "playing" && dd.mode === "allPlayHostPaced") {
+      event.preventDefault();
+      submitDisOrDatClaim(dd.currentQuestion, slot);
+    }
+    return;
+  }
+  if (isFibbageMode()) return;
+  const round = getRound();
+  if (round.status === ROUND_STATUSES.ROULETTE) return;
+  if (getSettings().inputMode === "text") {
+    if (round.status !== ROUND_STATUSES.OPEN) return;
+    event.preventDefault();
+    coopTextSlot = slot;
+    scheduleRender(render);
+    try {
+      setTimeout(() => document.querySelector("#answer-entry")?.focus(), 60);
+    } catch {}
+    return;
+  }
+  if (round.status !== ROUND_STATUSES.OPEN) return;
+  event.preventDefault();
+  submitResponse({ coopSlot: slot, buzzIn: true });
+}
+
+async function submitBingoBuzz(slot = null) {
+  if (isControllerPlayer() || isCohost()) return;
+  const bState = getBingo();
+  const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
+  if (slot !== null && slot !== undefined) payload.coopSlot = slot;
+  try {
+    const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
+    if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+    else if (result?.message) setBuzzNotice(result.message);
+  } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
+  scheduleRender(render);
+}
+
+async function submitDisOrDatClaim(q, slot = null) {
+  if (isControllerPlayer() || isCohost()) return;
+  try {
+    const result = await RPC.call("disordat-claim", { q, coopSlot: slot }, RPC.Mode.HOST);
+    if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+    else if (result?.message) setBuzzNotice(result.message);
+  } catch { setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer.")); }
+  scheduleRender(render);
+}
 // =============================================================================
 // Returns true when the user is focused on an input (to ignore space key)
 // =============================================================================
@@ -6655,7 +8209,9 @@ function isEditingControl() {
   return Boolean(
     active.closest("[data-setting]") ||
       active.closest("[data-log-input]") ||
+      active.closest("[data-coop-input]") ||
       active.id === "answer-entry" ||
+      active.id === "coop-group" ||
       active.id === "fibbage-lie-entry" ||
       active.id === "fibbage-truth" ||
       active.matches("[data-prejoin-input]"),
@@ -6687,6 +8243,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
   if (mode === "host") {
     const isAlliance = hostPrejoinTeamSetting === "alliance";
     const isShared = hostPrejoinTeamSetting === "shared";
+    const isCoop = hostPrejoinCoopSetting === true;
     prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-host">
@@ -6712,6 +8269,11 @@ function renderPrejoinScreen(mode = "landing", error = "") {
                 <option value="alliance" ${isAlliance ? "selected" : ""}>Alliance mode (individual buzzers + summed team score)</option>
                 <option value="shared" ${isShared ? "selected" : ""}>Team mode (shared team buzzer + team score)</option>
               </select>
+            </label>
+
+            <label class="prejoin-check">
+              <input data-prejoin-input id="prejoin-coop" type="checkbox" ${isCoop ? "checked" : ""} />
+              <span>Coopertition mode (up to 3 players per device)</span>
             </label>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
@@ -6982,11 +8544,17 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     }
 
     const frame = getRouletteFrame(roulette);
+    let selName = getPlayerName(senderPlayer);
+    if (isCoopMode()) {
+      const repKey = getRouletteRepKeyForDevice(roulette, senderPlayer.id);
+      const repSlot = parseCoopScoreKey(repKey)?.slot ?? 0;
+      selName = `${getCoopGroupName(senderPlayer.id, selName)} — ${getCoopSlotName(senderPlayer.id, repSlot)}`;
+    }
     const nextSelections = {
       ...(roulette.selections || {}),
       [senderPlayer.id]: {
         playerId: senderPlayer.id,
-        playerName: getPlayerName(senderPlayer),
+        playerName: selName,
         value: frame.value,
         label: frame.label,
         tick: frame.tick,
@@ -7034,6 +8602,20 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     }
     const teamColor = payload?.teamColor ? String(payload.teamColor) : "";
     return handleSelectTeam(senderPlayer, teamColor || null);
+  });
+
+  RPC.register("coop-roster", async (payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+    return handleCoopRoster(senderPlayer, payload);
+  });
+
+  RPC.register("disordat-claim", async (payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+    return handleDisOrDatClaim(senderPlayer, payload);
   });
 
   RPC.register("screw", async (payload, senderPlayer) => {
@@ -7085,7 +8667,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     openBuzzers, closeBuzzers, resetRound, resetScrews,
     startRoulettePhase, startScrewTimer, closeScrewMode,
     startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
-    setHostSetting, toggleBuzzerOption, togglePlayerBuzzer,
+    setHostSetting, toggleBuzzerOption, togglePlayerBuzzer, toggleCoopSlot,
     setPlayerTeam, randomizeTeams,
     openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
     updateScoresForLogEntry,
@@ -7160,7 +8742,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   setInterval(() => {
     if (!isBingoMode()) return;
     const b = getBingo();
-    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${b.winner || ""}`;
+    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${JSON.stringify(b.coopLockout || {})}|${b.winner || ""}`;
     if (key === lastBingoRenderKey) return;
     lastBingoRenderKey = key;
     scheduleRender(render);
@@ -7188,6 +8770,7 @@ function boot() {
   } catch (e) { console.warn("[boot] smooth timer failed", e); }
   renderPrejoinScreen();
   probeRankBadges();
+  probeCoopChars();
 }
 
 
