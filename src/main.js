@@ -5,6 +5,7 @@
 import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
+import { scheduleRender, renderImmediate, initRenderer, delegate, getApp, computeAudienceTimerFrozenCs } from "./render.js";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -73,7 +74,7 @@ const FIBBAGE_MAX_MULT = 5;
 
 const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
-const app = document.querySelector("#app");
+const app = document.querySelector("#app") || document.getElementById("app");
 const NAME_KEY = "buzzer_player_name";
 let gameLaunched = false;
 let clientMode = "player";
@@ -214,7 +215,7 @@ function getSnark(section, fallbackEn = "", vars = {}) {
   if (!out) {
     out = fallbackEn;
   }
-  return out.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? vars[key] : match));
+  return out.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? escapeHtml(String(vars[key])) : match));
 }
 
 function getTeamAssignments() {
@@ -616,7 +617,7 @@ function getController() {
 }
 
 function isControllerPlayer() {
-  return me().id === getControllerId();
+  return me()?.id === getControllerId();
 }
 
 function isPlayerExcluded(playerId) {
@@ -627,7 +628,7 @@ function isPlayerExcluded(playerId) {
 
 function isCohost() {
   const cohostIds = getSafeState("cohostIds", []);
-  return Array.isArray(cohostIds) && cohostIds.includes(me().id);
+  return Array.isArray(cohostIds) && cohostIds.includes(me()?.id);
 }
 
 function hasHostPrivileges() {
@@ -940,6 +941,7 @@ function getRouletteFinalValue(roulette) {
 
 // =============================================================================
 // Roulette animation — re-renders every 500 ms while roulette is active
+// Now uses scheduleRender and auto-cleans when roulette ends.
 // =============================================================================
 function startRouletteAnimationLoop() {
   if (rouletteAnimationInterval) {
@@ -947,9 +949,18 @@ function startRouletteAnimationLoop() {
   }
   rouletteAnimationInterval = setInterval(() => {
     if (getRound().status === ROUND_STATUSES.ROULETTE) {
-      render();
+      scheduleRender(render);
+    } else {
+      clearInterval(rouletteAnimationInterval);
+      rouletteAnimationInterval = null;
     }
   }, 500);
+}
+function stopRouletteAnimationLoop() {
+  if (rouletteAnimationInterval) {
+    clearInterval(rouletteAnimationInterval);
+    rouletteAnimationInterval = null;
+  }
 }
 
 function getSelectedRouletteTarget(settings, players) {
@@ -3385,7 +3396,9 @@ function assignControllerIfNeeded() {
   if (current) {
     return;
   }
-  setState("controllerId", me().id, true);
+  const self = me();
+  if (!self?.id) return;
+  setState("controllerId", self.id, true);
 }
 
 // Ensure all shared state keys exist and are consistent
@@ -3550,18 +3563,18 @@ function renderBingoHostPanel(settings, players) {
         if (members.length === 0) return "";
         const collected = (bingo.playerItems?.[teamColor] || []).map(i => items[i]).join(", ");
         const count = (bingo.collectedCounts?.[teamColor] || 0);
-        const names = members.map(m => getPlayerName(m)).join(", ");
+        const names = members.map(m => escapeHtml(getPlayerName(m))).join(", ");
         return `<div><strong>Team ${teamColor}</strong> <small>(${names})</small>: ${collected || "none"} (${count}/${items.length})</div>`;
       }).filter(Boolean).join("")
     : nonController.map(p => {
         const collected = (bingo.playerItems?.[p.id] || []).map(i => items[i]).join(", ");
         const count = (bingo.collectedCounts?.[p.id] || 0);
-        return `<div><strong>${getPlayerName(p)}</strong>: ${collected || "none"} (${count}/${items.length})</div>`;
+        return `<div><strong>${escapeHtml(getPlayerName(p))}</strong>: ${collected || "none"} (${count}/${items.length})</div>`;
       }).join("");
   const winnerLabel = bingo.winner
     ? TEAM_COLORS.includes(bingo.winner)
       ? `Team ${bingo.winner}`
-      : (players.find(p => p.id === bingo.winner) ? getPlayerName(players.find(p => p.id === bingo.winner)) : null)
+      : (players.find(p => p.id === bingo.winner) ? escapeHtml(getPlayerName(players.find(p => p.id === bingo.winner))) : null)
     : null;
   return `
     <section class="card host-panel bingo-host-panel">
@@ -3620,7 +3633,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   const winnerLabel = bingo.winner
     ? TEAM_COLORS.includes(bingo.winner)
       ? `Team ${bingo.winner}`
-      : (currentParticipants().find(p => p.id === bingo.winner) ? getPlayerName(currentParticipants().find(p => p.id === bingo.winner)) : null)
+      : (currentParticipants().find(p => p.id === bingo.winner) ? escapeHtml(getPlayerName(currentParticipants().find(p => p.id === bingo.winner))) : null)
     : null;
   return `
     <section class="card player-card bingo-player-card">
@@ -3669,7 +3682,7 @@ function renderBingoAudienceDisplay(settings, players) {
         if (members.length === 0) return "";
         const c = (bingo.collectedCounts?.[teamColor] || 0);
         const s = scores[getTeamScoreKey(teamColor)] || 0;
-        const names = members.map(m => getPlayerName(m)).join(", ");
+        const names = members.map(m => escapeHtml(getPlayerName(m))).join(", ");
         return `<li><span class="team-pill team-${teamColor}">${teamColor}</span> <small>(${names})</small> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
       }).filter(Boolean).join("");
   } else {
@@ -3681,13 +3694,13 @@ function renderBingoAudienceDisplay(settings, players) {
     standings = sorted.map(p => {
       const c = (bingo.collectedCounts?.[p.id] || 0);
       const s = scores[p.id] || 0;
-      return `<li><strong>${getPlayerName(p)}</strong> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
+      return `<li><strong>${escapeHtml(getPlayerName(p))}</strong> ${isWen ? getSnark("audience.bingo.score", `Score: ${s}`, { points: s }) : getSnark("audience.bingo.lettersScore", `${c}/${items.length} letters — ${s}pts`, { collected: c, items: items.length, points: s })}</li>`;
     }).join("");
   }
   const winnerLabel = bingo.winner
     ? TEAM_COLORS.includes(bingo.winner)
       ? `Team ${bingo.winner}`
-      : (players.find(p => p.id === bingo.winner) ? getPlayerName(players.find(p => p.id === bingo.winner)) : null)
+      : (players.find(p => p.id === bingo.winner) ? escapeHtml(getPlayerName(players.find(p => p.id === bingo.winner))) : null)
     : null;
   return `
     <main class="layout audience-layout" data-bingo-active="true">
@@ -3739,10 +3752,10 @@ function renderDisOrDatHostPanel(settings, players) {
       ? TEAM_COLORS.map(teamColor => {
           const members = getTeamMembers(teamColor, players, assignments);
           if (members.length === 0) return "";
-          const names = members.map(m => getPlayerName(m)).join(", ");
+          const names = members.map(m => escapeHtml(getPlayerName(m))).join(", ");
           return `<button type="button" class="primary-action team-${teamColor}" data-disordat-pick-player="${teamColor}">Team ${teamColor} <small>(${names})</small></button>`;
         }).join("") || '<p class="muted">No teams assigned yet.</p>'
-      : nonController.map(p => `<button type="button" class="primary-action" data-disordat-pick-player="${p.id}">${getPlayerName(p)}</button>`).join("") || '<p class="muted">No players in the room yet.</p>';
+      : nonController.map(p => `<button type="button" class="primary-action" data-disordat-pick-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`).join("") || '<p class="muted">No players in the room yet.</p>';
     const pickMenu = dd.pendingPick ? `
       <div class="disordat-pick">
         <h3>${isSharedTeam ? "Which team plays this Dis or Dat?" : "Who plays this Dis or Dat?"}</h3>
@@ -3800,8 +3813,8 @@ function renderDisOrDatHostPanel(settings, players) {
       const total = base - penalty + bonus;
       const rep = nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
       const label = TEAM_COLORS.includes(track)
-        ? `Team ${track}` + (rep ? ` <small>(${getPlayerName(rep)})</small>` : "")
-        : getPlayerName(rep);
+        ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
+        : escapeHtml(getPlayerName(rep) || track);
       return { track, correctCount, base, bonus, total, label };
     })
     .sort((a, b) => b.total - a.total);
@@ -3837,8 +3850,8 @@ function renderDisOrDatHostPanel(settings, players) {
     ? nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === trackRows[0].track)
     : null;
   const activeLabel = dd.mode === "onePlayTimed" && trackRows.length > 0 && TEAM_COLORS.includes(trackRows[0].track)
-    ? `Team <strong>${trackRows[0].track}</strong>`
-    : activePlayer ? `Player: <strong>${getPlayerName(activePlayer)}</strong>` : "";
+    ? `Team <strong>${escapeHtml(trackRows[0].track)}</strong>`
+    : activePlayer ? `Player: <strong>${escapeHtml(getPlayerName(activePlayer))}</strong>` : "";
 
   return `
     <section class="card host-panel bingo-host-panel">
@@ -3993,8 +4006,8 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       const total = base - penalty + bonus;
       const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
       const label = TEAM_COLORS.includes(track)
-        ? `Team ${track}` + (rep ? ` <small>(${getPlayerName(rep)})</small>` : "")
-        : getPlayerName(rep);
+        ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
+        : escapeHtml(getPlayerName(rep) || track);
       return { track, correctCount, total, label, missing, penalty };
     })
     .sort((a, b) => b.total - a.total);
@@ -4070,7 +4083,7 @@ function renderFibbageHostPanel(settings, players) {
       const raw = fb.lies[trackKey] || "";
       const isBlocked = !!fb.blocked[trackKey];
       const err = fb.lieErrors[trackKey] || "";
-      const label = TEAM_COLORS.includes(trackKey) ? `Team ${trackKey}` : (players.find((p)=>p.id===trackKey)? getPlayerName(players.find((p)=>p.id===trackKey)) : trackKey);
+      const label = TEAM_COLORS.includes(trackKey) ? `Team ${trackKey}` : escapeHtml(players.find((p)=>p.id===trackKey)? getPlayerName(players.find((p)=>p.id===trackKey)) : trackKey);
       const status = raw ? (isBlocked? "blocked" : "submitted") : "waiting";
       return `<div class="fibbage-lie-row ${isBlocked?"is-blocked":""}">
         <strong>${escapeHtml(label)}</strong>
@@ -4097,7 +4110,7 @@ function renderFibbageHostPanel(settings, players) {
     const lieRows = eligibleTracks.map((trackKey)=>{
       const raw = fb.lies[trackKey] || "";
       const isBlocked = !!fb.blocked[trackKey];
-      const label = TEAM_COLORS.includes(trackKey) ? `Team ${trackKey}` : (players.find((p)=>p.id===trackKey)? getPlayerName(players.find((p)=>p.id===trackKey)) : trackKey);
+      const label = TEAM_COLORS.includes(trackKey) ? `Team ${trackKey}` : escapeHtml(players.find((p)=>p.id===trackKey)? getPlayerName(players.find((p)=>p.id===trackKey)) : trackKey);
       return `<div class="fibbage-lie-row ${isBlocked?"is-blocked":""}">
         <strong>${escapeHtml(label)}</strong>
         <span>${raw ? `"${escapeHtml(raw)}"` : "<em>—</em>"}</span>
@@ -4117,7 +4130,7 @@ function renderFibbageHostPanel(settings, players) {
       </section>`;
   }
   if (fb.phase === "voting_ready") {
-    const choicesHtml = (fb.choices||[]).map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}" ${c.isTruth?'<span class="muted">(truth)</span>':`<span class="muted">by ${c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ")}</span>`}</li>`).join("");
+    const choicesHtml = (fb.choices||[]).map((c,i)=>`<li><strong>${i+1}.</strong> "${escapeHtml(c.text)}" ${c.isTruth?'<span class="muted">(truth)</span>':`<span class="muted">by ${c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ")}</span>`}</li>`).join("");
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Responses Ready</h2>
@@ -4155,7 +4168,7 @@ function renderFibbageHostPanel(settings, players) {
     const revealed = fb.revealed||{all:false,singleIdx:null,revealedIdxs:[]};
     const points = fb.pointsEarned||{};
     const pointsRows = eligibleTracks.map((tk)=>{
-      const label = TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk);
+      const label = TEAM_COLORS.includes(tk)?`Team ${tk}`: escapeHtml(players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk);
       const pts = points[tk]||0;
       const lieChoice = choices.find((c)=>c.authorKeys.includes(tk));
       const lieText = lieChoice? lieChoice.text : (fb.lies[tk]|| (fb.blocked[tk]?"[blocked]":"—"));
@@ -4166,8 +4179,8 @@ function renderFibbageHostPanel(settings, players) {
     const hasAudience = hasAudienceDisplay();
     const choicesWithMeta = choices.map((c,i)=>{
       const voters = voteMap[i]||[];
-      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
-      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: escapeHtml(players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
       const isRevealed = revealed.all || revealed.singleIdx===i || (revealed.revealedIdxs||[]).includes(i);
       let colorCls="";
       if (isRevealed) {
@@ -4272,7 +4285,7 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
     const players = currentParticipants();
     const list = choices.map((c,i)=>{
       const voters = voteMap[i]||[];
-      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
       const isRevealed = revealed.all || revealed.singleIdx===i || (revealed.revealedIdxs||[]).includes(i);
       let cls="";
       if (isRevealed) {
@@ -4340,8 +4353,8 @@ function renderFibbageAudienceDisplay(settings, players) {
     if (focusIdx!==null && focusIdx!==undefined && choices[focusIdx]) {
       const c = choices[focusIdx];
       const voters = voteMap[focusIdx]||[];
-      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
-      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: escapeHtml(players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
       let colorCls="";
       let badge="";
       if (c.isTruth) { colorCls="is-truth"; badge="TRUTH"; }
@@ -4361,8 +4374,8 @@ function renderFibbageAudienceDisplay(settings, players) {
     }
     const list = choices.map((c,i)=>{
       const voters = voteMap[i]||[];
-      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: (players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
-      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: (players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
+      const voterLabels = voters.map((tk)=> TEAM_COLORS.includes(tk)?`Team ${tk}`: escapeHtml(players.find((p)=>p.id===tk)?getPlayerName(players.find((p)=>p.id===tk)):tk)).join(", ") || "none";
+      const authorLabels = c.isTruth? "TRUTH" : c.authorKeys.map((k)=> TEAM_COLORS.includes(k)?`Team ${k}`: escapeHtml(players.find((p)=>p.id===k)?getPlayerName(players.find((p)=>p.id===k)):k)).join(" + ");
       let cls="";
       if (revealed.all) {
         if (c.isTruth) cls="is-truth";
@@ -4610,7 +4623,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       (p) => p.id !== getControllerId() && p.id !== mePlayer.id
     );
     const playerButtons = nonHostPlayers
-      .map((p) => `<button type="button" data-screw-player="${p.id}">${getPlayerName(p)}</button>`)
+      .map((p) => `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`)
       .join("");
     
     return `
@@ -5265,7 +5278,7 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
   const toggles = nonControllerPlayers
     .map((player) => {
       const enabled = isPlayerBuzzerEnabled(settings, player.id);
-      return `<button class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-toggle-player="${player.id}" ${settingDisabledAttr}>${getPlayerName(player)} ${enabled ? "On" : "Off"}</button>`;
+      return `<button class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-toggle-player="${player.id}" ${settingDisabledAttr}>${escapeHtml(getPlayerName(player))} ${enabled ? "On" : "Off"}</button>`;
     })
     .join("");
 
@@ -5733,7 +5746,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               <span class="muted">Screw status:</span>
               ${players
                 .filter(p => p.id !== controllerId)
-                .map(p => `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:${round.screwsUsedBy?.includes(p.id) ? "rgba(235,61,48,0.2)" : "rgba(29,185,84,0.2)"}">${getPlayerName(p)}</span>`)
+                .map(p => `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:${round.screwsUsedBy?.includes(p.id) ? "rgba(235,61,48,0.2)" : "rgba(29,185,84,0.2)"}">${escapeHtml(getPlayerName(p))}</span>`)
                 .join("")}
             </div>`
           : ""}
@@ -5765,14 +5778,14 @@ function renderScrewNotice(round) {
 
   // Screw is active but screwee not selected yet
   if (!round.screw.screweeId) {
-    const isScrewer = round.screw.screwerId === me().id;
+    const isScrewer = round.screw.screwerId === me()?.id;
     if (isScrewer) {
       const controllerId = getControllerId();
       const cohostIds = getSafeState("cohostIds", []);
       const targets = currentParticipants()
         .filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && p.id !== round.screw.screwerId);
       const targetButtons = targets.map(p =>
-        `<button type="button" data-screw-player="${p.id}">${getPlayerName(p)}</button>`
+        `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`
       ).join("");
       return `
         <section class="card screw-card">
@@ -5829,7 +5842,7 @@ function renderLockedRuling(settings, pendingEntry) {
     <section class="card ruling-card">
       <h3>Locked Ruling</h3>
       <p>
-        ${pendingEntry.playerName} buzzed
+        ${escapeHtml(pendingEntry.playerName)} buzzed
         <strong>${renderedAnswer}</strong> with
         <strong>${formatSeconds(pendingEntry.timeLeftCs)}s</strong> left.
       </p>
@@ -5933,7 +5946,7 @@ function renderLog(log, settings) {
       return `
         <li>
           <div class="log-main">
-            <span class="log-player">${entry.playerName}</span>
+            <span class="log-player">${escapeHtml(entry.playerName)}</span>
             <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
             <span>
               ${
@@ -5977,32 +5990,21 @@ function renderHiddenPanel(title, helper) {
 }
 
 // =============================================================================
-// Top-level render — assembles the entire page HTML and calls bindEvents
+// Top-level render — assembles the entire page HTML
+// Input preservation is handled by render.js scheduler (generic, survives re-renders)
 // =============================================================================
-let _fibTruthDraft = null;
-let _fibTruthSelStart = null;
-let _fibTruthSelEnd = null;
 function render() {
-  try {
-    const ae = document.activeElement;
-    if (ae && ae.id === "fibbage-truth") {
-      _fibTruthDraft = ae.value;
-      _fibTruthSelStart = ae.selectionStart;
-      _fibTruthSelEnd = ae.selectionEnd;
-    } else {
-      _fibTruthDraft = null;
-    }
-  } catch { _fibTruthDraft = null; }
-  const restoreFibTruth = () => {
-    if (_fibTruthDraft !== null) {
-      const el = document.getElementById("fibbage-truth");
-      if (el) {
-        el.value = _fibTruthDraft;
-        try { el.focus(); if (_fibTruthSelStart !== null) el.setSelectionRange(_fibTruthSelStart, _fibTruthSelEnd); } catch {}
-      }
-    }
-  };
+  const mount = getApp() || app;
+  if (!mount) {
+    console.warn("[render] #app mount not found");
+    return;
+  }
   const mePlayer = me();
+  if (!mePlayer) {
+    // Not yet connected — show landing until PlayroomKit is ready
+    try { renderPrejoinScreen(prejoinMode); } catch {}
+    return;
+  }
   const players = currentParticipants();
   const settings = getSettings();
   const round = getRound();
@@ -6034,22 +6036,18 @@ function render() {
     const totalPlayers = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && isPlayerBuzzerEnabled(settings, p.id)).length;
     const timerRunning = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
     const allBuzzed = buzzedCount >= totalPlayers && totalPlayers > 0;
-    if (!timerRunning || round.screw.active) {
-      audienceTimerFrozenCs = null;
-    } else if (allBuzzed) {
-      if (audienceTimerFrozenCs === null) audienceTimerFrozenCs = timeLeftCs;
-    } else {
-      audienceTimerFrozenCs = null;
-    }
+    // Use helper without mutating global inside render; keep global in sync via computed
+    const computedFrozen = computeAudienceTimerFrozenCs({ round, timeLeftCs, totalPlayers, buzzedCount, timerRunning });
+    if (computedFrozen !== null && audienceTimerFrozenCs === null) audienceTimerFrozenCs = computedFrozen;
+    else if (computedFrozen === null) audienceTimerFrozenCs = null;
     const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
 
     if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
-      app.innerHTML = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
+      mount.innerHTML = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
     } else {
-      app.innerHTML = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
+      mount.innerHTML = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
     }
     lastUiSignature = getUiSignature();
-    bindEvents();
     return;
   }
 
@@ -6064,7 +6062,7 @@ function render() {
         ${renderTeamSelectPlayerPanel(settings, players, mePlayer)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
-    app.innerHTML = `
+    mount.innerHTML = `
       <main class="layout" data-teamselect-active="true">
         <header class="hero">
           <div>
@@ -6082,7 +6080,6 @@ function render() {
       </main>
     `;
     lastUiSignature = getUiSignature();
-    bindEvents();
     return;
   }
 
@@ -6098,7 +6095,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
-    app.innerHTML = `
+    mount.innerHTML = `
       <main class="layout" data-bingo-active="true">
         <header class="hero">
           <div>
@@ -6115,7 +6112,6 @@ function render() {
       </main>
     `;
     lastUiSignature = getUiSignature();
-    bindEvents();
     return;
   }
 
@@ -6130,7 +6126,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
-    app.innerHTML = `
+    mount.innerHTML = `
       <main class="layout" data-disordat-active="true">
         <header class="hero">
           <div>
@@ -6147,7 +6143,6 @@ function render() {
       </main>
     `;
     lastUiSignature = getUiSignature();
-    bindEvents();
     return;
   }
 
@@ -6165,7 +6160,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${fibScoresPlayer}
       </section>` ;
-    app.innerHTML = `
+    mount.innerHTML = `
       <main class="layout" data-fibbage-active="true">
         <header class="hero">
           <div>
@@ -6182,11 +6177,10 @@ function render() {
       </main>
     `;
     lastUiSignature = getUiSignature();
-    bindEvents();
     return;
   }
 
-  app.innerHTML = `
+  mount.innerHTML = `
     <main class="layout"${round.screw.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
       <header class="hero">
         <div>
@@ -6217,549 +6211,330 @@ function render() {
   `;
 
   lastUiSignature = getUiSignature();
-  bindEvents();
 }
 
 // =============================================================================
 // Event binding — attaches listeners to every data-* attribute in the DOM
 // =============================================================================
+// Delegated event bus — bound once, survives full innerHTML wipes
+// Replaces the old per-render querySelectorAll+addEventListener churn.
+// See src/render.js for scheduler + input preservation.
+// =============================================================================
+let delegatedBound = false;
 function bindEvents() {
-  // Restore fibbage truth draft if host was typing during re-render
-  try {
-    if (_fibTruthDraft !== null) {
-      const el = document.getElementById("fibbage-truth");
-      if (el) {
-        el.value = _fibTruthDraft;
-        el.focus();
-        if (_fibTruthSelStart !== null) el.setSelectionRange(_fibTruthSelStart, _fibTruthSelEnd);
-      }
-    }
-  } catch {}
-  app.querySelectorAll("[data-buzz]").forEach((button) => {
-    button.addEventListener("pointerdown", (event) => {
-      event.preventDefault();
-      submitResponse({ option: Number(button.dataset.buzz) });
-    });
-  });
+  if (delegatedBound) return;
+  delegatedBound = true;
+  const mount = getApp() || app;
+  initRenderer(mount, render);
+  // Preserve generic inputs via render.js; legacy fib draft no longer needed.
 
-  app.querySelectorAll("[data-answer-submit]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const input = app.querySelector("#answer-entry");
-      const answerText = String(input?.value || "").trim();
-      submitResponse({ answerText });
-      if (input) {
-        input.value = "";
-      }
-    });
-  });
-
-  app.querySelectorAll("[data-roulette-stop]").forEach((button) => {
-    button.addEventListener("click", () => {
-      submitRouletteStop();
-    });
-  });
-
-  app.querySelectorAll("[data-pick-team]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const teamColor = button.dataset.pickTeam;
-      const result = await RPC.call("select-team", { teamColor }, RPC.Mode.HOST);
-      if (result?.ok === false) {
-        setBuzzNotice(result.reason || "Could not join that team.");
-      } else if (result?.message) {
-        setBuzzNotice(result.message);
-      }
-      render();
-    });
-  });
-
-  const answerInput = app.querySelector("#answer-entry");
-  if (answerInput) {
-    answerInput.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") {
-        return;
-      }
-      event.preventDefault();
-      const answerText = String(answerInput.value || "").trim();
-      submitResponse({ answerText });
-      answerInput.value = "";
-    });
-  }
-
-  if (hasHostPrivileges()) {
-    app.querySelectorAll("[data-setting]").forEach((input) => {
-      input.addEventListener("change", () => {
-        const setting = input.dataset.setting;
-        if (setting === "timeOpen") {
-          const value = clamp(parseInt(input.value, 10) || 20, 1, 120);
-          setHostSetting("timeOpen", value);
-          return;
-        }
-        if (setting === "inputMode") {
-          setHostSetting("inputMode", input.value);
-          return;
-        }
-        if (setting === "optionCount") {
-          setHostSetting("optionCount", Number(input.value));
-          return;
-        }
-        if (setting === "scoringMode") {
-          setHostSetting("scoringMode", input.value === "jack" ? "jack" : input.value === "roulette" ? "roulette" : "uniform");
-          return;
-        }
-        if (setting === "rouletteMode") {
-          setHostSetting("rouletteMode", input.value === "highest" ? "highest" : input.value === "single-player" ? "single-player" : "additive");
-          return;
-        }
-        if (setting === "rouletteTopAmount") {
-          setHostSetting("rouletteTopAmount", normalizeRouletteTopAmount(input.value));
-          return;
-        }
-        if (setting === "rouletteSinglePlayerTarget") {
-          setHostSetting("rouletteSinglePlayerTarget", input.value || "random");
-          return;
-        }
-        if (setting === "uniformPoints") {
-          setHostSetting("uniformPoints", normalizeUniformPoints(input.value));
-          return;
-        }
-        if (setting === "jackMultiplier") {
-          setHostSetting("jackMultiplier", Number(input.value));
-          return;
-        }
-        if (setting === "teamScoringMode") {
-          setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance");
-          return;
-        }
-        if (setting === "snarkMode") {
-          setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off");
-          return;
-        }
-        if (setting === "maxBuzzesPerOption") {
-          const value = clamp(parseInt(input.value, 10) || 1, 1, 50);
-          setHostSetting("maxBuzzesPerOption", value);
-          return;
-        }
-      });
-    });
-
-    // Toggle switches (On/Off button pairs)
-    app.querySelectorAll("[data-toggle-setting]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const setting = button.dataset.toggleSetting;
-        const value = button.dataset.value === "true";
-        button.parentElement.querySelectorAll(".toggle-switch-btn").forEach((b) => {
-          b.classList.remove("is-active", "is-off-val");
-        });
-        button.classList.add("is-active");
-        if (!value) button.classList.add("is-off-val");
-        setHostSetting(setting, value);
-      });
-    });
-
-    app.querySelectorAll("[data-team-player]").forEach((input) => {
-      input.addEventListener("change", () => {
-        setPlayerTeam(input.dataset.teamPlayer, String(input.value || ""));
-      });
-    });
-
-    app.querySelectorAll("[data-host-action]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const action = button.dataset.hostAction;
-        if (action === "randomize-teams") {
-          randomizeTeams();
-        } else if (action === "open") {
-          openBuzzers();
-        } else if (action === "start-roulette") {
-          const result = startRoulettePhase();
-          if (result?.ok === false) {
-            setBuzzNotice(result.reason || "Could not start pick-a-value.");
-            render();
-          } else if (result?.message) {
-            setBuzzNotice(result.message);
-            render();
-          }
-        } else if (action === "close") {
-          closeBuzzers();
-        } else if (action === "reset") {
-          resetRound();
-        } else if (action === "reset-screws") {
-          resetScrews();
-        }
-      });
-    });
-
-    app.querySelectorAll("[data-host-screw]").forEach((button) => {
-      button.addEventListener("click", () => hostInitiateScrew());
-    });
-
-    app.querySelectorAll("[data-teamselect-open]").forEach((button) => {
-      button.addEventListener("click", () => openTeamSelect());
-    });
-
-    app.querySelectorAll("[data-teamselect-close]").forEach((button) => {
-      button.addEventListener("click", () => closeTeamSelect());
-    });
-
-    app.querySelectorAll("[data-teamselect-lock]").forEach((button) => {
-      button.addEventListener("click", () => setTeamSelectLocked(button.dataset.teamselectLock === "true"));
-    });
-
-    app.querySelectorAll("[data-teamselect-enable]").forEach((input) => {
-      input.addEventListener("change", () => {
-        const current = getTeamSelect().enabledTeams || [];
-        const teamColor = input.dataset.teamselectEnable;
-        const next = input.checked
-          ? [...new Set([...current, teamColor])]
-          : current.filter((color) => color !== teamColor);
-        setTeamSelectTeams(next);
-      });
-    });
-
-    app.querySelectorAll("[data-teamselect-limit]").forEach((input) => {
-      input.addEventListener("change", () => {
-        setTeamSelectLimit(input.value);
-      });
-    });
-
-    app.querySelectorAll("[data-set-mode]").forEach((button) => {
-      button.addEventListener("click", () => {
-        setHostSetting("inputMode", button.dataset.setMode);
-      });
-    });
-
-    app.querySelectorAll("[data-toggle-option]").forEach((button) => {
-      button.addEventListener("click", () => {
-        toggleBuzzerOption(Number(button.dataset.toggleOption));
-      });
-    });
-
-    app.querySelectorAll("[data-toggle-player]").forEach((button) => {
-      button.addEventListener("click", () => {
-        togglePlayerBuzzer(button.dataset.togglePlayer);
-      });
-    });
-
-    // Correct answer handlers (host)
-    app.querySelectorAll("[data-set-correct-text]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const input = app.querySelector("#correct-answer-entry");
-        const val = String(input?.value || "").trim();
-        if (!val) return;
-        setCorrectAnswerValue(val);
-      });
-    });
-
-    app.querySelectorAll("[data-clear-correct]").forEach((button) => {
-      button.addEventListener("click", () => {
-        clearCorrectAnswerValue();
-      });
-    });
-
-    app.querySelectorAll("[data-correct-option]").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (!hasHostPrivileges()) return;
-        const opt = Number(button.dataset.correctOption);
-        if (!Number.isInteger(opt)) return;
-        toggleCorrectOption(opt);
-      });
-    });
-
-    // Remove co-host (host only)
-    app.querySelectorAll("[data-remove-cohost]").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (!isHost()) return;
-        const removeId = button.dataset.removeCohost;
-        const current = getSafeState("cohostIds", []);
-        if (Array.isArray(current) && current.includes(removeId)) {
-          setState("cohostIds", current.filter((id) => id !== removeId), true);
-          render();
-        }
-      });
-    });
-
-    app.querySelectorAll("[data-ruling]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const logId = button.dataset.logId;
-        const delta = Number(button.dataset.ruling);
-        updateScoresForLogEntry(logId, delta);
-      });
-    });
-
-    app.querySelectorAll("[data-log-apply]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const id = button.dataset.logApply;
-        const input = app.querySelector(`[data-log-input="${id}"]`);
-        const value = Number(input?.value || 0);
-        updateScoresForLogEntry(id, value);
-      });
-    });
-
-    app.querySelectorAll("[data-log-quick]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const id = button.dataset.logId;
-        const log = getLog();
-        const entry = log.find((item) => item.id === id);
-        if (!entry) {
-          return;
-        }
-        const delta = button.dataset.logQuick === "plus" ? entry.basePoints : -entry.basePoints;
-        updateScoresForLogEntry(id, delta);
-      });
-    });
-
-    // Screw handlers (host and players)
-    app.querySelectorAll("[data-screw-start-timer]").forEach((button) => {
-      button.addEventListener("click", () => {
-        startScrewTimer();
-      });
-    });
-  }
-
-  // Screw button for players
-  app.querySelectorAll("[data-screw]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const mePlayer = me();
-      if (isHost()) {
-        initiateScrew(mePlayer.id);
-      } else {
-        try {
-          const result = await RPC.call("screw", { screweeId: null }, RPC.Mode.HOST);
-          if (!result?.ok) {
-            setBuzzNotice(result?.reason || "Screw failed.");
-          }
-          render();
-        } catch {
-          setBuzzNotice("Could not send screw. Check connection/room.");
-          render();
-        }
-      }
-    });
-  });
-
-  // Player selection for screw
-  app.querySelectorAll("[data-screw-player]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const screweeId = button.dataset.screwPlayer;
-      if (isHost()) {
-        selectScrewee(screweeId);
-      } else {
-        try {
-          const result = await RPC.call("screw", { screweeId }, RPC.Mode.HOST);
-          if (!result?.ok) {
-            setBuzzNotice(result?.reason || "Screw selection failed.");
-          }
-          render();
-        } catch {
-          setBuzzNotice("Could not send screw selection. Check connection/room.");
-          render();
-        }
-      }
-    });
-  });
-
-    // Bingo host handlers
-    app.querySelectorAll("[data-bingo-init]").forEach(btn => {
-      btn.addEventListener("click", () => startBingo());
-    });
-    app.querySelectorAll("[data-bingo-end]").forEach(btn => {
-      btn.addEventListener("click", () => endBingo());
-    });
-    app.querySelectorAll("[data-bingo-target]").forEach(sel => {
-      sel.addEventListener("change", () => setBingoTarget(Number(sel.value)));
-    });
-    app.querySelectorAll("[data-bingo-cycle]").forEach(btn => {
-      btn.addEventListener("click", () => startBingoCycling());
-    });
-    app.querySelectorAll("[data-bingo-stop-cycle]").forEach(btn => {
-      btn.addEventListener("click", () => stopBingoCycling());
-    });
-    app.querySelectorAll("[data-bingo-exit]").forEach(btn => {
-      btn.addEventListener("click", () => {
-        endBingo();
-        setHostSetting("inputMode", "buttons");
-      });
-    });
-
-    // Bingo player buzz
-    app.querySelectorAll("[data-bingo-buzz]").forEach(btn => {
-      btn.addEventListener("pointerdown", async (event) => {
-        event.preventDefault();
-        if (isControllerPlayer() || isCohost()) return;
-        const bState = getBingo();
-        const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
-        try {
-          const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
-          if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
-          else if (result?.message) setBuzzNotice(result.message);
-          render();
-        } catch {
-          setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz."));
-          render();
-        }
-      });
-    });
-
-    app.querySelectorAll("[data-f-you-close]").forEach((button) => {
-      button.addEventListener("click", () => {
-        fYouEasterEggUnlocked = false;
-        render();
-      });
-    });
-
-    // Dis or Dat — host setup and control (host-only)
-    app.querySelectorAll("#disordat-dis-label").forEach(input => {
-      input.addEventListener("change", () => {
-        if (!isHost()) return;
-        setState("disordat", { ...getDisOrDat(), disLabel: String(input.value || "").trim() }, true);
-      });
-    });
-    app.querySelectorAll("#disordat-dat-label").forEach(input => {
-      input.addEventListener("change", () => {
-        if (!isHost()) return;
-        setState("disordat", { ...getDisOrDat(), datLabel: String(input.value || "").trim() }, true);
-      });
-    });
-    app.querySelectorAll("#disordat-timed-seconds").forEach(select => {
-      select.addEventListener("change", () => {
-        if (!isHost()) return;
-        const seconds = Number(select.value);
-        if (DIS_OR_DAT_TIMED_OPTIONS.includes(seconds)) {
-          setState("disordat", { ...getDisOrDat(), timedSeconds: seconds }, true);
-        }
-      });
-    });
-    app.querySelectorAll("[data-disordat-answer-chip]").forEach(button => {
-      button.addEventListener("click", () => {
-        if (!isHost()) return;
-        const q = Number(button.dataset.q);
-        if (!Number.isInteger(q) || q < 0 || q >= DIS_OR_DAT_QUESTION_COUNT) return;
-        const dd = getDisOrDat();
-        const answers = [...dd.answers];
-        answers[q] = button.dataset.answer;
-        setState("disordat", { ...dd, answers }, true);
-        render();
-      });
-    });
-    app.querySelectorAll("[data-disordat-start]").forEach(button => {
-      button.addEventListener("click", () => {
-        if (!isHost()) return;
-        const mode = button.dataset.disordatStart;
-        if (mode === "onePlayTimed") {
-          setState("disordat", { ...getDisOrDat(), mode, pendingPick: true }, true);
-          render();
-        } else {
-          startDisOrDat(mode);
-        }
-      });
-    });
-    app.querySelectorAll("[data-disordat-pick-player]").forEach(button => {
-      button.addEventListener("click", () => {
-        if (!isHost()) return;
-        startDisOrDat("onePlayTimed", button.dataset.disordatPickPlayer);
-      });
-    });
-    app.querySelectorAll("[data-disordat-next]").forEach(button => {
-      button.addEventListener("click", () => nextDisOrDatQuestion());
-    });
-    app.querySelectorAll("[data-disordat-end]").forEach(button => {
-      button.addEventListener("click", () => endDisOrDat());
-    });
-    app.querySelectorAll("[data-disordat-reset]").forEach(button => {
-      button.addEventListener("click", () => resetDisOrDat());
-    });
-    app.querySelectorAll("[data-disordat-exit]").forEach(button => {
-      button.addEventListener("click", () => exitDisOrDat());
-    });
-
-    // Dis or Dat — player answer
-    app.querySelectorAll("[data-disordat-answer]").forEach(button => {
-      button.addEventListener("click", async () => {
-        if (isControllerPlayer() || isCohost()) return;
-        const q = Number(button.dataset.q);
-        const answer = button.dataset.answer;
-        try {
-          const result = await RPC.call("disordat-answer", { q, answer }, RPC.Mode.HOST);
-          if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
-          else if (result?.message) setBuzzNotice(result.message);
-          disOrDatRevealUntil = now() + DIS_OR_DAT_REVEAL_MS;
-          render();
-          setTimeout(() => render(), DIS_OR_DAT_REVEAL_MS + 30);
-        } catch {
-          setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer."));
-          render();
-        }
-      });
-    });
-
-    // Fibbage — host controls
-    app.querySelectorAll("[data-fibbage-enter-lies]").forEach((b)=> b.addEventListener("click", ()=> startFibbageLying()));
-    app.querySelectorAll("[data-fibbage-set-truth]").forEach((b)=> b.addEventListener("click", ()=>{
-      const inp = app.querySelector("#fibbage-truth");
-      setFibbageTruth(inp ? inp.value : "");
-    }));
-    app.querySelectorAll("#fibbage-lie-time").forEach((el)=> el.addEventListener("change", ()=> setFibbageLieTime(el.value)));
-    app.querySelectorAll("#fibbage-vote-time").forEach((el)=> el.addEventListener("change", ()=> setFibbageVoteTime(el.value)));
-    app.querySelectorAll("#fibbage-mult").forEach((el)=> el.addEventListener("change", ()=> setFibbageMultiplier(el.value)));
-    app.querySelectorAll("[data-fibbage-end-lying]").forEach((b)=> b.addEventListener("click", ()=> endFibbageLyingEarly()));
-    app.querySelectorAll("[data-fibbage-show-responses]").forEach((b)=> b.addEventListener("click", ()=> showFibbageResponses()));
-    app.querySelectorAll("[data-fibbage-start-vote]").forEach((b)=> b.addEventListener("click", ()=> startFibbageVoteTimer()));
-    app.querySelectorAll("[data-fibbage-block]").forEach((b)=> b.addEventListener("click", ()=> toggleFibbageBlock(b.dataset.fibbageBlock)));
-    app.querySelectorAll("[data-fibbage-show-all]").forEach((b)=> b.addEventListener("click", ()=>{
-      if(!isHost()) return;
-      const fb=getFibbage();
-      setState("fibbage", {...fb, revealed:{all:true,singleIdx:null,revealedIdxs:(fb.choices||[]).map((_,i)=>i)}},true); render();
-    }));
-    const handleSpotlight = (idx)=>{
-      if(!isHost()) return;
-      const fb=getFibbage();
-      const already = fb.revealed.singleIdx===idx ? null : idx;
-      const revealedIdxs = already!==null ? [...new Set([...(fb.revealed.revealedIdxs||[]), idx])] : (fb.revealed.revealedIdxs||[]);
-      setState("fibbage", {...fb, revealed:{all:false,singleIdx:already,revealedIdxs}},true); render();
-    };
-    app.querySelectorAll("[data-fibbage-spotlight]").forEach((b)=>{
-      b.addEventListener("click", (e)=>{ e.preventDefault(); handleSpotlight(Number(b.dataset.fibbageSpotlight)); });
-    });
-    app.querySelectorAll("[data-fibbage-spotlight-clear]").forEach((b)=>{
-      b.addEventListener("click", (e)=>{ e.preventDefault(); if(!isHost()) return; const fb=getFibbage(); setState("fibbage", {...fb, revealed:{all:false,singleIdx:null,revealedIdxs:fb.revealed.revealedIdxs||[]}},true); render(); });
-    });
-    app.querySelectorAll("[data-fibbage-reset]").forEach((b)=> b.addEventListener("click", ()=> resetFibbage()));
-    app.querySelectorAll("[data-fibbage-exit]").forEach((b)=> b.addEventListener("click", ()=> exitFibbage()));
-    // Fibbage — player lie/vote
-    app.querySelectorAll("[data-fibbage-submit-lie]").forEach((b)=> b.addEventListener("click", async ()=>{
-      if(isControllerPlayer()||isCohost()) return;
-      const inp=app.querySelector("#fibbage-lie-entry");
-      const lieText=String(inp?.value||"").trim();
-      try{
-        const res=await RPC.call("fibbage-lie",{lieText}, RPC.Mode.HOST);
-        if(res?.ok===false && res?.reason) setBuzzNotice(res.reason);
-        else if(res?.message) setBuzzNotice(res.message);
-        if(res?.ok) if(inp) inp.value="";
-        render();
-      }catch{ setBuzzNotice("Could not send lie."); render();}
-    }));
-    app.querySelectorAll("[data-fibbage-vote]").forEach((b)=> b.addEventListener("click", async ()=>{
-      if(isControllerPlayer()||isCohost()) return;
-      const idx=Number(b.dataset.fibbageVote);
-      try{
-        const res=await RPC.call("fibbage-vote",{choiceIdx:idx}, RPC.Mode.HOST);
-        if(res?.ok===false && res?.reason) setBuzzNotice(res.reason);
-        else if(res?.message) setBuzzNotice(res.message);
-        render();
-      }catch{ setBuzzNotice("Could not send vote."); render();}
-    }));
-    const fibInput=app.querySelector("#fibbage-lie-entry");
-    if(fibInput){
-      fibInput.addEventListener("keydown",(e)=>{
-        if(e.key==="Enter"){ e.preventDefault(); app.querySelector("[data-fibbage-submit-lie]")?.click(); }
-      });
-    }
-
+  // Global doc listener for roulette space — kept here once
   if (!rouletteKeydownBound) {
     document.addEventListener("keydown", handleRouletteKeydown);
     rouletteKeydownBound = true;
   }
-}
 
+  // --- Delegated handlers below ---
+  delegate("pointerdown", "[data-buzz]", (e, btn) => {
+    e.preventDefault();
+    submitResponse({ option: Number(btn.dataset.buzz) });
+  });
+  delegate("click", "[data-answer-submit]", () => {
+    const input = (getApp() || app).querySelector("#answer-entry");
+    const answerText = String(input?.value || "").trim();
+    submitResponse({ answerText });
+    if (input) input.value = "";
+  });
+  delegate("click", "[data-roulette-stop]", () => submitRouletteStop());
+  delegate("click", "[data-pick-team]", async (e, btn) => {
+    const teamColor = btn.dataset.pickTeam;
+    const result = await RPC.call("select-team", { teamColor }, RPC.Mode.HOST);
+    if (result?.ok === false) setBuzzNotice(result.reason || "Could not join that team.");
+    else if (result?.message) setBuzzNotice(result.message);
+    scheduleRender(render);
+  });
+  // #answer-entry Enter
+  delegate("keydown", "#answer-entry", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const answerText = String(e.target.value || "").trim();
+    submitResponse({ answerText });
+    e.target.value = "";
+  });
+  // Host-only delegated (guard at runtime)
+  const requireHost = (fn) => (e, target) => { if (!hasHostPrivileges()) return; fn(e, target); };
+  delegate("change", "[data-setting]", requireHost((e, input) => {
+    const setting = input.dataset.setting;
+    if (setting === "timeOpen") { setHostSetting("timeOpen", clamp(parseInt(input.value, 10) || 20, 1, 120)); return; }
+    if (setting === "inputMode") { setHostSetting("inputMode", input.value); return; }
+    if (setting === "optionCount") { setHostSetting("optionCount", Number(input.value)); return; }
+    if (setting === "scoringMode") { setHostSetting("scoringMode", input.value === "jack" ? "jack" : input.value === "roulette" ? "roulette" : "uniform"); return; }
+    if (setting === "rouletteMode") { setHostSetting("rouletteMode", input.value === "highest" ? "highest" : input.value === "single-player" ? "single-player" : "additive"); return; }
+    if (setting === "rouletteTopAmount") { setHostSetting("rouletteTopAmount", normalizeRouletteTopAmount(input.value)); return; }
+    if (setting === "rouletteSinglePlayerTarget") { setHostSetting("rouletteSinglePlayerTarget", input.value || "random"); return; }
+    if (setting === "uniformPoints") { setHostSetting("uniformPoints", normalizeUniformPoints(input.value)); return; }
+    if (setting === "jackMultiplier") { setHostSetting("jackMultiplier", Number(input.value)); return; }
+    if (setting === "teamScoringMode") { setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance"); return; }
+    if (setting === "snarkMode") { setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off"); return; }
+    if (setting === "maxBuzzesPerOption") { setHostSetting("maxBuzzesPerOption", clamp(parseInt(input.value, 10) || 1, 1, 50)); return; }
+  }));
+  delegate("click", "[data-toggle-setting]", requireHost((e, btn) => {
+    const setting = btn.dataset.toggleSetting;
+    const value = btn.dataset.value === "true";
+    try {
+      const parent = btn.parentElement;
+      if (parent) {
+        parent.querySelectorAll(".toggle-switch-btn").forEach((b) => b.classList.remove("is-active", "is-off-val"));
+        btn.classList.add("is-active");
+        if (!value) btn.classList.add("is-off-val");
+      }
+    } catch {}
+    setHostSetting(setting, value);
+  }));
+  delegate("change", "[data-team-player]", requireHost((e, input) => setPlayerTeam(input.dataset.teamPlayer, String(input.value || ""))));
+  delegate("click", "[data-host-action]", requireHost((e, btn) => {
+    const action = btn.dataset.hostAction;
+    if (action === "randomize-teams") randomizeTeams();
+    else if (action === "open") openBuzzers();
+    else if (action === "start-roulette") {
+      const result = startRoulettePhase();
+      if (result?.ok === false) setBuzzNotice(result.reason || "Could not start pick-a-value.");
+      else if (result?.message) setBuzzNotice(result.message);
+      scheduleRender(render);
+    } else if (action === "close") closeBuzzers();
+    else if (action === "reset") resetRound();
+    else if (action === "reset-screws") resetScrews();
+  }));
+  delegate("click", "[data-host-screw]", requireHost(() => hostInitiateScrew()));
+  delegate("click", "[data-teamselect-open]", requireHost(() => openTeamSelect()));
+  delegate("click", "[data-teamselect-close]", requireHost(() => closeTeamSelect()));
+  delegate("click", "[data-teamselect-lock]", requireHost((e, btn) => setTeamSelectLocked(btn.dataset.teamselectLock === "true")));
+  delegate("change", "[data-teamselect-enable]", requireHost((e, input) => {
+    const current = getTeamSelect().enabledTeams || [];
+    const teamColor = input.dataset.teamselectEnable;
+    const next = input.checked ? [...new Set([...current, teamColor])] : current.filter((c) => c !== teamColor);
+    setTeamSelectTeams(next);
+  }));
+  delegate("change", "[data-teamselect-limit]", requireHost((e, input) => setTeamSelectLimit(input.value)));
+  delegate("click", "[data-set-mode]", requireHost((e, btn) => setHostSetting("inputMode", btn.dataset.setMode)));
+  delegate("click", "[data-toggle-option]", requireHost((e, btn) => toggleBuzzerOption(Number(btn.dataset.toggleOption))));
+  delegate("click", "[data-toggle-player]", requireHost((e, btn) => togglePlayerBuzzer(btn.dataset.togglePlayer)));
+  delegate("click", "[data-set-correct-text]", requireHost(() => {
+    const input = (getApp() || app).querySelector("#correct-answer-entry");
+    const val = String(input?.value || "").trim();
+    if (!val) return;
+    setCorrectAnswerValue(val);
+  }));
+  delegate("click", "[data-clear-correct]", requireHost(() => clearCorrectAnswerValue()));
+  delegate("click", "[data-correct-option]", requireHost((e, btn) => {
+    const opt = Number(btn.dataset.correctOption);
+    if (!Number.isInteger(opt)) return;
+    toggleCorrectOption(opt);
+  }));
+  delegate("click", "[data-remove-cohost]", (e, btn) => {
+    if (!isHost()) return;
+    const removeId = btn.dataset.removeCohost;
+    const current = getSafeState("cohostIds", []);
+    if (Array.isArray(current) && current.includes(removeId)) {
+      setState("cohostIds", current.filter((id) => id !== removeId), true);
+      scheduleRender(render);
+    }
+  });
+  delegate("click", "[data-ruling]", requireHost((e, btn) => updateScoresForLogEntry(btn.dataset.logId, Number(btn.dataset.ruling))));
+  delegate("click", "[data-log-apply]", requireHost((e, btn) => {
+    const id = btn.dataset.logApply;
+    const input = (getApp() || app).querySelector(`[data-log-input="${id}"]`);
+    updateScoresForLogEntry(id, Number(input?.value || 0));
+  }));
+  delegate("click", "[data-log-quick]", requireHost((e, btn) => {
+    const id = btn.dataset.logId;
+    const entry = getLog().find((item) => item.id === id);
+    if (!entry) return;
+    updateScoresForLogEntry(id, btn.dataset.logQuick === "plus" ? entry.basePoints : -entry.basePoints);
+  }));
+  delegate("click", "[data-screw-start-timer]", requireHost(() => startScrewTimer()));
+
+  // Player screw
+  delegate("click", "[data-screw]", async () => {
+    const self = me();
+    if (!self) return;
+    if (isHost()) initiateScrew(self.id);
+    else {
+      try {
+        const result = await RPC.call("screw", { screweeId: null }, RPC.Mode.HOST);
+        if (!result?.ok) setBuzzNotice(result?.reason || "Screw failed.");
+      } catch { setBuzzNotice("Could not send screw. Check connection/room."); }
+      scheduleRender(render);
+    }
+  });
+  delegate("click", "[data-screw-player]", async (e, btn) => {
+    const screweeId = btn.dataset.screwPlayer;
+    if (isHost()) selectScrewee(screweeId);
+    else {
+      try {
+        const result = await RPC.call("screw", { screweeId }, RPC.Mode.HOST);
+        if (!result?.ok) setBuzzNotice(result?.reason || "Screw selection failed.");
+      } catch { setBuzzNotice("Could not send screw selection. Check connection/room."); }
+      scheduleRender(render);
+    }
+  });
+  // Bingo
+  delegate("click", "[data-bingo-init]", requireHost(() => startBingo()));
+  delegate("click", "[data-bingo-end]", requireHost(() => endBingo()));
+  delegate("change", "[data-bingo-target]", requireHost((e, sel) => setBingoTarget(Number(sel.value))));
+  delegate("click", "[data-bingo-cycle]", requireHost(() => startBingoCycling()));
+  delegate("click", "[data-bingo-stop-cycle]", requireHost(() => stopBingoCycling()));
+  delegate("click", "[data-bingo-exit]", requireHost(() => { endBingo(); setHostSetting("inputMode", "buttons"); }));
+  delegate("pointerdown", "[data-bingo-buzz]", async (e) => {
+    e.preventDefault();
+    if (isControllerPlayer() || isCohost()) return;
+    const bState = getBingo();
+    const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
+    try {
+      const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
+      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+      else if (result?.message) setBuzzNotice(result.message);
+    } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
+    scheduleRender(render);
+  });
+  delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
+  // DisOrDat host
+  delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
+  delegate("change", "#disordat-dat-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), datLabel: String(e.target.value || "").trim() }, true)));
+  delegate("change", "#disordat-timed-seconds", requireHost((e) => {
+    const seconds = Number(e.target.value);
+    if (DIS_OR_DAT_TIMED_OPTIONS.includes(seconds)) setState("disordat", { ...getDisOrDat(), timedSeconds: seconds }, true);
+  }));
+  delegate("click", "[data-disordat-answer-chip]", requireHost((e, btn) => {
+    const q = Number(btn.dataset.q);
+    if (!Number.isInteger(q) || q < 0 || q >= DIS_OR_DAT_QUESTION_COUNT) return;
+    const dd = getDisOrDat();
+    const answers = [...dd.answers];
+    answers[q] = btn.dataset.answer;
+    setState("disordat", { ...dd, answers }, true);
+    scheduleRender(render);
+  }));
+  delegate("click", "[data-disordat-start]", requireHost((e, btn) => {
+    const mode = btn.dataset.disordatStart;
+    if (mode === "onePlayTimed") { setState("disordat", { ...getDisOrDat(), mode, pendingPick: true }, true); scheduleRender(render); }
+    else startDisOrDat(mode);
+  }));
+  delegate("click", "[data-disordat-pick-player]", requireHost((e, btn) => startDisOrDat("onePlayTimed", btn.dataset.disordatPickPlayer)));
+  delegate("click", "[data-disordat-next]", requireHost(() => nextDisOrDatQuestion()));
+  delegate("click", "[data-disordat-end]", requireHost(() => endDisOrDat()));
+  delegate("click", "[data-disordat-reset]", requireHost(() => resetDisOrDat()));
+  delegate("click", "[data-disordat-exit]", requireHost(() => exitDisOrDat()));
+  delegate("click", "[data-disordat-answer]", async (e, btn) => {
+    if (isControllerPlayer() || isCohost()) return;
+    const q = Number(btn.dataset.q);
+    const answer = btn.dataset.answer;
+    try {
+      const result = await RPC.call("disordat-answer", { q, answer }, RPC.Mode.HOST);
+      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+      else if (result?.message) setBuzzNotice(result.message);
+      disOrDatRevealUntil = now() + DIS_OR_DAT_REVEAL_MS;
+      scheduleRender(render);
+      setTimeout(() => scheduleRender(render), DIS_OR_DAT_REVEAL_MS + 30);
+    } catch { setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer.")); scheduleRender(render); }
+  });
+  // Fibbage host
+  delegate("click", "[data-fibbage-enter-lies]", requireHost(() => startFibbageLying()));
+  delegate("click", "[data-fibbage-set-truth]", requireHost(() => {
+    const inp = (getApp() || app).querySelector("#fibbage-truth");
+    setFibbageTruth(inp ? inp.value : "");
+  }));
+  delegate("change", "#fibbage-lie-time", requireHost((e) => setFibbageLieTime(e.target.value)));
+  delegate("change", "#fibbage-vote-time", requireHost((e) => setFibbageVoteTime(e.target.value)));
+  delegate("change", "#fibbage-mult", requireHost((e) => setFibbageMultiplier(e.target.value)));
+  delegate("click", "[data-fibbage-end-lying]", requireHost(() => endFibbageLyingEarly()));
+  delegate("click", "[data-fibbage-show-responses]", requireHost(() => showFibbageResponses()));
+  delegate("click", "[data-fibbage-start-vote]", requireHost(() => startFibbageVoteTimer()));
+  delegate("click", "[data-fibbage-block]", requireHost((e, btn) => toggleFibbageBlock(btn.dataset.fibbageBlock)));
+  delegate("click", "[data-fibbage-show-all]", requireHost(() => {
+    const fb = getFibbage();
+    setState("fibbage", { ...fb, revealed: { all: true, singleIdx: null, revealedIdxs: (fb.choices || []).map((_, i) => i) } }, true);
+    scheduleRender(render);
+  }));
+  const handleSpotlight = (idx) => {
+    if (!isHost()) return;
+    const fb = getFibbage();
+    const already = fb.revealed.singleIdx === idx ? null : idx;
+    const revealedIdxs = already !== null ? [...new Set([...(fb.revealed.revealedIdxs || []), idx])] : (fb.revealed.revealedIdxs || []);
+    setState("fibbage", { ...fb, revealed: { all: false, singleIdx: already, revealedIdxs } }, true);
+    scheduleRender(render);
+  };
+  delegate("click", "[data-fibbage-spotlight]", requireHost((e, btn) => { e.preventDefault(); handleSpotlight(Number(btn.dataset.fibbageSpotlight)); }));
+  delegate("click", "[data-fibbage-spotlight-clear]", requireHost((e) => { e.preventDefault(); const fb = getFibbage(); setState("fibbage", { ...fb, revealed: { all: false, singleIdx: null, revealedIdxs: fb.revealed.revealedIdxs || [] } }, true); scheduleRender(render); }));
+  delegate("click", "[data-fibbage-reset]", requireHost(() => resetFibbage()));
+  delegate("click", "[data-fibbage-exit]", requireHost(() => exitFibbage()));
+  delegate("click", "[data-fibbage-submit-lie]", async () => {
+    if (isControllerPlayer() || isCohost()) return;
+    const inp = (getApp() || app).querySelector("#fibbage-lie-entry");
+    const lieText = String(inp?.value || "").trim();
+    try {
+      const res = await RPC.call("fibbage-lie", { lieText }, RPC.Mode.HOST);
+      if (res?.ok === false && res?.reason) setBuzzNotice(res.reason);
+      else if (res?.message) setBuzzNotice(res.message);
+      if (res?.ok && inp) inp.value = "";
+    } catch { setBuzzNotice("Could not send lie."); }
+    scheduleRender(render);
+  });
+  delegate("click", "[data-fibbage-vote]", async (e, btn) => {
+    if (isControllerPlayer() || isCohost()) return;
+    const idx = Number(btn.dataset.fibbageVote);
+    try {
+      const res = await RPC.call("fibbage-vote", { choiceIdx: idx }, RPC.Mode.HOST);
+      if (res?.ok === false && res?.reason) setBuzzNotice(res.reason);
+      else if (res?.message) setBuzzNotice(res.message);
+    } catch { setBuzzNotice("Could not send vote."); }
+    scheduleRender(render);
+  });
+  delegate("keydown", "#fibbage-lie-entry", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); (getApp() || app).querySelector("[data-fibbage-submit-lie]")?.click(); }
+  });
+  // Also keep old per-render pointerdown for buzz still uses delegate above.
+
+  // Prejoin delegated (once) — keeps prejoin screen also resilient
+  delegate("click", "[data-prejoin-open]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinOpen || "landing"));
+  delegate("click", "[data-prejoin-switch]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinSwitch || "landing"));
+  delegate("click", "[data-prejoin-back]", () => renderPrejoinScreen());
+  delegate("input", "#prejoin-room-code", (e) => {
+    const upper = e.target.value.toUpperCase();
+    if (e.target.value !== upper) e.target.value = upper;
+  });
+  delegate("submit", "[data-prejoin-form]", async (e, form) => {
+    e.preventDefault();
+    const mount = getApp() || app;
+    const mode = form.dataset.prejoinForm;
+    const nameInput = mount.querySelector("#prejoin-name");
+    const roomInput = mount.querySelector("#prejoin-room-code");
+    const teamModeInput = mount.querySelector("#prejoin-team-mode");
+    const chosenName = nameInput?.value?.trim() || "";
+    const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
+    const cohostPasswordInput = mount.querySelector("#prejoin-cohost-password");
+    const cohostPassword = cohostPasswordInput?.value?.trim() || "";
+    if (mode !== "display" && mode !== "tablet_timer" && !chosenName) { renderPrejoinScreen(mode || "landing", "Please choose a player name."); return; }
+    if ((mode === "join" || mode === "cohost") && !roomCode) { renderPrejoinScreen(mode, "Enter a room code to join."); return; }
+    if (mode === "display" && !roomCode) { renderPrejoinScreen("display", "Enter a room code for the display."); return; }
+    if (mode === "tablet_timer" && !roomCode) { renderPrejoinScreen("tablet_timer", "Enter a room code for the timer display."); return; }
+    if (mode === "cohost" && !/^\d{5}$/.test(cohostPassword)) { renderPrejoinScreen("cohost", "Enter a valid 5-digit co-host password."); return; }
+    if (mode !== "display" && mode !== "tablet_timer") localStorage.setItem(NAME_KEY, chosenName);
+    if (mode === "host") {
+      const selectedTeamSetting = String(teamModeInput?.value || "off");
+      hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
+    }
+    const submitButton = form.querySelector("button[type='submit']");
+    if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
+    await launchGame({
+      playerName: mode === "display" ? "Audience Display" : mode === "tablet_timer" ? "Tablet Timer" : chosenName,
+      roomCode: mode === "join" || mode === "display" || mode === "tablet_timer" || mode === "cohost" ? roomCode : undefined,
+      clientMode: mode === "display" ? "display" : mode === "tablet_timer" ? "tablet_timer" : "player",
+      cohostPassword: mode === "cohost" ? cohostPassword : undefined,
+    });
+  });
+  // forms submit handled via submit listener below
+  return;
+}
 
 // =============================================================================
 // Space bar stops the roulette for players who are allowed to stop it
@@ -6776,7 +6551,7 @@ function handleRouletteKeydown(event) {
   if (round.status !== ROUND_STATUSES.ROULETTE || !round.roulette?.active) {
     return;
   }
-  if (!isRoulettePlayerAllowed(round.roulette, me().id)) {
+  if (!isRoulettePlayerAllowed(round.roulette, me()?.id)) {
     return;
   }
 
@@ -6795,12 +6570,12 @@ function submitRouletteStop() {
   if (round.status !== ROUND_STATUSES.ROULETTE || !roulette?.active) {
     return;
   }
-  if (!isRoulettePlayerAllowed(roulette, me().id)) {
+  if (!isRoulettePlayerAllowed(roulette, me()?.id)) {
     setBuzzNotice(getSnark("player.roulette.cannotStop", "You cannot stop this pick-a-value."));
     render();
     return;
   }
-  if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(me().id)) {
+  if (Array.isArray(roulette.completedPlayerIds) && roulette.completedPlayerIds.includes(me()?.id)) {
     setBuzzNotice(getSnark("player.roulette.alreadyLocked", "You already locked in your value."));
     render();
     return;
@@ -7070,92 +6845,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
     `;
   }
 
-  app.querySelectorAll("[data-prejoin-open]").forEach((button) => {
-    button.addEventListener("click", () => {
-      renderPrejoinScreen(button.dataset.prejoinOpen || "landing");
-    });
-  });
-
-  app.querySelectorAll("[data-prejoin-switch]").forEach((button) => {
-    button.addEventListener("click", () => {
-      renderPrejoinScreen(button.dataset.prejoinSwitch || "landing");
-    });
-  });
-
-  app.querySelectorAll("[data-prejoin-back]").forEach((button) => {
-    button.addEventListener("click", () => {
-      renderPrejoinScreen();
-    });
-  });
-
-  app.querySelectorAll("[data-prejoin-form]").forEach((form) => {
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const mode = form.dataset.prejoinForm;
-      const nameInput = app.querySelector("#prejoin-name");
-      const roomInput = app.querySelector("#prejoin-room-code");
-      const teamModeInput = app.querySelector("#prejoin-team-mode");
-
-      const chosenName = nameInput?.value?.trim() || "";
-      const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
-      const cohostPasswordInput = app.querySelector("#prejoin-cohost-password");
-      const cohostPassword = cohostPasswordInput?.value?.trim() || "";
-
-      if (mode !== "display" && mode !== "tablet_timer" && !chosenName) {
-        renderPrejoinScreen(mode || "landing", "Please choose a player name.");
-        return;
-      }
-
-      if ((mode === "join" || mode === "cohost") && !roomCode) {
-        renderPrejoinScreen(mode, "Enter a room code to join.");
-        return;
-      }
-
-      if (mode === "display" && !roomCode) {
-        renderPrejoinScreen("display", "Enter a room code for the display.");
-        return;
-      }
-
-      if (mode === "tablet_timer" && !roomCode) {
-        renderPrejoinScreen("tablet_timer", "Enter a room code for the timer display.");
-        return;
-      }
-
-      if (mode === "cohost") {
-        if (!/^\d{5}$/.test(cohostPassword)) {
-          renderPrejoinScreen("cohost", "Enter a valid 5-digit co-host password.");
-          return;
-        }
-      }
-
-      if (mode !== "display" && mode !== "tablet_timer") {
-        localStorage.setItem(NAME_KEY, chosenName);
-      }
-
-      if (mode === "host") {
-        const selectedTeamSetting = String(teamModeInput?.value || "off");
-        hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
-      }
-
-      const submitButton = form.querySelector("button[type='submit']");
-      if (submitButton instanceof HTMLButtonElement) {
-        submitButton.disabled = true;
-      }
-
-      await launchGame({
-        playerName: mode === "display" ? "Audience Display" : mode === "tablet_timer" ? "Tablet Timer" : chosenName,
-        roomCode: mode === "join" || mode === "display" || mode === "tablet_timer" || mode === "cohost" ? roomCode : undefined,
-        clientMode: mode === "display" ? "display" : mode === "tablet_timer" ? "tablet_timer" : "player",
-        cohostPassword: mode === "cohost" ? cohostPassword : undefined,
-      });
-    });
-  });
-
-  app.querySelector("#prejoin-room-code")?.addEventListener("input", (event) => {
-    const input = event.currentTarget;
-    const upper = input.value.toUpperCase();
-    if (input.value !== upper) input.value = upper;
-  });
+  // Pre-join form submit + room-code uppercasing are handled via delegated handlers in bindEvents()
 }
 
 // =============================================================================
@@ -7375,37 +7065,38 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       render();
     });
   }
-  render();
+  // Ensure delegated listeners are bound once before first render
+  bindEvents();
+  renderImmediate(render);
   startRouletteAnimationLoop();
 
   setInterval(() => {
-    ensureHostInit();
-    hostTick();
+    try { ensureHostInit(); } catch (e) { console.warn("[hostInit] failed", e); }
+    try { hostTick(); } catch (e) { console.warn("[hostTick] failed", e); }
     const signature = getUiSignature();
     if (signature !== lastUiSignature) {
-      render();
+      scheduleRender(render);
       return;
     }
-    updateTimerDisplays();
+    try { updateTimerDisplays(); } catch (e) { console.warn("[timer] patch failed", e); }
   }, 1000);
 
-  // Fast re-render interval for audience display (no interaction, shows live timer)
+  // Fast re-render for audience/tablet timer — gated + rAF-batched
   // Paused when Fibbage spotlight is active so the dramatic card doesn't flicker
   setInterval(() => {
     if (!isAudienceDisplayClient()) return;
     if (isFibbageMode() && getFibbage().revealed?.singleIdx !== null) return;
-    render();
+    scheduleRender(render);
   }, 25);
 
-  // Bingo mode re-render — only fires when the bingo state actually changes,
-  // so the host (and everyone else) stops re-rendering on a fixed 50ms tick.
+  // Bingo mode re-render — only fires when the bingo state actually changes
   setInterval(() => {
     if (!isBingoMode()) return;
     const b = getBingo();
     const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${b.winner || ""}`;
     if (key === lastBingoRenderKey) return;
     lastBingoRenderKey = key;
-    render();
+    scheduleRender(render);
   }, BINGO_RENDER_INTERVAL_MS);
 }
 
@@ -7413,6 +7104,8 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 // Entry point — show the landing screen
 // =============================================================================
 function boot() {
+  // Bind delegated handlers once before any screen renders (prejoin needs them too)
+  try { bindEvents(); } catch (e) { console.warn("[boot] bindEvents failed", e); }
   renderPrejoinScreen();
   probeRankBadges();
 }
