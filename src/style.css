@@ -2152,6 +2152,9 @@ body:has([data-fibbage-active]) {
 .coop-strip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .coop-strip-cell.is-muted, .coop-slot.is-locked { opacity: 0.55; }
 
+/* Shared group grid sits below the buzz-in row. */
+.coop-shared-grid { margin-top: 0.6rem; }
+
 /* Picker highlight — telegraphs the pick-a-value rep (dance asset or glow). */
 .coop-slot.is-picker, .coop-strip-cell.is-picker {
   border-color: rgba(234,179,8,0.9);

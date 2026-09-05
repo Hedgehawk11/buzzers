@@ -852,6 +852,11 @@
         "en": "CONTROL",
         "snark1": "",
         "snark2": ""
+      },
+      "firstBuzzHint": {
+        "en": "First to buzz gets control — Q/B/P!",
+        "snark1": "",
+        "snark2": ""
       }
     }
   },
