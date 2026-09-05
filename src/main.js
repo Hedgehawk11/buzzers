@@ -1646,13 +1646,13 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
     if (round.status === ROUND_STATUSES.LOCKED) {
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
-      // Coopertition: a correct solution always ends the question — nobody
-      // else gets to buzz afterwards.
-      const coopCorrectClose = isCoopMode(settings) && entry.type === "buzz" && nextAwarded > 0;
+      // A correct solution always ends the question — nobody else gets to
+      // buzz afterwards.
+      const correctClose = entry.type === "buzz" && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
       const reopenAfterScrew = round.screw.active && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (((round.screw.active || shouldCloseOnPointsGiven || coopCorrectClose) && !reopenAfterScrew) || remainingCs <= 0) {
+      if (((round.screw.active || shouldCloseOnPointsGiven || correctClose) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -1694,9 +1694,9 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
     }
   }
 
-  // Coopertition: a correct solution ruled while buzzers are still open ends
-  // the question too — nobody else gets to buzz afterwards.
-  if (isCoopMode(settings) && entry.type === "buzz" && nextAwarded > 0) {
+  // A correct solution ruled while buzzers are still open ends the question
+  // too — nobody else gets to buzz afterwards.
+  if (entry.type === "buzz" && nextAwarded > 0) {
     const cur = getRound();
     if (cur.status === ROUND_STATUSES.OPEN) {
       setState(
