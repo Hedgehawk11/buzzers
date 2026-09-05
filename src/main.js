@@ -5719,9 +5719,10 @@ function renderCoopStrip(settings, round, deviceId, count) {
   return `<div class="coop-strip coop-strip-${count}">${cells.join("")}</div>`;
 }
 
-// One shared buzzer per group (Jeopardy rules): slots buzz in via Q/B/P or
-// their BUZZ chip; the first slot in unlocks the shared option grid and takes
-// the points. Single-player devices answer on the grid directly.
+// One shared buzzer per group (Jeopardy rules): the normal option layout,
+// rendered once and locked until a slot buzzes in via Q/B/P. The first slot
+// in unlocks the grid and takes the points. Single-player devices answer
+// on the grid directly.
 function renderCoopGroupBuzzer(settings, round, deviceId, count) {
   const control = round.coopControl || null;
   const controlParsed = parseCoopScoreKey(control);
@@ -5731,36 +5732,45 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
   const closed = round.status !== ROUND_STATUSES.OPEN;
   const deviceDisabled = !isPlayerBuzzerEnabled(settings, deviceId);
   const rebuzzAllowed = Boolean(settings.rebuzzAllowed);
-
-  let buzzRow = "";
-  if (count > 1) {
-    const chips = [];
-    for (let slot = 0; slot < count; slot++) {
-      const key = getCoopScoreKey(deviceId, slot);
-      const alreadyBuzzed = (round.buzzedPlayerIds || []).includes(key);
-      const off = closed || taken || (!rebuzzAllowed && alreadyBuzzed)
-        || deviceDisabled || isCoopSlotMuted(settings, deviceId, slot) || round.screw.active;
-      const isCtrl = control === key;
-      chips.push(`
-        <div class="coop-slot${isCtrl ? " is-control" : ""}">
-          <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, round))}<strong>${escapeHtml(getCoopSlotName(deviceId, slot))}</strong><kbd>${getCoopKeyHint(slot, count)}</kbd></div>
-          <button type="button" class="coop-buzzin" data-coop-buzzin data-coop-slot="${slot}" ${off ? "disabled" : ""}>${isCtrl ? getSnark("player.coop.controlButton", "CONTROL") : "BUZZ"}</button>
-        </div>`);
-    }
-    buzzRow = `<div class="coop-buzz-row coop-buzz-${count}">${chips.join("")}</div>`;
-  }
+  const timeLeftCs = getTimeLeftCs(round, settings);
 
   const controlKey = mine ? control : null;
   const controlBuzzed = controlKey ? (round.buzzedPlayerIds || []).includes(controlKey) : false;
   const gridOff = closed || deviceDisabled || round.screw.active
     || (count > 1 && !mine)
     || (controlKey && !rebuzzAllowed && controlBuzzed);
-  const opts = [];
-  for (let opt = 1; opt <= settings.optionCount; opt++) {
-    const off = gridOff || !isOptionEnabled(settings, opt)
-      || (controlKey && isPlayerAtOptionLimit(round, settings, controlKey, opt));
-    opts.push(`<button type="button" class="coop-opt" data-coop-buzz="${opt}" ${off ? "disabled" : ""}>${settings.optionCount === 4 ? optionButtonLabel(opt) : opt}</button>`);
+  const optOff = (opt) => gridOff || !isOptionEnabled(settings, opt)
+    || (controlKey && isPlayerAtOptionLimit(round, settings, controlKey, opt));
+  const dis = (opt) => (optOff(opt) ? "disabled" : "");
+  const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
+  const roundLabel = showValue
+    ? `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
+    : "";
+
+  let grid = "";
+  if (settings.optionCount === 1) {
+    grid = `<button type="button" class="big-red" data-coop-buzz="1" ${dis(1)}>BUZZ</button>`;
+  } else if (settings.optionCount === 4) {
+    const button = (opt, cls) => `<button type="button" class="${cls}" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`;
+    grid = `
+      <div class="abxy-diamond">
+        ${button(4, "pos-y")}
+        ${button(3, "pos-x")}
+        ${button(2, "pos-b")}
+        ${button(1, "pos-a")}
+        ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
+      </div>`;
+  } else if (settings.optionCount === 6) {
+    grid = `<div class="six-grid">${[1, 2, 3, 4, 5, 6]
+      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${opt}</button>`).join("")}</div>`;
+  } else if (settings.optionCount === 8) {
+    grid = `<div class="eight-grid">${[1, 2, 3, 4, 5, 6, 7, 8]
+      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${opt}</button>`).join("")}</div>`;
+  } else {
+    grid = `<div class="abxy">${[1, 2, 3, 4].filter((opt) => opt <= settings.optionCount)
+      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`).join("")}</div>`;
   }
+
   const stateLine = deviceDisabled
     ? getSnark("player.coop.slotDisabled", "Disabled by the host.")
     : closed
@@ -5775,9 +5785,8 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
   const isRepPhase = round.status === ROUND_STATUSES.ROULETTE && round.roulette?.active;
   const picker = isRepPhase && mine ? " is-picker" : "";
   return `
-    ${buzzRow}
     <div class="coop-slot coop-shared-grid${picker}">
-      <div class="coop-opt-grid coop-opt-${settings.optionCount}">${opts.join("")}</div>
+      ${grid}
       <p class="muted coop-slot-state">${stateLine}</p>
     </div>`;
 }
