@@ -1646,10 +1646,13 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
     if (round.status === ROUND_STATUSES.LOCKED) {
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
+      // Coopertition: a correct solution always ends the question — nobody
+      // else gets to buzz afterwards.
+      const coopCorrectClose = isCoopMode(settings) && entry.type === "buzz" && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
       const reopenAfterScrew = round.screw.active && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (((round.screw.active || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
+      if (((round.screw.active || shouldCloseOnPointsGiven || coopCorrectClose) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -1659,6 +1662,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
             winnerTeam: null,
             winnerOption: null,
             winnerName: null,
+            coopControl: null,
           },
           true,
         );
@@ -1687,6 +1691,30 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       );
       // Close screw mode (resumes the main timer from the frozen value)
       closeScrewMode();
+    }
+  }
+
+  // Coopertition: a correct solution ruled while buzzers are still open ends
+  // the question too — nobody else gets to buzz afterwards.
+  if (isCoopMode(settings) && entry.type === "buzz" && nextAwarded > 0) {
+    const cur = getRound();
+    if (cur.status === ROUND_STATUSES.OPEN) {
+      setState(
+        "round",
+        {
+          ...cur,
+          status: ROUND_STATUSES.CLOSED,
+          remainingCs: getTimeLeftCs(cur, settings),
+          winnerId: null,
+          winnerTeam: null,
+          winnerOption: null,
+          winnerAnswer: null,
+          winnerName: null,
+          coopControl: null,
+        },
+        true,
+      );
+      setState("pendingLogId", null, true);
     }
   }
 
@@ -3786,8 +3814,8 @@ function setHostSetting(key, value) {
       render();
       return;
     }
-    if (key === "inputMode" && (value === "fibbage" || value === "bingo" || value === "wendithapn" || value === "disordat")) {
-      setBuzzNotice("That mode is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+    if (key === "inputMode" && value === "fibbage") {
+      setBuzzNotice("Fibbage is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
       render();
       return;
     }
@@ -7461,14 +7489,6 @@ function renderHiddenPanel(title, helper) {
   `;
 }
 
-// Player notices (buzz results, control changes) live in a fixed bar at the
-// bottom of the screen — not inside the answer cards.
-function renderScreenNoticeBar() {
-  const notice = getRecentBuzzNotice();
-  if (!notice) return "";
-  return `<div class="screen-notice-bar" role="status">${escapeHtml(notice)}</div>`;
-}
-
 // =============================================================================
 // Top-level render — assembles the entire page HTML
 // Input preservation is handled by render.js scheduler (generic, survives re-renders)
@@ -7599,7 +7619,6 @@ function render() {
           </div>
         </header>
         ${bingoBody}
-        ${renderScreenNoticeBar()}
       </main>
     `;
     if (!transitionMount(mount, _html_bingo, "bingo")) mount.innerHTML = _html_bingo;
@@ -7633,7 +7652,6 @@ function render() {
           </div>
         </header>
         ${ddBody}
-        ${renderScreenNoticeBar()}
       </main>
     `;
     if (!transitionMount(mount, _html_disordat, "disordat")) mount.innerHTML = _html_disordat;
@@ -7704,7 +7722,6 @@ function render() {
 
       ${renderLockedRuling(settings, pendingEntry)}
       ${showAdminData ? renderLog(gameLog, settings) : renderHiddenPanel(getSnark("player.scores.logTitle", "Game Log"), getSnark("player.scores.logHidden", "Only the Host can view the game log."))}
-      ${renderScreenNoticeBar()}
     </main>
   `;
 

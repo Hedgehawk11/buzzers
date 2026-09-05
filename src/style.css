@@ -2205,24 +2205,6 @@ body:has([data-fibbage-active]) {
 .prejoin-check { display: flex !important; align-items: center; gap: 0.5rem; }
 .prejoin-check input { width: auto; }
 
-/* Screen-bottom player notice bar (replaces inline card notices). */
-.screen-notice-bar {
-  position: fixed;
-  left: 50%;
-  bottom: 0.9rem;
-  transform: translateX(-50%);
-  z-index: 60;
-  max-width: min(92vw, 560px);
-  padding: 0.55rem 1rem;
-  border-radius: 999px;
-  background: rgba(10, 10, 14, 0.88);
-  border: 1px solid var(--panel-border);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-  font-size: 0.92rem;
-  text-align: center;
-  pointer-events: none;
-}
-
 /* Jeopardy buzz-in button + control highlight. */
 .coop-buzzin {
   width: 100%;
