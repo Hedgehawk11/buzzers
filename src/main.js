@@ -5751,12 +5751,21 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
   if (settings.optionCount === 1) {
     grid = `<button type="button" class="big-red" data-coop-buzz="1" ${dis(1)}>BUZZ</button>`;
   } else if (settings.optionCount === 4) {
-    const button = (opt, cls) => `<button type="button" class="${cls}" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`;
+    const coopAssignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    const coopTeamColor = getPlayerTeamColor(deviceId, coopAssignments);
+    const coopTeamButtonClass = coopTeamColor ? `team-buzzer team-${coopTeamColor}` : "";
+    const coopDefaultBuzzerClass = coopTeamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
+    const button = (opt, cls) => {
+      const extraClass = coopDefaultBuzzerClass ? coopDefaultBuzzerClass[opt] : "";
+      const baseClass = coopTeamButtonClass ? `${cls} ${coopTeamButtonClass}` : cls;
+      const fullClass = [baseClass, extraClass].filter(Boolean).join(" ");
+      return `<button type="button" class="${fullClass}" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`;
+    };
     grid = `
       <div class="abxy-diamond">
         ${button(4, "pos-y")}
-        ${button(3, "pos-x")}
         ${button(2, "pos-b")}
+        ${button(3, "pos-x")}
         ${button(1, "pos-a")}
         ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
       </div>`;
