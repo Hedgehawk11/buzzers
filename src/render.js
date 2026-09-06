@@ -25,6 +25,11 @@ const PRESERVED_INPUT_IDS = [
   "fibbage-lie-time",
   "fibbage-vote-time",
   "fibbage-mult",
+  "coop-group",
+  "coop-count",
+  "coop-name-0",
+  "coop-name-1",
+  "coop-name-2",
 ];
 
 let inputDrafts = new Map(); // id -> { value, selStart, selEnd, focused }

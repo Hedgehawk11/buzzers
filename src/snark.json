@@ -612,6 +612,11 @@
         "en": "Vote submitted.",
         "snark1": "Vote in. Fingers crossed you found the truth.",
         "snark2": "Vote submitted. May the best liar win."
+      },
+      "coopBlocked": {
+        "en": "Fibbage is off limits in coopertition mode.",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "scores": {
@@ -750,6 +755,113 @@
         "en": "Left your team.",
         "snark1": "Left your team. Rude.",
         "snark2": "Left your team. The grass is greener elsewhere, allegedly."
+      }
+    },
+    "coop": {
+      "unknownSlot": {
+        "en": "Unknown player slot for this device.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "slotCannotBuzz": {
+        "en": "That player cannot buzz right now.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "slotDisabled": {
+        "en": "Disabled by the host.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "setupTitle": {
+        "en": "Set up your group",
+        "snark1": "",
+        "snark2": ""
+      },
+      "editTitle": {
+        "en": "Edit group",
+        "snark1": "",
+        "snark2": ""
+      },
+      "setupBody": {
+        "en": "The group name shows on the scoreboard. Each player gets their own buzzer and score.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "singlePlayerHint": {
+        "en": "With 1 player the group name is used as-is.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "saveButton": {
+        "en": "Save group",
+        "snark1": "",
+        "snark2": ""
+      },
+      "cancelButton": {
+        "en": "Cancel",
+        "snark1": "",
+        "snark2": ""
+      },
+      "editGroupButton": {
+        "en": "Edit group",
+        "snark1": "",
+        "snark2": ""
+      },
+      "mobileBlockedTitle": {
+        "en": "Desktop play required",
+        "snark1": "",
+        "snark2": ""
+      },
+      "mobileBlockedBody": {
+        "en": "Groups of 2–3 need a keyboard (Q/B/P). Switch this device to 1 player or join from a computer.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "repStops": {
+        "en": "{rep} stops for {group}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "repStopsShort": {
+        "en": "stops for your group",
+        "snark1": "",
+        "snark2": ""
+      },
+      "bingoSiblingLocked": {
+        "en": "Teammate collected — wait for the next round.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "hasControl": {
+        "en": "{player} has control.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "haveControl": {
+        "en": "{player} has control — pick an answer.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "buzzedIn": {
+        "en": "{player} buzzed in!",
+        "snark1": "",
+        "snark2": ""
+      },
+      "buzzInHint": {
+        "en": "Buzz in with {key}!",
+        "snark1": "",
+        "snark2": ""
+      },
+      "controlButton": {
+        "en": "CONTROL",
+        "snark1": "",
+        "snark2": ""
+      },
+      "firstBuzzHint": {
+        "en": "First to buzz gets control — Q/B/P!",
+        "snark1": "",
+        "snark2": ""
       }
     }
   },
@@ -1062,6 +1174,11 @@
     "scores": {
       "scoresTitle": {
         "en": "Scores",
+        "snark1": "",
+        "snark2": ""
+      },
+      "coopTitle": {
+        "en": "Group Scores",
         "snark1": "",
         "snark2": ""
       },
