@@ -1140,6 +1140,10 @@ showScoresToPlayers: settings.showScoresToPlayers,
     },
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
+    // Scores + rulings must invalidate the signature or other clients never
+    // re-render after a host ruling (their tick only patches timers).
+    scores: getScores(),
+    gameLog: getLog(),
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
     pendingLogId,
@@ -1583,6 +1587,11 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const entryScoreKey = entry.scoreKey || getScoreKeyForPlayer(entry.playerId, settings, assignments);
   const oldAwarded = Number(entry.awardedDelta || 0);
   let nextAwarded = Number(newAwardedDelta || 0);
+  // Never let a non-finite ruling corrupt scores (e.g. quick-ruling a log
+  // entry with no base value would otherwise write NaN).
+  if (!Number.isFinite(nextAwarded)) {
+    return;
+  }
   
   if (round.screw.active && round.screw.screweeId === entry.playerId) {
     const screwBonus = nextAwarded >= 0 ? 1000 : -1000;
@@ -1639,6 +1648,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       }
     }
   } catch {}
+  // NOTE: coop sibling lockout is applied at the end of this function, after
+  // all round writes (they use a stale round snapshot that would wipe it).
 
   const pendingId = getSafeState("pendingLogId", null);
   if (pendingId === logId) {
@@ -1646,13 +1657,12 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
     if (round.status === ROUND_STATUSES.LOCKED) {
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
-      // A correct solution always ends the question — nobody else gets to
-      // buzz afterwards.
-      const correctClose = entry.type === "buzz" && nextAwarded > 0;
+      // Coop: a correct solution locks the solving device's siblings out of
+      // the round — other groups keep playing (no global close).
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
       const reopenAfterScrew = round.screw.active && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (((round.screw.active || shouldCloseOnPointsGiven || correctClose) && !reopenAfterScrew) || remainingCs <= 0) {
+      if (((round.screw.active || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -1694,29 +1704,29 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
     }
   }
 
-  // A correct solution ruled while buzzers are still open ends the question
-  // too — nobody else gets to buzz afterwards.
-  if (entry.type === "buzz" && nextAwarded > 0) {
-    const cur = getRound();
-    if (cur.status === ROUND_STATUSES.OPEN) {
-      setState(
-        "round",
-        {
-          ...cur,
-          status: ROUND_STATUSES.CLOSED,
-          remainingCs: getTimeLeftCs(cur, settings),
-          winnerId: null,
-          winnerTeam: null,
-          winnerOption: null,
-          winnerAnswer: null,
-          winnerName: null,
-          coopControl: null,
-        },
-        true,
-      );
-      setState("pendingLogId", null, true);
+  // Coop: a correct solution locks the solving device's remaining slots out
+  // of this round (one-response already blocks the scorer). Other groups
+  // are unaffected and keep playing. Runs last so no stale round write can
+  // wipe it.
+  try {
+    if (isCoopMode(settings) && entry.type === "buzz" && nextAwarded > 0) {
+      const parsedLock = parseCoopScoreKey(entryScoreKey);
+      const lockDeviceId = parsedLock ? parsedLock.deviceId : entry.playerId;
+      if (lockDeviceId && getCoopSlotCount(lockDeviceId) > 1) {
+        const curRound = getRound();
+        const locked = new Set(curRound.buzzedPlayerIds || []);
+        let touched = false;
+        for (let slot = 0, n = getCoopSlotCount(lockDeviceId); slot < n; slot++) {
+          const key = getCoopScoreKey(lockDeviceId, slot);
+          if (!locked.has(key)) {
+            locked.add(key);
+            touched = true;
+          }
+        }
+        if (touched) setState("round", { ...curRound, buzzedPlayerIds: [...locked] }, true);
+      }
     }
-  }
+  } catch {}
 
   render();
 }
@@ -1852,24 +1862,25 @@ function pushBuzzLogEntry(player, { option = null, answerText = null, coopSlot =
   return entry;
 }
 
-// Auto-award points when the host pre-set a correct answer for this round.
-// Wrong answers are left unresolved so the host can rule them manually.
+// Auto-rule points when the host pre-set a correct answer for this round.
+// Both sides are judged: correct answers award, wrong answers deduct.
+// Without a preset there is nothing to judge against, so entries stay
+// unresolved for manual host ruling.
 function autoEvaluatePresetAnswer(logEntry, answerText, validOption) {
   const currentRound = getRound();
   const settings = getSettings();
-  let isCorrect = false;
-  if (settings.inputMode === "text" && currentRound.correctAnswer) {
-    const correct = normalizeAnswerForCompare(currentRound.correctAnswer);
-    if (answerText && normalizeAnswerForCompare(answerText) === correct) {
-      isCorrect = true;
+  if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
+    if (validOption !== null && validOption !== undefined) {
+      const isCorrect = currentRound.correctOptions.map(Number).includes(Number(validOption));
+      updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints);
     }
-  } else if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
-    if (validOption !== null && currentRound.correctOptions.map(Number).includes(Number(validOption))) {
-      isCorrect = true;
-    }
+    return;
   }
-  if (isCorrect) {
-    updateScoresForLogEntry(logEntry.id, logEntry.basePoints);
+  if (settings.inputMode === "text" && currentRound.correctAnswer) {
+    if (answerText) {
+      const isCorrect = normalizeAnswerForCompare(answerText) === normalizeAnswerForCompare(currentRound.correctAnswer);
+      updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints);
+    }
   }
 }
 
@@ -2484,6 +2495,9 @@ function handleBingoBuzz(player, payload) {
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (coopActive ? buzzName : getPlayerName(player)),
       item: bingo.items[targetIndex],
       result: "correct", points: BINGO_CORRECT_POINTS,
+      basePoints: BINGO_CORRECT_POINTS,
+      awardedDelta: BINGO_CORRECT_POINTS,
+      resolved: true,
     }], true);
     if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
     bingoCycleQueue = [];
@@ -2513,6 +2527,9 @@ function handleBingoBuzz(player, payload) {
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : (coopActive ? buzzName : getPlayerName(player)),
       item: bingo.items[observedIndex],
       result: "incorrect", points: BINGO_INCORRECT_POINTS,
+      basePoints: BINGO_INCORRECT_POINTS,
+      awardedDelta: BINGO_INCORRECT_POINTS,
+      resolved: true,
     }], true);
     render();
     return { ok: true, message: getSnark("player.outcome.bingoIncorrect", "Incorrect! -500") };
@@ -6878,7 +6895,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <!-- Pre-set correct answer -->
             <div style="margin-top:0.75rem">
               <h3 style="font-size:0.85rem;margin:0 0 0.4rem;color:var(--muted)">Pre-set correct answer</h3>
-              <p class="muted" style="font-size:0.8rem">Auto-award points when a player picks the right answer.</p>
+              <p class="muted" style="font-size:0.8rem">Auto-rule points when a player answers (wrong answers lose points).</p>
               ${settings.inputMode === "text"
                 ? `<label style="margin-top:0.4rem">Correct answer text
                      <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />

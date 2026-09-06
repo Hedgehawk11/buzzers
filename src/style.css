@@ -1326,7 +1326,7 @@ button.red {
    ============================================================================= */
 .score-card li[data-score-key] {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 .score-card li.is-delta {
   animation: scorePop 320ms ease-out;
@@ -1334,15 +1334,15 @@ button.red {
 .score-card li.is-delta::after {
   content: attr(data-delta);
   position: absolute;
-  right: 0.7rem;
-  top: 50%;
-  transform: translateY(-50%);
+  right: 0.3rem;
+  top: -0.75rem;
   font-weight: 900;
   font-size: 0.85rem;
   padding: 0.15rem 0.45rem;
   border-radius: 999px;
   animation: scoreDeltaFly 750ms ease-out forwards;
   pointer-events: none;
+  z-index: 2;
 }
 .score-card li.is-plus::after {
   background: rgba(29,185,84,0.22);
@@ -1360,10 +1360,10 @@ button.red {
   100% { transform: scale(1); }
 }
 @keyframes scoreDeltaFly {
-  0% { opacity: 0; transform: translateY(-50%) translateX(8px) scale(0.9); }
-  20% { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
-  80% { opacity: 1; transform: translateY(-50%) translateX(0) scale(1); }
-  100% { opacity: 0; transform: translateY(-65%) translateX(0) scale(0.95); }
+  0% { opacity: 0; transform: translateY(6px) scale(0.9); }
+  20% { opacity: 1; transform: translateY(0) scale(1); }
+  80% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-8px) scale(0.95); }
 }
 .audience-layout .score-card li.is-delta::after { display: none !important; }
 
