@@ -33,8 +33,6 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 In no particular order,\
  - Some love to the main buzzers
  - Better UI 
- - Companion timer app with remakes of some jackbox timers (probably in different repo)
- - Coopertition mode
  - more round types
  - YDKJ The Ride RNG preset for pick-a-value
  - whatever people ask via creating issues
@@ -81,6 +79,7 @@ IDK possibly
 - Three separate scoring modes (Uniform, JACK, and Pick-a-value (roulette))
 - Organized labeled menu
 - Handwritten snark
+- Coopertition mode
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
 - and probably more (soon!)
