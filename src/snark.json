@@ -612,6 +612,11 @@
         "en": "Vote submitted.",
         "snark1": "Vote in. Fingers crossed you found the truth.",
         "snark2": "Vote submitted. May the best liar win."
+      },
+      "coopBlocked": {
+        "en": "Fibbage is off limits in coopertition mode.",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "scores": {

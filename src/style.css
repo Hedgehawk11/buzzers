@@ -1910,7 +1910,10 @@ body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear
   83%      { background-color: #1b1130; }
 }
 
-body:has([data-buzzers-open]):not(:has([data-screw-active])) {
+/* Buzzers-open flash only applies with UI animations on — with anims off the
+   page keeps the exact closed background (no flash, no recolor). */
+body:not([data-ui-anims="off"]):has([data-buzzers-open]):not(:has([data-screw-active])) {
+  background-color: #2b0d0d;
   background-image:
     radial-gradient(1200px 500px at 8% -20%, rgba(255, 255, 255, 0.08), transparent 58%),
     radial-gradient(1000px 520px at 100% 0%, rgba(255, 255, 255, 0.05), transparent 55%);

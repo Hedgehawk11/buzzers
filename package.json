@@ -7,7 +7,8 @@
     "dev": "vite",
     "dev-server": "vite --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:harness": "node test-harness/run.mjs"
   },
   "devDependencies": {
     "vite": "^8.0.0",

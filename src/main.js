@@ -1141,9 +1141,14 @@ showScoresToPlayers: settings.showScoresToPlayers,
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
     // Scores + rulings must invalidate the signature or other clients never
-    // re-render after a host ruling (their tick only patches timers).
+    // re-render after a host ruling (their tick only patches timers). The log
+    // is append-only, so a compact per-entry digest stands in for the full
+    // array (covers edits to older entries too).
     scores: getScores(),
-    gameLog: getLog(),
+    gameLogDigest: (() => {
+      const log = getLog();
+      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}`).join(",")}`;
+    })(),
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
     pendingLogId,
@@ -1696,6 +1701,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           winnerOption: null,
           winnerAnswer: null,
           winnerName: null,
+          // Reopening starts a fresh Jeopardy race.
+          coopControl: null,
         },
         true,
       );
@@ -1786,6 +1793,7 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
             winnerTeam: null,
             winnerOption: null,
             winnerName: null,
+            coopControl: null,
           },
           true,
         );
@@ -1808,6 +1816,7 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
           winnerOption: null,
           winnerAnswer: null,
           winnerName: null,
+          coopControl: null,
         },
         true,
       );
@@ -2435,7 +2444,7 @@ function handleBingoBuzz(player, payload) {
       if (!Number.isInteger(coopSlot) || coopSlot < 0 || coopSlot >= count) {
         return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
       }
-      if (isCoopSlotMuted(settings, player.id, coopSlot)) {
+      if (isCoopSlotFrozen(player.id, coopSlot) || isCoopSlotMuted(settings, player.id, coopSlot)) {
         return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
       }
     }
@@ -2719,6 +2728,8 @@ function handleDisOrDatAnswer(player, payload) {
     activeTracks = coopActive
       ? [dd.activeCoopKey].filter(Boolean)
       : [getTeamTrackKey(dd.activePlayerId, settings, assignments)].filter(Boolean);
+  } else if (coopActive) {
+    activeTracks = getDisOrDatTracks(settings, assignments, participants);
   } else if (isSharedTeam) {
     activeTracks = [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
   } else {
@@ -3202,6 +3213,7 @@ function exitFibbage() {
 function handleFibbageLie(senderPlayer, payload) {
   const fb = getFibbage();
   if (!isFibbageMode() || !fb.active || fb.phase !== "lying") return { ok: false, reason: getSnark("player.fibbage.notLying", "Not accepting lies right now.") };
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.fibbage.coopBlocked", "Fibbage is off limits in coopertition mode.") };
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const trackKey = getTeamTrackKey(senderPlayer.id, settings, assignments);
@@ -3230,6 +3242,7 @@ function handleFibbageLie(senderPlayer, payload) {
 function handleFibbageVote(senderPlayer, payload) {
   const fb = getFibbage();
   if (!isFibbageMode() || !fb.active || (fb.phase !== "voting" && fb.phase !== "voting_ready")) return { ok: false, reason: getSnark("player.fibbage.notVoting", "Not voting right now.") };
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.fibbage.coopBlocked", "Fibbage is off limits in coopertition mode.") };
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const trackKey = getTeamTrackKey(senderPlayer.id, settings, assignments);
@@ -3392,6 +3405,11 @@ function initiateScrew(screwerId) {
 // Host/co-host initiates a screw without needing allowScrewing or screw cap
 function hostInitiateScrew() {
   if (!hasHostPrivileges()) return;
+  if (isCoopMode()) {
+    setBuzzNotice("Screws are disabled in coopertition mode.");
+    render();
+    return;
+  }
   const round = getRound();
   if (isBingoMode()) {
     setBuzzNotice("Cannot screw during special questions.");
@@ -3782,6 +3800,24 @@ function handleCoopRoster(senderPlayer, payload) {
       touched = true;
     }
   });
+  // Reconcile the slot-0 identity across resizes so points never orphan or
+  // double-count: growing folds the legacy pid balance into slot 0,
+  // shrinking folds a stale slot-0 key back into pid (slots 1+ stay frozen).
+  if (count > 1) {
+    const slot0Key = `coop:${senderPlayer.id}:0`;
+    if (scores[senderPlayer.id]) {
+      scores[slot0Key] = Number(scores[slot0Key] || 0) + Number(scores[senderPlayer.id] || 0);
+      delete scores[senderPlayer.id];
+      touched = true;
+    }
+  } else {
+    const staleSlot0 = `coop:${senderPlayer.id}:0`;
+    if (scores[staleSlot0]) {
+      scores[senderPlayer.id] = Number(scores[senderPlayer.id] || 0) + Number(scores[staleSlot0] || 0);
+      delete scores[staleSlot0];
+      touched = true;
+    }
+  }
   if (touched) setState("scores", scores, true);
   render();
   return { ok: true, message: count <= 1 ? `Group "${group}" confirmed.` : `Group "${group}" set with ${count} players.` };
@@ -3851,6 +3887,11 @@ function setHostSetting(key, value) {
       render();
       return;
     }
+    if (value === true && getFibbage()?.active) {
+      setBuzzNotice("Finish or exit the Fibbage round before enabling coopertition.");
+      render();
+      return;
+    }
     next.coopertitionEnabled = Boolean(value);
     if (next.coopertitionEnabled) {
       // Coop locks: screws off, one response per player, uniform-style scoring, alliances only.
@@ -3866,6 +3907,18 @@ function setHostSetting(key, value) {
         next.optionCount = 4;
         next.disabledOptions = normalizeDisabledOptions(next.disabledOptions, 4);
       }
+      // A screw active at toggle time would freeze slot-identity buzzing —
+      // clear it outright.
+      try {
+        const curRound = getRound();
+        if (curRound.screw?.active) {
+          setState("round", {
+            ...curRound,
+            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
+            screwsUsedBy: [],
+          }, true);
+        }
+      } catch {}
       migrateScoresForCoopToggle(true);
     } else {
       migrateScoresForCoopToggle(false);
@@ -3911,6 +3964,7 @@ function setHostSetting(key, value) {
         phase: "playing",
         mode: null,
         activePlayerId: null,
+        activeCoopKey: null,
         pendingPick: false,
         timeEndsAt: null,
         currentQuestion: 0,
@@ -3918,6 +3972,7 @@ function setHostSetting(key, value) {
         pointsEarned: {},
         jackBonus: {},
         finishedPlayerIds: [],
+        claims: {},
       }, true);
     }
     if (value === "fibbage") {
@@ -4332,6 +4387,25 @@ function ensureHostInit() {
     if (Object.keys(pruned).length !== Object.keys(rosters || {}).length) {
       setState("coopRosters", pruned, true);
     }
+    // Prune score keys of departed devices (pid + coop:pid:*). Live keys for
+    // the controller/co-hosts are kept; team:* legacy balances are untouched.
+    try {
+      const keepIds = new Set([...activeIds, getControllerId(), ...(getSafeState("cohostIds", []) || [])]);
+      const scores = getScores();
+      const prunedScores = {};
+      Object.entries(scores || {}).forEach(([key, value]) => {
+        if (String(key).startsWith("team:")) {
+          prunedScores[key] = value;
+          return;
+        }
+        const parsed = parseCoopScoreKey(key);
+        const deviceId = parsed ? parsed.deviceId : key;
+        if (keepIds.has(deviceId)) prunedScores[key] = value;
+      });
+      if (Object.keys(prunedScores).length !== Object.keys(scores || {}).length) {
+        setState("scores", prunedScores, true);
+      }
+    } catch {}
   }
   if (!getState("coopMoods")) {
     setState("coopMoods", {}, true);
@@ -4460,7 +4534,20 @@ function renderBingoHostPanel(settings, players) {
   ).join("");
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
-  const progressHtml = isSharedTeam
+  const coopActive = isCoopMode(settings);
+  const progressHtml = coopActive
+    ? nonController.map(p => {
+        const count = getCoopSlotCount(p.id);
+        const rows = [];
+        for (let slot = 0; slot < count; slot++) {
+          const key = getCoopScoreKey(p.id, slot);
+          const collected = ((bingo.playerItems || {})[key] || []).map(i => items[i]).join(", ");
+          const n = (bingo.collectedCounts?.[key] || 0);
+          rows.push(`<div><strong>${escapeHtml(getCoopSlotName(p.id, slot))}</strong> <small>(${escapeHtml(getCoopGroupName(p.id, getPlayerName(p)))})</small>: ${collected || "none"} (${n}/${items.length})</div>`);
+        }
+        return rows.join("");
+      }).join("")
+    : isSharedTeam
     ? TEAM_COLORS.map(teamColor => {
         const members = getTeamMembers(teamColor, players, assignments);
         if (members.length === 0) return "";
@@ -4568,7 +4655,7 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
     const hint = getCoopKeyHint(slot, count);
     const collected = ((bingo.playerItems || {})[key] || []).length;
     const locked = lockout[deviceId] && lockout[deviceId] !== key;
-    const muted = isCoopSlotMuted(settings, deviceId, slot);
+    const muted = isCoopSlotMuted(settings, deviceId, slot) || isCoopSlotFrozen(deviceId, slot);
     const off = !canBuzz || !activeViewer || locked || muted;
     cols.push(`
       <div class="coop-slot${locked ? " is-locked" : ""}">
@@ -5087,10 +5174,11 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       </main>`;
   }
 
+  const coopActiveAud = isCoopMode(settings);
   const activeTrack = dd.mode === "onePlayTimed"
-    ? getTeamTrackKey(dd.activePlayerId, settings, assignments)
+    ? (coopActiveAud ? dd.activeCoopKey : getTeamTrackKey(dd.activePlayerId, settings, assignments))
     : null;
-  const tracks = (activeTrack ? [activeTrack] : [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))])
+  const tracks = (activeTrack ? [activeTrack] : coopActiveAud ? getDisOrDatTracks(settings, assignments, participants) : [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))])
     .map(track => {
       const resps = dd.responses[track] || [];
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
@@ -5101,9 +5189,11 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       const bonus = dd.jackBonus[track] || 0;
       const total = base - penalty + bonus;
       const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
-      const label = TEAM_COLORS.includes(track)
-        ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
-        : escapeHtml(getPlayerName(rep) || track);
+      const label = coopActiveAud
+        ? escapeHtml(getCoopKeyDisplayName(track, participants))
+        : TEAM_COLORS.includes(track)
+          ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
+          : escapeHtml(getPlayerName(rep) || track);
       return { track, correctCount, total, label, missing, penalty };
     })
     .sort((a, b) => b.total - a.total);
@@ -6309,6 +6399,19 @@ function getBuzzedParticipants(round, players) {
     .filter(Boolean);
 }
 
+// Buzz-order display names, coop-aware (composite keys → sub-player names).
+function getBuzzedCoopLabels(round, players) {
+  const participantsById = new Map(players.map((player) => [player.id, player]));
+  return (round.buzzedPlayerIds || [])
+    .map((key) => {
+      const parsed = parseCoopScoreKey(key);
+      if (parsed) return getCoopSlotName(parsed.deviceId, parsed.slot);
+      const p = participantsById.get(key);
+      return p ? getPlayerName(p) : null;
+    })
+    .filter(Boolean);
+}
+
 // =============================================================================
 // Audience/projection display — shows round status, buzz leaderboard
 // =============================================================================
@@ -6328,12 +6431,20 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
   const buzzedPlayers = getBuzzedParticipants(round, players);
+  const coopActive = isCoopMode(settings);
+  const buzzedLabels = coopActive ? getBuzzedCoopLabels(round, players) : [];
   const cohostIds = getSafeState("cohostIds", []);
   const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
-  const leader = round.winnerId
-    ? players.find((player) => player.id === round.winnerId) || buzzedPlayers[0] || null
-    : buzzedPlayers[0] || null;
+  const coopLeaderName = coopActive
+    ? (round.winnerCoopKey ? getCoopControlName({ coopControl: round.winnerCoopKey }) || null : null) || buzzedLabels[0] || null
+    : null;
+  const leader = coopActive
+    ? null
+    : round.winnerId
+      ? players.find((player) => player.id === round.winnerId) || buzzedPlayers[0] || null
+      : buzzedPlayers[0] || null;
+  const leaderName = coopActive ? coopLeaderName : leader ? getPlayerName(leader) : null;
 
   const statusLabel = {
     [ROUND_STATUSES.IDLE]: getSnark("audience.buzzer.statusIdle", "Waiting for the round to start"),
@@ -6354,10 +6465,18 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   const buzzSection = useSingleLeader
     ? `<div class="audience-leader">
         <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
-        <strong>${leader ? escapeHtml(getPlayerName(leader)) : getSnark("audience.outcome.waitingForBuzz", "Waiting for a buzz")}</strong>
-        <span class="muted">${leader ? `Time left: <strong>${timerDisplay}</strong>` : getSnark("audience.outcome.noBuzzYet", "No one has buzzed yet.")}</span>
+        <strong>${leaderName ? escapeHtml(leaderName) : getSnark("audience.outcome.waitingForBuzz", "Waiting for a buzz")}</strong>
+        <span class="muted">${leaderName ? `Time left: <strong>${timerDisplay}</strong>` : getSnark("audience.outcome.noBuzzYet", "No one has buzzed yet.")}</span>
       </div>`
-    : `<ul class="audience-buzz-list">
+    : coopActive
+      ? `<ul class="audience-buzz-list">
+          ${buzzedLabels.length
+            ? buzzedLabels
+                .map((name, index) => `<li><span>${index + 1}</span><strong>${escapeHtml(name)}</strong></li>`)
+                .join("")
+            : `<li class="audience-empty">${getSnark("audience.outcome.noBuzzesYet", "No buzzes yet.")}</li>`}
+        </ul>`
+      : `<ul class="audience-buzz-list">
         ${buzzedPlayers.length
           ? buzzedPlayers
               .map((player, index) => `<li><span>${index + 1}</span><strong>${escapeHtml(getPlayerName(player))}</strong></li>`)
@@ -7167,7 +7286,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           <button type="button" data-host-action="reset">Reset Round</button>
         </div>
         <div class="host-actions" style="margin-top:0.4rem">
-          ${!round.screw.active && round.status === ROUND_STATUSES.OPEN
+          ${!round.screw.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
             ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
             : ""}
           <button type="button" data-host-action="reset-screws">Refund Screws</button>
