@@ -338,4 +338,126 @@ await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [1] }, dev1);
 await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, dev1);
 await pk._store.rpc["bingo-buzz"]({ litIndex: 1, litSlot: 0, coopSlot: 0 }, dev1);
 check("host progress shows slot", mount.innerHTML.includes("Ann"), "slot name missing from host panel");
+
+// --- Wen: correct scores, no collection, no winner ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "wendithapn"] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "startBingo", args: [] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [0] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, dev1);
+const d2Before = S().scores?.dev2 || 0;
+const wenRes = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0 }, dev2);
+check("wen correct buzz", wenRes?.ok === true, JSON.stringify(wenRes));
+check("wen awards 500", (S().scores?.dev2 || 0) - d2Before === 500, JSON.stringify(S().scores?.dev2));
+check("wen collects nothing", Object.keys(S().bingo?.playerItems || {}).length === 0, JSON.stringify(S().bingo?.playerItems));
+await pk._store.rpc["cohost-action"]({ fn: "endBingo", args: [] }, dev1);
+
+// --- moods: wrong holds until reset; correct self-clears ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, dev1);
+await pk._store.rpc.buzz({ option: 3 }, dev2);
+const moodEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry.id, -1000] }, dev1);
+check("wrong face set", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
+await pk._store.rpc["cohost-action"]({ fn: "resetRound", args: [] }, dev1);
+check("reset clears faces", JSON.stringify(S().coopMoods) === "{}" || S().coopMoods === undefined, JSON.stringify(S().coopMoods));
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, dev1);
+await pk._store.rpc.buzz({ option: 4 }, dev2);
+const moodEntry2 = S().gameLog.filter((e) => e.type === "buzz").pop();
+await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry2.id, 1000] }, dev1);
+check("correct face set", S().coopMoods?.dev2 === "correct" || S().coopMoods?.["coop:dev2:0"] === "correct", JSON.stringify(S().coopMoods));
+await sleep(1800);
+check("correct face self-clears", !S().coopMoods?.dev2 && !S().coopMoods?.["coop:dev2:0"], JSON.stringify(S().coopMoods));
+
+// --- control mismatch: other slots/devices rejected while held ---
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, dev1);
+await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
+const steal = await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev2);
+check("control steal rejected", steal?.ok === false, JSON.stringify(steal));
+const sibSteal = await pk._store.rpc.buzz({ coopSlot: 1, buzzIn: true }, dev1);
+check("sibling steal rejected", sibSteal?.ok === false, JSON.stringify(sibSteal));
+await pk._store.rpc.buzz({ option: 2 }, dev1);
+
+// --- NaN ruling is a silent no-op, scores untouched ---
+const nanEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+const nanBefore = JSON.stringify(S().scores);
+await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [nanEntry.id, NaN] }, dev1);
+check("NaN ruling no-op", JSON.stringify(S().scores) === nanBefore, `${nanBefore} -> ${JSON.stringify(S().scores)}`);
+await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [nanEntry.id, -500] }, dev1);
+
+// --- disordat one-play: auto-pick highlighted, override works, gating ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, dev1);
+clickBtn({}, "[data-disordat-reset]");
+for (let q = 0; q < 7; q++) {
+  clickBtn({ q: String(q), answer: "dis" }, "[data-disordat-answer-chip]");
+}
+clickBtn({ disordatStart: "onePlayTimed" }, "[data-disordat-start]");
+await sleep(20);
+check("one-play pending pick", S().disordat?.pendingPick === true, JSON.stringify(S().disordat?.pendingPick));
+check("last-place auto-pick shown", mount.innerHTML.includes("(last place)"), "auto tag missing");
+clickBtn({ disordatPickPlayer: "dev2" }, "[data-disordat-pick-player]");
+check("override pick honored", S().disordat?.activeCoopKey === "dev2", S().disordat?.activeCoopKey);
+const ddWrongSlot = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis", coopSlot: 0 }, dev1);
+check("non-active slot rejected", ddWrongSlot?.ok === false, JSON.stringify(ddWrongSlot));
+const ddRightSlot = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis" }, dev2);
+check("active slot answers", ddRightSlot?.ok === true, JSON.stringify(ddRightSlot));
+clickBtn({}, "[data-disordat-reset]");
+
+// --- disordat host-paced: claim then answer, others blocked ---
+for (let q = 0; q < 7; q++) {
+  clickBtn({ q: String(q), answer: "dat" }, "[data-disordat-answer-chip]");
+}
+clickBtn({ disordatStart: "allPlayHostPaced" }, "[data-disordat-start]");
+const claimNoQ = await pk._store.rpc["disordat-claim"]({ q: 1, coopSlot: 0 }, dev1);
+check("claim wrong question rejected", claimNoQ?.ok === false, JSON.stringify(claimNoQ));
+const claimOk = await pk._store.rpc["disordat-claim"]({ q: 0, coopSlot: 0 }, dev1);
+check("claim accepted", claimOk?.ok === true, JSON.stringify(claimOk));
+const unclaimed = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat", coopSlot: 1 }, dev1);
+check("unclaimed slot rejected", unclaimed?.ok === false, JSON.stringify(unclaimed));
+const claimed = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat", coopSlot: 0 }, dev1);
+check("claimant answers", claimed?.ok === true, JSON.stringify(claimed));
+clickBtn({}, "[data-disordat-reset]");
+
+// --- all-answered auto-close (no-lock + preset) ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, dev1);
+if (!(S().round?.correctOptions || []).includes(1)) {
+  await pk._store.rpc["cohost-action"]({ fn: "toggleCorrectOption", args: [1] }, dev1);
+}
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, dev1);
+const allSlots = [[dev1, 0], [dev1, 1], [dev2, undefined], [dev3, undefined], [dev4, undefined], [plain, undefined]];
+for (const [p, slot] of allSlots) {
+  const payload = slot === undefined ? { option: 2 } : { coopSlot: slot, buzzIn: true };
+  await pk._store.rpc.buzz(payload, p);
+  if (slot !== undefined) await pk._store.rpc.buzz({ option: 2 }, p);
+}
+check("all answered auto-closes", S().round?.status === "closed", S().round?.status);
+// preset button state: no preset + no lock => open disabled
+await pk._store.rpc["cohost-action"]({ fn: "toggleCorrectOption", args: [1] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, dev1);
+check("open disabled without preset", mount.innerHTML.includes('data-host-action="open" disabled'), "open button enabled");
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, dev1);
+
+// --- disable migration folds back, re-enable restores ---
+const d1Total = (S().scores?.["coop:dev1:0"] || 0) + (S().scores?.["coop:dev1:1"] || 0);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, dev1);
+check("disable folds to pid", S().scores?.dev1 === d1Total, `total=${d1Total} pid=${S().scores?.dev1}`);
+check("disable clears coop keys", S().scores?.["coop:dev1:0"] === undefined, JSON.stringify(S().scores?.["coop:dev1:0"]));
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, dev1);
+check("re-enable restores slot0", S().scores?.["coop:dev1:0"] === d1Total, JSON.stringify(S().scores?.["coop:dev1:0"]));
+
+// --- removed slots stay dead: forged slot rejected (count>1), and on a
+// 1-slot device a forged slot attributes to slot 0 without touching frozen keys ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "startBingo", args: [] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [0] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, dev1);
+const forgedRange = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 5 }, dev1);
+check("out-of-range slot rejected", forgedRange?.ok === false, JSON.stringify(forgedRange));
+await pk._store.rpc["coop-roster"]({ group: "GroupA", count: 1, names: [] }, dev1);
+const fBeforeFrozen = S().scores?.["coop:dev1:1"] || 0;
+const fBeforePid = S().scores?.dev1 || 0;
+const frozenBuzz = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 1 }, dev1);
+check("forged slot attributes to slot0", frozenBuzz?.ok === true, JSON.stringify(frozenBuzz));
+check("frozen key untouched", (S().scores?.["coop:dev1:1"] || 0) === fBeforeFrozen, `frozen=${S().scores?.["coop:dev1:1"]}`);
+check("slot0 credited", (S().scores?.dev1 || 0) === fBeforePid + 500, `pid=${S().scores?.dev1}`);
 process.exit(fail ? 1 : 0);

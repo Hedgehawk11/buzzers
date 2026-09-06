@@ -452,6 +452,13 @@ function getCoopTrackKey(deviceId, slot, settings = getSettings(), assignments =
   return getTeamTrackKey(deviceId, settings, assignments);
 }
 
+// Score keys that carry a coop face: slot keys, plus pid keys of rostered
+// 1-slot devices (they use the slot-1 avatar).
+function isCoopMoodKey(entryScoreKey, playerId) {
+  if (isCoopScoreKey(entryScoreKey)) return true;
+  return Boolean(playerId && getCoopRoster(playerId));
+}
+
 // Display name of the slot currently holding Jeopardy control ("").
 function getCoopControlName(round) {
   const parsed = parseCoopScoreKey(round?.coopControl);
@@ -1632,7 +1639,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       const parsedKey = parseCoopScoreKey(entryScoreKey);
       if (parsedKey) setState("coopLastCorrect", { ...getCoopLastCorrect(), [parsedKey.deviceId]: parsedKey.slot }, true);
     }
-    if (isCoopMode(settings) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && isCoopScoreKey(entryScoreKey)) {
+    if (isCoopMode(settings) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && isCoopMoodKey(entryScoreKey, entry.playerId)) {
       if (nextAwarded > 0) {
         setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "correct" }, true);
         // Correct plays once, then back to idle.
