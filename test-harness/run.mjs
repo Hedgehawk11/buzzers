@@ -28,7 +28,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // --- boot as host ---
 pk._store.self = pk.makePlayer("host1", "Host");
 pk._store.participants = { host1: pk._store.self };
-await import("/home/hedgehawk11/Documents/GitHub/buzzers/src/main.js");
+await import("../src/main.js");
 
 // --- submit host prejoin form (coop checked) ---
 queryMap["#prejoin-name"] = { value: "Host" };
@@ -262,9 +262,6 @@ check("auto-rule correct awards", S().scores?.dev2 === 0, JSON.stringify(S().sco
 check("auto-rule correct resolved", autoRight?.awardedDelta === 1000, JSON.stringify(autoRight?.awardedDelta));
 await pk._store.rpc["cohost-action"]({ fn: "toggleCorrectOption", args: [2] }, dev1);
 
-console.log(`\n${pass} passed, ${fail} failed`);
-if (fail) process.exit(1);
-
 // --- NON-COOP free-for-all: buzz -> minus ruling deducts ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, dev1);
 check("coop off", S().settings?.coopertitionEnabled === false, JSON.stringify(S().settings?.coopertitionEnabled));
@@ -460,4 +457,19 @@ const frozenBuzz = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, 
 check("forged slot attributes to slot0", frozenBuzz?.ok === true, JSON.stringify(frozenBuzz));
 check("frozen key untouched", (S().scores?.["coop:dev1:1"] || 0) === fBeforeFrozen, `frozen=${S().scores?.["coop:dev1:1"]}`);
 check("slot0 credited", (S().scores?.dev1 || 0) === fBeforePid + 500, `pid=${S().scores?.dev1}`);
+// --- regression: co-host forced delta allowlisted, NaN rejected, jack clamped ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, dev1);
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, dev1);
+await pk._store.rpc.buzz({ option: 1 }, plain);
+const fEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+const fBefore = S().scores?.plain1 || 0;
+await pk._store.rpc["cohost-action"]({ fn: "resolveLogEntryWithForcedDelta", args: [fEntry.id, 250] }, dev1);
+check("cohost forced delta applies", (S().scores?.plain1 || 0) === fBefore + 250 - (fEntry.awardedDelta || 0), `after=${S().scores?.plain1}`);
+const forcedNanBefore = S().scores?.plain1;
+await pk._store.rpc["cohost-action"]({ fn: "resolveLogEntryWithForcedDelta", args: [fEntry.id, "abc"] }, dev1);
+check("NaN forced delta rejected", Number.isFinite(S().scores?.plain1) && S().scores?.plain1 === forcedNanBefore, `after=${S().scores?.plain1}`);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["jackMultiplier", "abc"] }, dev1);
+check("jackMultiplier clamped", S().settings?.jackMultiplier === 1, JSON.stringify(S().settings?.jackMultiplier));
+console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

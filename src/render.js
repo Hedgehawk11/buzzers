@@ -18,10 +18,13 @@ const PRESERVED_INPUT_IDS = [
   "bingo-word",
   "disordat-dis-label",
   "disordat-dat-label",
+  "disordat-timed-seconds",
   "fibbage-lie-entry",
   "prejoin-name",
   "prejoin-room-code",
+  "prejoin-team-mode",
   "prejoin-cohost-password",
+  "teamselect-limit",
   "fibbage-lie-time",
   "fibbage-vote-time",
   "fibbage-mult",
@@ -61,12 +64,44 @@ function capturePreservedInputs() {
         checked: ae.checked,
       });
     }
+    // Custom ruling amounts use [data-log-input="<entryId>"] with no id —
+    // preserve the focused one keyed by entry id so typing survives the 1s tick.
+    try {
+      const logInput = ae?.closest?.("[data-log-input]");
+      if (logInput?.dataset?.logInput) {
+        const key = `log:${logInput.dataset.logInput}`;
+        if (!inputDrafts.has(key)) {
+          inputDrafts.set(key, {
+            value: logInput.value,
+            selStart: logInput.selectionStart,
+            selEnd: logInput.selectionEnd,
+            focused: true,
+            checked: logInput.checked,
+            logInput: logInput.dataset.logInput,
+          });
+        }
+      }
+    } catch {}
   } catch {}
 }
 
 function restorePreservedInputs() {
   try {
     for (const [id, draft] of inputDrafts.entries()) {
+      if (draft?.logInput) {
+        const el = document.querySelector(`[data-log-input="${draft.logInput}"]`);
+        if (!el) continue;
+        if (el.value !== draft.value) el.value = draft.value;
+        if (draft.focused) {
+          el.focus();
+          try {
+            if (draft.selStart !== null && draft.selEnd !== null && el.setSelectionRange) {
+              el.setSelectionRange(draft.selStart, draft.selEnd);
+            }
+          } catch {}
+        }
+        continue;
+      }
       const el = document.getElementById(id);
       if (!el) continue;
       // Only restore if value differs to avoid cursor jumps when not needed
@@ -121,15 +156,20 @@ export function renderImmediate(fn) {
 export function initRenderer(app, render) {
   appEl = app;
   renderFn = render;
+  // Attach listeners for any event types registered before #app existed.
+  for (const type of delegatedHandlers.keys()) {
+    try { ensureDelegated(type); } catch {}
+  }
 }
 
 // Delegated event helper — single listener per eventType on app
 const delegatedHandlers = new Map(); // eventType -> [{ selector, handler }]
+const delegatedAttached = new Set(); // eventType already bound on appEl
 
 function ensureDelegated(eventType) {
-  if (delegatedHandlers.has(eventType)) return;
-  delegatedHandlers.set(eventType, []);
-  if (!appEl) return;
+  if (!delegatedHandlers.has(eventType)) delegatedHandlers.set(eventType, []);
+  if (!appEl || delegatedAttached.has(eventType)) return;
+  delegatedAttached.add(eventType);
   appEl.addEventListener(eventType, (event) => {
     const handlers = delegatedHandlers.get(eventType) || [];
     for (const { selector, handler, options } of handlers) {
@@ -156,7 +196,12 @@ export function delegate(eventType, selector, handler, options) {
 export function getApp() {
   if (appEl && document.contains(appEl)) return appEl;
   const found = document.querySelector("#app");
-  if (found) appEl = found;
+  if (found) {
+    appEl = found;
+    for (const type of delegatedHandlers.keys()) {
+      try { ensureDelegated(type); } catch {}
+    }
+  }
   return appEl;
 }
 
