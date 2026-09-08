@@ -56,7 +56,7 @@ You can also just... not, your choice (but you should)
 I'm planning to re-create the 2011/2015 games for my ui theme here... when I get around to it... eventually... probably...
 
 ### Why is there a 40 second option on the disordat, arn't they traditionally 30 seconds
-well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 seconds sooooo... 
+well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 seconds sooooo... (but there still is a 30 second option so be quiet)
 
 ### Sample slideshow?
 IDK possibly
