@@ -6198,6 +6198,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const timeText = formatSeconds(timeLeftCs);
   const usingTextEntry = settings.inputMode === "text";
 
+  
+// If you came here just to find this, I am both impressed and disappointed.
   if (usingTextEntry) {
     if (fYouEasterEggUnlocked) {
       return `
