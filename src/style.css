@@ -1926,20 +1926,20 @@ body[data-ui-anims="off"] * {
   animation: none !important;
 }
 
-/* Screw warning has ultimate priority over all other backgrounds */
-body:has([data-screw-active]) {
-  background:
-    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
-    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
-    linear-gradient(160deg, #1f0a0a, #0d0505);
-}
-
 /* Fibbage */
 body:has([data-fibbage-active]) {
   background:
     radial-gradient(1200px 500px at 8% -20%, rgba(180, 80, 255, 0.18), transparent 58%),
     radial-gradient(1000px 520px at 100% 0%, rgba(255, 139, 36, 0.14), transparent 55%),
     linear-gradient(160deg, #1a0b2e, #0d0a1a);
+}
+
+/* Screw warning has ultimate priority over all other backgrounds — keep last */
+body:has([data-screw-active]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
+    linear-gradient(160deg, #1f0a0a, #0d0505);
 }
 .fibbage-lie-list {
   display: grid;

@@ -495,8 +495,12 @@ function isMobileDevice() {
 }
 
 function getSavedCoopCount() {
-  const n = Number(localStorage.getItem(COOP_COUNT_KEY));
-  return n >= 1 && n <= 3 ? n : 1;
+  try {
+    const n = Number(localStorage.getItem(COOP_COUNT_KEY));
+    return n >= 1 && n <= 3 ? n : 1;
+  } catch {
+    return 1;
+  }
 }
 
 function getSavedCoopNames() {
@@ -1270,6 +1274,10 @@ function isRoulettePlayerAllowed(roulette, playerId) {
   if (roulette.mode === "single-player") {
     return playerId === roulette.targetPlayerId;
   }
+  // Frozen roster: players who join mid-phase sit out this round.
+  if (Array.isArray(roulette.expectedPlayerIds)) {
+    return roulette.expectedPlayerIds.includes(playerId);
+  }
   return playerId !== getControllerId();
 }
 
@@ -1279,6 +1287,10 @@ function getRouletteExpectedCount(roulette) {
   }
   if (roulette.mode === "single-player") {
     return 1;
+  }
+  // Frozen at phase start: joins don't deadlock, departs don't early-finalize.
+  if (Array.isArray(roulette.expectedPlayerIds)) {
+    return roulette.expectedPlayerIds.length;
   }
   return getRoulettePlayers().length;
 }
@@ -1412,6 +1424,8 @@ function maybeFinalizeRoulettePhase() {
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      winnerCoopKey: null,
+      coopControl: null,
       roulette: {
         ...roulette,
         active: false,
@@ -1480,6 +1494,7 @@ function startRoulettePhase() {
           targetPlayerName: null,
           selections: {},
           completedPlayerIds: [],
+          expectedPlayerIds: [],
           finalValue: null,
           finishedAt: now(),
         },
@@ -1517,6 +1532,7 @@ function startRoulettePhase() {
         targetPlayerId: targetPlayer ? targetPlayer.id : null,
         targetPlayerName: targetPlayer ? getPlayerName(targetPlayer) : null,
         repCoopKeys,
+        expectedPlayerIds: players.map((p) => p.id),
         selections: {},
         completedPlayerIds: [],
         finalValue: null,
@@ -1635,17 +1651,27 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 
   const scores = { ...getScores() };
   scores[entryScoreKey] = Number(scores[entryScoreKey] || 0) + diff;
-  
+  // Reverse any prior screw-mirror move so re-ruling the same entry while a
+  // screw is active doesn't compound the screwer's ±1000 on every edit.
+  if (entry.screwerScoreKey && Number.isFinite(Number(entry.screwerDelta))) {
+    const priorKey = entry.screwerScoreKey;
+    scores[priorKey] = Number(scores[priorKey] || 0) - Number(entry.screwerDelta);
+  }
+  let screwerScoreKey = null;
+  let screwerDelta = 0;
   if (round.screw?.active && round.screw?.screwerId) {
-    const screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
+    screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
     const screwSign = nextAwarded >= 0 ? -1000 : 1000;
     scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwSign;
+    screwerDelta = screwSign;
   }
 
   const updatedLog = [...log];
   updatedLog[entryIndex] = {
     ...entry,
     awardedDelta: nextAwarded,
+    screwerScoreKey,
+    screwerDelta,
     resolved: true,
     updatedAt: now(),
   };
@@ -2235,7 +2261,9 @@ function openBuzzers() {
     }
   }
   const openedAt = now();
-  const closesAt = openedAt + settings.timeOpen * 1000;
+  const rawTimeOpen = Number(settings.timeOpen);
+  const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
+  const closesAt = openedAt + safeTimeOpen * 1000;
   setState(
     "round",
     {
@@ -2243,12 +2271,13 @@ function openBuzzers() {
       status: ROUND_STATUSES.OPEN,
       opensAt: openedAt,
       closesAt,
-      remainingCs: settings.timeOpen * 100,
+      remainingCs: safeTimeOpen * 100,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      winnerCoopKey: null,
       coopControl: null,
       buzzedPlayerIds: [],
       buzzCounts: {},
@@ -2287,17 +2316,20 @@ function closeBuzzers() {
   console.log("closeBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
+  const rawRemaining = Number(getTimeLeftCs(round, settings));
+  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
   setState(
     "round",
     {
       ...round,
       status: ROUND_STATUSES.CLOSED,
-      remainingCs: getTimeLeftCs(round, settings),
+      remainingCs: safeRemaining,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      winnerCoopKey: null,
       coopControl: null,
       roulette: {
         ...round.roulette,
@@ -2710,7 +2742,7 @@ function handleDisOrDatAnswer(player, payload) {
       return { ok: false, reason: getSnark("player.disdat.claimFirst", "Buzz in to claim this question first.") };
     }
   }
-  if (dd.timeEndsAt && now() > dd.timeEndsAt) {
+  if (dd.timeEndsAt && now() >= dd.timeEndsAt) {
     return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
   }
   const resps = dd.responses[trackKey] || [];
@@ -2791,6 +2823,9 @@ function handleDisOrDatClaim(player, payload) {
   const q = Number(payload?.q);
   if (!Number.isInteger(q) || q !== dd.currentQuestion) {
     return { ok: false, reason: getSnark("player.disdat.notLiveYet", "That question isn't live yet.") };
+  }
+  if (dd.timeEndsAt && now() >= dd.timeEndsAt) {
+    return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
   }
   const count = getCoopSlotCount(player.id);
   let slot = 0;
@@ -3237,15 +3272,18 @@ function resetFibbage() {
 function exitFibbage() {
   if (!isHost()) return;
   const fb = getFibbage();
-  if (fb.active && (fb.phase === "lying" || fb.phase === "voting")) {
-    setState("fibbage", { ...fb, phase: "results", revealed: { all: true, singleIdx: null, revealedIdxs: (fb.choices || []).map((_, i) => i) } }, true);
+  // Finalize while still in voting — finalizeFibbageScores requires that phase.
+  if (fb.active && fb.phase === "voting") {
     finalizeFibbageScores();
+  } else if (fb.active && fb.phase === "lying") {
+    setState("fibbage", { ...fb, phase: "results", revealed: { all: true, singleIdx: null, revealedIdxs: (fb.choices || []).map((_, i) => i) } }, true);
   }
   setHostSetting("inputMode", "buttons");
 }
 function handleFibbageLie(senderPlayer, payload) {
   const fb = getFibbage();
   if (!isFibbageMode() || !fb.active || fb.phase !== "lying") return { ok: false, reason: getSnark("player.fibbage.notLying", "Not accepting lies right now.") };
+  if (fb.timeEndsAt && now() >= fb.timeEndsAt) return { ok: false, reason: getSnark("player.fibbage.notLying", "Not accepting lies right now.") };
   if (isCoopMode()) return { ok: false, reason: getSnark("player.fibbage.coopBlocked", "Fibbage is off limits in coopertition mode.") };
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -3275,6 +3313,7 @@ function handleFibbageLie(senderPlayer, payload) {
 function handleFibbageVote(senderPlayer, payload) {
   const fb = getFibbage();
   if (!isFibbageMode() || !fb.active || (fb.phase !== "voting" && fb.phase !== "voting_ready")) return { ok: false, reason: getSnark("player.fibbage.notVoting", "Not voting right now.") };
+  if (fb.phase === "voting" && fb.voteEndsAt && now() >= fb.voteEndsAt) return { ok: false, reason: getSnark("player.fibbage.notVoting", "Not voting right now.") };
   if (isCoopMode()) return { ok: false, reason: getSnark("player.fibbage.coopBlocked", "Fibbage is off limits in coopertition mode.") };
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -3332,18 +3371,24 @@ function resetRound() {
   }
   const settings = getSettings();
   const currentRound = getRound();
+  const rawTimeOpen = Number(settings.timeOpen);
+  const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
   setState(
     "round",
     {
       status: ROUND_STATUSES.IDLE,
       opensAt: null,
       closesAt: null,
-      remainingCs: settings.timeOpen * 100,
+      remainingCs: safeTimeOpen * 100,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
       winnerAnswer: null,
       winnerName: null,
+      winnerCoopKey: null,
+      coopControl: null,
+      correctOptions: null,
+      correctAnswer: null,
       buzzedPlayerIds: [],
       buzzCounts: {},
       roulette: {
@@ -3425,6 +3470,7 @@ function initiateScrew(screwerId) {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        activatedAt: now(),
         frozenCs,
         frozenPoints,
       },
@@ -3474,6 +3520,7 @@ function hostInitiateScrew() {
       screweeId: null,
       screeeName: null,
       screwTimerMs: null,
+      activatedAt: now(),
       frozenCs,
       frozenPoints,
     },
@@ -3509,8 +3556,14 @@ function selectScrewee(screweeId) {
   if (screwee.id === round.screw?.screwerId) {
     return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
   }
-
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(screwee.id)) {
+    return { ok: false, reason: "Cannot screw a co-host." };
+  }
   const settings = getSettings();
+  if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
+    return { ok: false, reason: "That player's buzzer is disabled." };
+  }
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
     const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
     const screwerTeam = getPlayerTeamColor(round.screw?.screwerId, assignments);
@@ -3551,6 +3604,9 @@ function startScrewTimer() {
   if (!round.screw?.active || !round.screw?.screweeId) {
     return { ok: false, reason: getSnark("player.screw.noScrewee", "No screw in progress or screwee not selected.") };
   }
+  if (typeof round.screw?.screwTimerEndsAt === "number" && round.screw.screwTimerEndsAt > now()) {
+    return { ok: false, reason: "Screw timer already running." };
+  }
   
   const settings = getSettings();
   const timeLeftCs = getTimeLeftCs(round, settings);
@@ -3582,8 +3638,14 @@ function closeScrewMode() {
     return;
   }
   const round = getRound();
+  if (!round.screw?.active) return;
   const frozenCs = round.screw?.frozenCs;
   const resumeOpen = round.status === ROUND_STATUSES.OPEN && Number.isFinite(frozenCs);
+  const screwerId = round.screw?.screwerId;
+  const screwsUsedBy = Array.isArray(round.screwsUsedBy) ? [...round.screwsUsedBy] : [];
+  if (typeof screwerId === "string" && screwerId && !screwsUsedBy.includes(screwerId)) {
+    screwsUsedBy.push(screwerId);
+  }
   const nextRound = {
     ...round,
     screw: {
@@ -3596,7 +3658,7 @@ function closeScrewMode() {
       frozenCs: null,
       frozenPoints: null,
     },
-    screwsUsedBy: [...(round.screwsUsedBy || []), round.screw?.screwerId],
+    screwsUsedBy,
   };
   if (resumeOpen) {
     // Main timer was paused during the screw; resume it from the frozen value.
@@ -3651,6 +3713,19 @@ function hostTick() {
   }
   const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) {
+    // Single-player target left mid-phase: finalize with current selections
+    // (or 0) instead of deadlocking with nobody allowed to stop.
+    const roulette = round.roulette;
+    if (roulette?.active && roulette.mode === "single-player" && roulette.targetPlayerId) {
+      const liveIds = new Set(currentParticipants().map((p) => p.id));
+      if (!liveIds.has(roulette.targetPlayerId)) {
+        setState(
+          "round",
+          { ...round, roulette: { ...roulette, completedPlayerIds: [roulette.targetPlayerId] } },
+          true,
+        );
+      }
+    }
     if (maybeFinalizeRoulettePhase()) {
       return;
     }
@@ -3731,8 +3806,14 @@ function hostTick() {
     return;
   }
   
-  // When screw is active but timer not started, don't tick main timer
+  // When screw is active but timer not started, don't tick main timer.
+  // Grace period: if the host never starts the timer, release the screw
+  // after 60s so the round can't sit OPEN forever.
   if (round.screw?.active) {
+    const activatedAt = Number(round.screw?.activatedAt);
+    if (Number.isFinite(activatedAt) && activatedAt > 0 && now() - activatedAt > 60000) {
+      closeScrewMode();
+    }
     render();
     return;
   }
@@ -3844,14 +3925,14 @@ function handleCoopRoster(senderPlayer, payload) {
   // shrinking folds a stale slot-0 key back into pid (slots 1+ stay frozen).
   if (count > 1) {
     const slot0Key = `coop:${senderPlayer.id}:0`;
-    if (scores[senderPlayer.id]) {
+    if (senderPlayer.id in scores) {
       scores[slot0Key] = Number(scores[slot0Key] || 0) + Number(scores[senderPlayer.id] || 0);
       delete scores[senderPlayer.id];
       touched = true;
     }
   } else {
     const staleSlot0 = `coop:${senderPlayer.id}:0`;
-    if (scores[staleSlot0]) {
+    if (staleSlot0 in scores) {
       scores[senderPlayer.id] = Number(scores[senderPlayer.id] || 0) + Number(scores[staleSlot0] || 0);
       delete scores[staleSlot0];
       touched = true;
@@ -4093,7 +4174,8 @@ function setCorrectAnswerValue(val) {
     return;
   }
   const round = getRound();
-  setState("round", { ...round, correctAnswer: val, correctOptions: null }, true);
+  const clean = typeof val === "string" ? val.trim().slice(0, 120) : "";
+  setState("round", { ...round, correctAnswer: clean || null, correctOptions: null }, true);
   render();
 }
 
@@ -4113,9 +4195,13 @@ function toggleCorrectOption(opt) {
     return;
   }
   const round = getRound();
-  const current = Array.isArray(round.correctOptions) ? round.correctOptions.map(Number) : [];
-  const included = current.includes(opt);
-  const next = included ? current.filter((v) => Number(v) !== opt) : [...current, opt].sort((a,b)=>a-b);
+  const settings = getSettings();
+  const maxOption = Number(settings.optionCount) || 6;
+  const num = Number(opt);
+  if (!Number.isInteger(num) || num < 1 || num > maxOption) return;
+  const current = Array.isArray(round.correctOptions) ? round.correctOptions.map(Number).filter((v) => Number.isInteger(v) && v >= 1 && v <= maxOption) : [];
+  const included = current.includes(num);
+  const next = included ? current.filter((v) => v !== num) : [...current, num].sort((a,b)=>a-b);
   setState("round", { ...round, correctOptions: next.length ? next : null, correctAnswer: null }, true);
   render();
 }
@@ -4159,6 +4245,8 @@ function toggleCoopSlot(coopKey) {
   }
   const parsed = parseCoopScoreKey(coopKey);
   if (!parsed) return;
+  // Ignore mutes for devices that already left the room.
+  if (!currentParticipants().some((p) => p.id === parsed.deviceId)) return;
   const settings = getSettings();
   const current = normalizeDisabledCoopSlots(settings.disabledCoopSlots, currentParticipants());
   const next = current.includes(coopKey) ? current.filter((k) => k !== coopKey) : [...current, coopKey];
@@ -4473,6 +4561,48 @@ function ensureHostInit() {
     }
   }
   assignControllerIfNeeded();
+  // Prune departed devices from live round + coop bookkeeping so a holder
+  // leaving can't orphan Jeopardy control or freeze buzz lists.
+  try {
+    const liveIds = new Set(currentParticipants().map((p) => p.id));
+    const round = getRound();
+    let nextRound = null;
+    if (Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.some((id) => {
+      const parsed = parseCoopScoreKey(id);
+      return !liveIds.has(parsed ? parsed.deviceId : id);
+    })) {
+      nextRound = { ...(nextRound || round) };
+      nextRound.buzzedPlayerIds = round.buzzedPlayerIds.filter((id) => {
+        const parsed = parseCoopScoreKey(id);
+        return liveIds.has(parsed ? parsed.deviceId : id);
+      });
+    }
+    if (round.coopControl) {
+      const parsed = parseCoopScoreKey(round.coopControl);
+      const holder = parsed ? parsed.deviceId : round.coopControl;
+      if (!liveIds.has(holder)) {
+        nextRound = { ...(nextRound || round), coopControl: null };
+      }
+    }
+    if (nextRound) setState("round", nextRound, true);
+    const moods = getCoopMoods();
+    const prunedMoods = {};
+    Object.entries(moods || {}).forEach(([key, value]) => {
+      const parsed = parseCoopScoreKey(key);
+      if (!parsed || liveIds.has(parsed.deviceId)) prunedMoods[key] = value;
+    });
+    if (Object.keys(prunedMoods).length !== Object.keys(moods || {}).length) {
+      setState("coopMoods", prunedMoods, true);
+    }
+    const lastCorrect = getCoopLastCorrect();
+    const prunedLast = {};
+    Object.entries(lastCorrect || {}).forEach(([id, slot]) => {
+      if (liveIds.has(id)) prunedLast[id] = slot;
+    });
+    if (Object.keys(prunedLast).length !== Object.keys(lastCorrect || {}).length) {
+      setState("coopLastCorrect", prunedLast, true);
+    }
+  } catch {}
   const players = currentParticipants();
   const controllerId = getControllerId();
   const normalizedAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
@@ -4678,7 +4808,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
         ${waitHint}
         ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
       </div>`}
-      <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: `<strong>${myScore}</strong>` })}</p>
+      <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
     </section>`;
 }
@@ -5172,7 +5302,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
       claimBtns.push(`<button type="button" class="bingo-buzz-btn" data-disordat-claim data-q="${q}" data-coop-slot="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count)}</kbd></button>`);
     }
     return `<section class="card player-card disordat-player-card">${head}
-      <p class="muted">${getSnark("player.disdat.claimPrompt", `Question ${q + 1}: buzz in to claim it!`, { current: q + 1 })}</p>
+      <p class="muted">${getSnark("player.disdat.claimPrompt", "Question {current}: buzz in to claim it!", { current: q + 1 })}</p>
       <div class="coop-buzz-row coop-buzz-${count}">${claimBtns.map((b) => `<div class="coop-slot">${b}</div>`).join("")}</div></section>`;
   }
 
@@ -6595,7 +6725,7 @@ function renderAudienceRoulettePanel(settings, round, players) {
       <p class="audience-roulette-total">${getSnark("audience.roulette.audienceTotalLabel", "Accumulated total")}: <strong>${accumulatedValue}</strong></p>
       <p class="muted">${targetLabel}</p>
       <p class="muted">${selectionCountLabel}</p>
-      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">${getSnark("audience.roulette.audienceFinalValue", `Final value: <strong>${Number(finalValue)}</strong>`, { value: `<strong>${Number(finalValue)}</strong>` })}</p>` : ""}
+      ${finalValue !== null && finalValue !== undefined ? `<p class="roulette-locked-note">${getSnark("audience.roulette.audienceFinalValue", `Final value: <strong>${Number(finalValue)}</strong>`, { value: Number(finalValue) })}</p>` : ""}
       <ul class="audience-roulette-list">${selections}</ul>
     </section>
   `;
@@ -6772,7 +6902,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         </div>
         <div class="hero-meta">
           <span>${getSnark("audience.misc.statusLabel", "Status")}: <strong>${escapeHtml(round.status || getSnark("shared.misc.statusUnknown", "unknown"))}</strong></span>
-          <span>${pendingEntry ? getSnark("audience.misc.awaitingRuling", `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>`, { player: `<strong>${escapeHtml(pendingEntry.playerName)}</strong>` }) : getSnark("audience.misc.liveBuzzTracking", "Live buzz tracking")}</span>
+          <span>${pendingEntry ? getSnark("audience.misc.awaitingRuling", `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>`, { player: pendingEntry.playerName }) : getSnark("audience.misc.liveBuzzTracking", "Live buzz tracking")}</span>
         </div>
       </header>
 
@@ -7274,7 +7404,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
               <label>
                 Co-host password
-                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${escapeHtml(getSafeState("cohostPassword", ""))}</div>
+                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${hasHostPrivileges() ? escapeHtml(getSafeState("cohostPassword", "")) : "•••••"}</div>
                 <p class="setting-helper">Share this 5-digit code with your co-hosts (option to co-host under host menu).</p>
               </label>
               <label>
@@ -8273,7 +8403,9 @@ function bindEvents() {
     if (mode === "display" && !roomCode) { renderPrejoinScreen("display", "Enter a room code for the display."); return; }
     if (mode === "tablet_timer" && !roomCode) { renderPrejoinScreen("tablet_timer", "Enter a room code for the timer display."); return; }
     if (mode === "cohost" && !/^\d{5}$/.test(cohostPassword)) { renderPrejoinScreen("cohost", "Enter a valid 5-digit co-host password."); return; }
-    if (mode !== "display" && mode !== "tablet_timer") localStorage.setItem(NAME_KEY, chosenName);
+    if (mode !== "display" && mode !== "tablet_timer") {
+      try { localStorage.setItem(NAME_KEY, chosenName); } catch {}
+    }
     if (mode === "host") {
       const selectedTeamSetting = String(teamModeInput?.value || "off");
       hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
@@ -8470,7 +8602,11 @@ function isEditingControl() {
 // Pre-join / landing screen — three flows: host, join, or audience display
 // =============================================================================
 function getSavedPlayerName() {
-  return localStorage.getItem(NAME_KEY) || "";
+  try {
+    return localStorage.getItem(NAME_KEY) || "";
+  } catch {
+    return "";
+  }
 }
 
 function getPrejoinNameDraft() {
@@ -8761,7 +8897,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     document.querySelector('.site-footer')?.classList.add('hidden');
   } catch (e) {}
 
-  me().setState("displayName", playerName, true);
+  me().setState("displayName", String(playerName || "").trim().slice(0, 32), true);
   me().setState("clientMode", clientMode, true);
   if (clientMode === "display" || clientMode === "tablet_timer") {
     me().setState("isAudienceDisplay", true, true);
@@ -8878,9 +9014,15 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       return initiateScrew(senderPlayer.id);
     }
 
-    // Otherwise, they're selecting a screwee
+    // Otherwise, they're selecting a screwee — only the screwer (or a
+    // co-host) may pick the victim.
     if (!round.screw?.active) {
       return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress") };
+    }
+    const cohostIds = getSafeState("cohostIds", []);
+    const isSenderCohost = Array.isArray(cohostIds) && cohostIds.includes(senderPlayer?.id);
+    if (senderPlayer?.id !== round.screw?.screwerId && !isSenderCohost) {
+      return { ok: false, reason: "Only the screwer can pick a victim." };
     }
     return selectScrewee(screweeId);
   });
@@ -8922,8 +9064,12 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
     setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
   };
-  RPC.register("cohost-action", async (payload, _senderPlayer) => {
+  RPC.register("cohost-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };
+    const cohostIds = getSafeState("cohostIds", []);
+    if (!senderPlayer?.id || !Array.isArray(cohostIds) || !cohostIds.includes(senderPlayer.id)) {
+      return { ok: false, reason: "Not co-host." };
+    }
     const { fn, args } = payload || {};
     if (HOST_ACTIONS[fn]) {
       HOST_ACTIONS[fn](...(args || []));

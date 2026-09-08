@@ -540,6 +540,36 @@
         "en": "Could not send answer.",
         "snark1": "",
         "snark2": ""
+      },
+      "claimFirst": {
+        "en": "Buzz in to claim this question first.",
+        "snark1": "Buzz in to claim this question first. Dibs protocol.",
+        "snark2": "Nobody owns this question yet. Claim it before someone greedier does."
+      },
+      "noClaimNeeded": {
+        "en": "Just answer — no claim needed.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "alreadyClaimed": {
+        "en": "That question is already claimed.",
+        "snark1": "Too slow — that question is already claimed.",
+        "snark2": "That question is taken. Read faster next time."
+      },
+      "claimed": {
+        "en": "{player} claimed question {q}.",
+        "snark1": "{player} snagged question {q}. Bold.",
+        "snark2": "{player} claimed question {q}. Everyone else can relax."
+      },
+      "claimedWait": {
+        "en": "{player} claimed this question.",
+        "snark1": "{player} claimed this one. Watch and judge silently.",
+        "snark2": "{player} is on this question. No pressure, {player}."
+      },
+      "claimPrompt": {
+        "en": "Question {current}: buzz in to claim it!",
+        "snark1": "Question {current}: buzz in to claim it! First come, first served.",
+        "snark2": "Question {current} is up for grabs. Buzz in already."
       }
     },
     "fibbage": {
