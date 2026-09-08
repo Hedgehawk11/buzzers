@@ -512,5 +512,32 @@ check("late joiner frozen out", !(S().round?.roulette?.expectedPlayerIds || []).
 check("frozen count stable", (S().round?.roulette?.expectedPlayerIds || []).length === frozenCount, `${frozenCount}`);
 const lateStop = await pk._store.rpc["roulette-stop"]({}, late);
 check("late joiner cannot stop", lateStop?.ok === false, JSON.stringify(lateStop));
+// --- regression: choiceLayout grid/list modes (4-choice, 1234 labels) ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["optionCount", 4] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["valueSelectionMethod", "standard"] }, coh);
+pk._store.self = plain;
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+check(
+  "diamond default ABXY",
+  _mount.innerHTML.includes("abxy-diamond") && _mount.innerHTML.includes(">A<"),
+  `html len=${_mount.innerHTML.length}`,
+);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["choiceLayout", "grid"] }, coh);
+check(
+  "grid mode 1234",
+  _mount.innerHTML.includes("choice-grid") && !_mount.innerHTML.includes("abxy-diamond") && _mount.innerHTML.includes(">1<"),
+  `html len=${_mount.innerHTML.length}`,
+);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["choiceLayout", "list"] }, coh);
+check(
+  "list mode 1234",
+  _mount.innerHTML.includes("choice-list") && !_mount.innerHTML.includes("abxy-diamond") && _mount.innerHTML.includes(">4<"),
+  `html len=${_mount.innerHTML.length}`,
+);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["choiceLayout", "bogus"] }, coh);
+check("bad layout coerced", S().settings?.choiceLayout === "diamond", JSON.stringify(S().settings?.choiceLayout));
+pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

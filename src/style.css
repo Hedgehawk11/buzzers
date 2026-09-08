@@ -729,10 +729,41 @@ button:disabled {
 
 .abxy button,
 .abxy-diamond button,
+.choice-grid button,
+.choice-list button,
 .six-grid button,
 .eight-grid button {
   font-size: 1.1rem;
   font-weight: 700;
+}
+
+.choice-grid {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(100px, 1fr));
+}
+
+.choice-grid button {
+  min-height: 72px;
+  font-size: 1.4rem;
+}
+
+.choice-list {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: 1fr;
+}
+
+.choice-list button {
+  min-height: 56px;
+  font-size: 1.2rem;
+}
+
+.choice-value {
+  margin: 0.5rem 0 0;
+  text-align: center;
 }
 
 .six-grid {

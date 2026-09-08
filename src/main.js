@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS = {
   uiAnimationsEnabled: true,
   inputMode: "buttons",
   optionCount: 4,
+  choiceLayout: "diamond",
   disabledOptions: [],
   disabledPlayerIds: [],
   scoringMode: "uniform",
@@ -1129,6 +1130,7 @@ function getUiSignature() {
     settings: {
       inputMode: settings.inputMode,
       optionCount: settings.optionCount,
+      choiceLayout: settings.choiceLayout,
       rebuzzAllowed: settings.rebuzzAllowed,
       lockAfterBuzz: settings.lockAfterBuzz,
       maxBuzzesPerOption: settings.maxBuzzesPerOption,
@@ -1230,6 +1232,12 @@ function normalizeRouletteTopAmount(value) {
 function normalizeUniformPoints(value) {
   const numeric = Number(value);
   return VALUE_OPTIONS.includes(numeric) ? numeric : 1000;
+}
+
+const CHOICE_LAYOUT_OPTIONS = ["diamond", "grid", "list"];
+
+function normalizeChoiceLayout(value) {
+  return CHOICE_LAYOUT_OPTIONS.includes(value) ? value : "diamond";
 }
 
 // =============================================================================
@@ -3956,6 +3964,9 @@ function setHostSetting(key, value) {
   if (key === "jackMultiplier") {
     next.jackMultiplier = normalizeJackMultiplier(value);
   }
+  if (key === "choiceLayout") {
+    next.choiceLayout = normalizeChoiceLayout(value);
+  }
   if (key === "scoringMode" && value === "uniform") {
     next.uniformPoints = settings.uniformPoints || 1000;
     next.valueSelectionMethod = "standard";
@@ -4613,9 +4624,15 @@ function ensureHostInit() {
 }
 
 // =============================================================================
-// Maps numeric option to controller-style label (A/B/X/Y)
+// Maps numeric option to controller-style label (A/B/X/Y in diamond layout,
+// 1-4 in grid/list layouts)
 // =============================================================================
 function optionButtonLabel(option) {
+  let layout = "diamond";
+  try {
+    layout = getSettings().choiceLayout || "diamond";
+  } catch {}
+  if (layout !== "diamond") return String(option);
   const labels = {
     1: "A",
     2: "B",
@@ -4623,6 +4640,25 @@ function optionButtonLabel(option) {
     4: "Y",
   };
   return labels[option] || String(option);
+}
+
+// Renders the 4-option button set for the room's choice layout. `button` is
+// the site's own factory (data attrs, disabled logic, color classes);
+// `placements` preserves that site's existing diamond order; `centerHtml` is
+// the diamond-center badge content (shown inline above grid/list instead).
+function renderChoiceLayout4(layout, placements, button, centerHtml) {
+  if (layout === "list") {
+    return `${centerHtml ? `<p class="muted choice-value">${centerHtml}</p>` : ""}
+      <div class="choice-list">${[1, 2, 3, 4].map((opt) => button(opt, "")).join("")}</div>`;
+  }
+  if (layout === "grid") {
+    return `${centerHtml ? `<p class="muted choice-value">${centerHtml}</p>` : ""}
+      <div class="choice-grid">${[1, 2, 3, 4].map((opt) => button(opt, "")).join("")}</div>`;
+  }
+  return `<div class="abxy-diamond">
+    ${placements.map(([opt, cls]) => button(opt, cls)).join("")}
+    ${centerHtml ? `<div class="diamond-center">${centerHtml}</div>` : ""}
+  </div>`;
 }
 
 // =============================================================================
@@ -6068,14 +6104,12 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
       const fullClass = [baseClass, extraClass].filter(Boolean).join(" ");
       return `<button type="button" class="${fullClass}" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`;
     };
-    grid = `
-      <div class="abxy-diamond">
-        ${button(4, "pos-y")}
-        ${button(2, "pos-b")}
-        ${button(3, "pos-x")}
-        ${button(1, "pos-a")}
-        ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
-      </div>`;
+    grid = renderChoiceLayout4(
+      normalizeChoiceLayout(settings.choiceLayout),
+      [[4, "pos-y"], [2, "pos-b"], [3, "pos-x"], [1, "pos-a"]],
+      button,
+      roundLabel,
+    );
   } else if (settings.optionCount === 6) {
     grid = `<div class="six-grid">${[1, 2, 3, 4, 5, 6]
       .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${opt}</button>`).join("")}</div>`;
@@ -6325,13 +6359,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
           <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
           <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
-          <div class="abxy-diamond">
-            ${button(4, "pos-y")}
-            ${button(3, "pos-x")}
-            ${button(2, "pos-b")}
-            ${button(1, "pos-a")}
-            ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
-          </div>
+          ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [3, "pos-x"], [2, "pos-b"], [1, "pos-a"]], button, roundLabel)}
         </section>
       `;
     }
@@ -6523,13 +6551,7 @@ const screwBtn = settings.allowScrewing
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
-        <div class="abxy-diamond">
-          ${button(4, "pos-y")}
-          ${button(2, "pos-b")}
-          ${button(3, "pos-x")}
-          ${button(1, "pos-a")}
-          ${roundLabel ? `<div class="diamond-center">${roundLabel}</div>` : ""}
-        </div>
+        ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [2, "pos-b"], [3, "pos-x"], [1, "pos-a"]], button, roundLabel)}
         ${screwBtn}
       </section>
     `;
@@ -7181,6 +7203,19 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                         <option value="8" ${settings.optionCount === 8 ? "selected" : ""}>8</option>
                       </select>
                       <p class="setting-helper">How many buzzer buttons each player sees.${isCoopMode(settings) ? " Coopertition locks this to 4+." : ""}</p>
+                    </label>`
+              }
+              ${
+                settings.inputMode === "text" || settings.optionCount !== 4
+                  ? ""
+                  : `<label>
+                      Choice layout
+                      <select data-setting="choiceLayout" ${settingDisabledAttr}>
+                        <option value="diamond" ${settings.choiceLayout === "diamond" ? "selected" : ""}>Diamond (A/B/X/Y)</option>
+                        <option value="grid" ${settings.choiceLayout === "grid" ? "selected" : ""}>Grid (1–4)</option>
+                        <option value="list" ${settings.choiceLayout === "list" ? "selected" : ""}>List (1–4)</option>
+                      </select>
+                      <p class="setting-helper">How the 4 choice buttons are arranged. Grid and list use 1–4 labels.</p>
                     </label>`
               }
             </div>
@@ -8146,6 +8181,7 @@ function bindEvents() {
     if (setting === "jackMultiplier") { setHostSetting("jackMultiplier", normalizeJackMultiplier(input.value)); return; }
     if (setting === "teamScoringMode") { setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance"); return; }
     if (setting === "snarkMode") { setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off"); return; }
+    if (setting === "choiceLayout") { setHostSetting("choiceLayout", normalizeChoiceLayout(input.value)); return; }
     if (setting === "maxBuzzesPerOption") { setHostSetting("maxBuzzesPerOption", clamp(parseInt(input.value, 10) || 1, 1, 50)); return; }
   }));
   delegate("click", "[data-toggle-setting]", requireHost((e, btn) => {

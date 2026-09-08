@@ -9,7 +9,7 @@ npm run dev          # vite dev server
 npm run dev-server   # vite --host (LAN multi-device)
 npm run build        # vite build → dist/ (verify after every change)
 npm run preview      # vite preview built output
-npm run test:harness # node stub harness, 99 checks (see Verification)
+npm run test:harness # node stub harness, 103 checks (see Verification)
 ```
 No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports.
 
