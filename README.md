@@ -30,7 +30,8 @@ No. at least not now, I do see the idea of one in the distant future, but thats 
 You need to enable it in the settings, please read [This file](/src/snark.json) before turning on snark (it is what things will change to)
 
 ### What's coming?
-In no particular order,\
+In no particular order:
+ - Tutorial
  - Some love to the main buzzers
  - Better UI 
  - more round types
