@@ -103,6 +103,10 @@ let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
 let coopTextSlot = 0;
 let coopEditing = false;
+// Room-code modal is module-local UI state (never shared PlayroomKit state —
+// every screen decides for itself whether the popup is open).
+let roomCodeModalOpen = false;
+let roomCodeModalAutoDismissed = false;
 const COOP_COUNT_KEY = "buzzer_coop_count";
 const COOP_NAMES_KEY = "buzzer_coop_names";
 
@@ -2192,7 +2196,10 @@ function hostHandleBuzz(player, payload) {
 
   const allEligibleBuzzed = !settings.rebuzzAllowed && isAllEligibleBuzzed(buzzedPlayerIds, settings);
 
-  if (usingTextEntry && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
+  // F-You easter egg stays enabled in alliance/individual scoring but is
+  // disabled under shared team scoring (penalty + scolding card don't fit teams).
+  const fYouAllowed = !(settings.teamModeEnabled && settings.teamScoringMode === "shared");
+  if (usingTextEntry && fYouAllowed && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
       setState(
         "round",
@@ -7305,6 +7312,18 @@ function renderAudienceStatsPanel(settings, players, scores) {
   `;
 }
 
+function renderRoomCodeModal(roomCode) {
+  return `
+    <div class="room-code-modal-overlay" data-room-code-overlay>
+      <div class="room-code-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(getSnark("audience.misc.roomCodePopupTitle", "Room code"))}">
+        <p class="prejoin-kicker">${escapeHtml(getSnark("audience.misc.roomCodePopupTitle", "Room code"))}</p>
+        <div class="room-code-badge room-code-mega">${escapeHtml(roomCode)}</div>
+        <p class="muted">${escapeHtml(getSnark("audience.misc.roomCodePopupHint", "Enter this code on your phone to join the game"))}</p>
+        <button type="button" data-room-code-close>${escapeHtml(getSnark("audience.misc.roomCodePopupClose", "Close"))}</button>
+      </div>
+    </div>`;
+}
+
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
@@ -7322,6 +7341,10 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   const kicked = new Set(settings.kickedPlayerIds || []);
   const joinCount = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && !kicked.has(p.id)).length;
   const roomCode = getRoomCode() || getSnark("audience.misc.roomFallback", "....");
+  // Auto-popup when the room is empty; re-arms once players join. Explicit
+  // open/close via the badge always wins over the auto behavior.
+  if (joinCount > 0) roomCodeModalAutoDismissed = false;
+  const showRoomCodeModal = roomCodeModalOpen || (joinCount === 0 && !roomCodeModalAutoDismissed);
 
   return `
     <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
@@ -7330,7 +7353,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
           <p class="prejoin-kicker">Audience display</p>
           <h1>${getSnark("audience.misc.appTitle", "Instant Buzzers")}</h1>
           <p class="muted">${getSnark("audience.misc.joinHint", "Join the game on your phone — enter this room code")}</p>
-          <div class="room-code-badge room-code-badge-lg">${escapeHtml(roomCode)}</div>
+          <div class="room-code-badge room-code-clickable" data-room-code-open role="button" tabindex="0" title="${escapeHtml(getSnark("audience.misc.roomCodeBadgeHint", "Show large room code"))}">${escapeHtml(roomCode)}</div>
           <p class="muted audience-join-count">${getSnark("audience.misc.playersInRoom", `${joinCount} player${joinCount === 1 ? "" : "s"} in the room`, { count: joinCount })}</p>
         </div>
         <div class="hero-meta">
@@ -7345,6 +7368,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         ${renderAudienceStatsPanel(settings, players, scores)}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
+      ${showRoomCodeModal ? renderRoomCodeModal(roomCode) : ""}
     </main>
   `;
 }
@@ -8615,6 +8639,17 @@ function bindEvents() {
   });
   delegate("click", "[data-coop-edit]", () => { coopEditing = true; scheduleRender(render); });
   delegate("click", "[data-coop-cancel]", () => { coopEditing = false; scheduleRender(render); });
+  delegate("click", "[data-room-code-open]", () => { roomCodeModalOpen = true; scheduleRender(render); });
+  delegate("keydown", "[data-room-code-open]", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); roomCodeModalOpen = true; scheduleRender(render); }
+  });
+  delegate("click", "[data-room-code-close]", () => { roomCodeModalOpen = false; roomCodeModalAutoDismissed = true; scheduleRender(render); });
+  delegate("click", "[data-room-code-overlay]", (e, el) => {
+    if (e.target !== el) return; // backdrop only — dialog clicks stay open
+    roomCodeModalOpen = false;
+    roomCodeModalAutoDismissed = true;
+    scheduleRender(render);
+  });
   delegate("change", "#coop-count", () => { scheduleRender(render); });
   delegate("click", "[data-answer-submit]", () => {
     const input = (getApp() || app).querySelector("#answer-entry");

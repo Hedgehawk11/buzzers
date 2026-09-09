@@ -611,8 +611,30 @@ check("unkick clears", !(S().settings?.kickedPlayerIds || []).includes("solo1"),
 // --- audience hero + stats ---
 pk._store.self = pk._store.participants.disp1 || disp;
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-check("audience join hero", _mount.innerHTML.includes("room-code-badge-lg") && _mount.innerHTML.includes("in the room"), "join hero missing");
+check("audience join hero", _mount.innerHTML.includes("room-code-badge") && _mount.innerHTML.includes("in the room"), "join hero missing");
 check("audience stats panel", _mount.innerHTML.includes("audience-stats-card"), "stats panel missing");
+// room-code modal: badge click opens, close button dismisses (rAF is async in stub)
+check("room code badge clickable", _mount.innerHTML.includes("data-room-code-open"), "badge click hook missing");
+clickBtn({}, "[data-room-code-open]");
+await sleep(50);
+check("room code modal opens", _mount.innerHTML.includes("room-code-mega"), "modal missing after badge click");
+clickBtn({}, "[data-room-code-close]");
+await sleep(50);
+check("room code modal closes", !_mount.innerHTML.includes("room-code-mega"), "modal stuck open");
+// --- F-you easter egg: on in alliance/off, off under shared team scoring ---
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+const eggAlliance = await pk._store.rpc.buzz({ answerText: "fuck you" }, solo);
+check("easter egg fires in alliance mode", eggAlliance?.easterEgg?.id === "f-you", JSON.stringify(eggAlliance?.easterEgg));
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, coh);
+// shared scoring is coop-locked to alliance, so drop coop first
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setPlayerTeam", args: ["solo1", "red"] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+const eggShared = await pk._store.rpc.buzz({ answerText: "fuck you" }, solo);
+check("easter egg blocked in shared team mode", eggShared?.easterEgg?.id !== "f-you" && eggShared?.ok === true, JSON.stringify(eggShared?.easterEgg));
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);
