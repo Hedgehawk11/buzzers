@@ -1,5 +1,5 @@
 # Buzzers
-Have you ever wanted to run a gameshow for up to 30 other people, but never had the buzzers? 
+Have you ever wanted to run a gameshow for up to 41 other people, but never had the buzzers? 
 Now you do.
 
 This is mainly built for running live You Dont Know Jack games, and I do think you *could* do jeopardy, but there are *way* better options for that, again, this is built for multiple choice option quiz games with a slide deck showing the questions and options or just as john buzzer if its in 1 buzzer mode.
@@ -113,6 +113,16 @@ npm run dev-server
 ### Set up for running on YOUR server (if vercel no worky)
 ```
 npm run build
+```
+
+### Preview the production build:
+```
+npm run preview
+```
+
+### Run the tests:
+```
+npm run test:harness
 ```
 
 ## AI disclamer:

@@ -664,10 +664,6 @@ button:disabled {
   animation: roulettePulse 1.1s ease-in-out infinite;
 }
 
-.controller-card {
-  border-color: rgba(255, 139, 36, 0.38);
-}
-
 .abxy {
   margin-top: 1rem;
   display: grid;
@@ -729,10 +725,41 @@ button:disabled {
 
 .abxy button,
 .abxy-diamond button,
+.choice-grid button,
+.choice-list button,
 .six-grid button,
 .eight-grid button {
   font-size: 1.1rem;
   font-weight: 700;
+}
+
+.choice-grid {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(2, minmax(100px, 1fr));
+}
+
+.choice-grid button {
+  min-height: 72px;
+  font-size: 1.4rem;
+}
+
+.choice-list {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: 1fr;
+}
+
+.choice-list button {
+  min-height: 56px;
+  font-size: 1.2rem;
+}
+
+.choice-value {
+  margin: 0.5rem 0 0;
+  text-align: center;
 }
 
 .six-grid {
@@ -925,6 +952,29 @@ button.buzzer-y:hover:enabled {
   object-fit: contain;
   flex: none;
   border-radius: 4px;
+}
+
+/* Host score view — spans the full grid width with larger type */
+.score-card-host {
+  grid-column: 1 / -1;
+}
+
+.score-card-host h2 {
+  font-size: 1.5rem;
+}
+
+.score-card-host li {
+  padding: 0.8rem 1rem;
+  font-size: 1.15rem;
+}
+
+.score-card-host li strong {
+  font-size: 1.5rem;
+}
+
+.score-card-host li .rank-badge {
+  width: 2.6rem;
+  height: 2.6rem;
 }
 
 .muted-card {
@@ -1926,20 +1976,20 @@ body[data-ui-anims="off"] * {
   animation: none !important;
 }
 
-/* Screw warning has ultimate priority over all other backgrounds */
-body:has([data-screw-active]) {
-  background:
-    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
-    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
-    linear-gradient(160deg, #1f0a0a, #0d0505);
-}
-
 /* Fibbage */
 body:has([data-fibbage-active]) {
   background:
     radial-gradient(1200px 500px at 8% -20%, rgba(180, 80, 255, 0.18), transparent 58%),
     radial-gradient(1000px 520px at 100% 0%, rgba(255, 139, 36, 0.14), transparent 55%),
     linear-gradient(160deg, #1a0b2e, #0d0a1a);
+}
+
+/* Screw warning has ultimate priority over all other backgrounds — keep last */
+body:has([data-screw-active]) {
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(235, 61, 48, 0.3), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(235, 61, 48, 0.22), transparent 55%),
+    linear-gradient(160deg, #1f0a0a, #0d0505);
 }
 .fibbage-lie-list {
   display: grid;
