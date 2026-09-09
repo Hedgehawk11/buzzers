@@ -24,6 +24,8 @@ const DEFAULT_SETTINGS = {
   choiceLayout: "diamond",
   disabledOptions: [],
   disabledPlayerIds: [],
+  kickedPlayerIds: [],
+  screwBlockedPlayerIds: [],
   scoringMode: "uniform",
   uniformPoints: 1000,
   jackMultiplier: 1,
@@ -181,9 +183,23 @@ function isAudienceDisplayClient() {
 }
 
 // =============================================================================
-// Read a player's display name (custom override or profile name)
+// Read a player's display name (host rename override, custom override or profile name)
 // =============================================================================
+function getCustomNames() {
+  const names = getSafeState("customNames", {});
+  return names && typeof names === "object" ? names : {};
+}
+
 function getPlayerName(player) {
+  const pid = player?.id;
+  if (typeof pid === "string" && pid) {
+    try {
+      const override = getCustomNames()?.[pid];
+      if (typeof override === "string" && override.trim()) {
+        return override.trim().slice(0, 32);
+      }
+    } catch {}
+  }
   const custom = player?.getState?.("displayName");
   if (typeof custom === "string" && custom.trim()) {
     return custom.trim();
@@ -313,7 +329,8 @@ function getTeamMembers(teamColor, players = currentParticipants(), assignments 
   }
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
-  return players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
+  const kicked = new Set(getSettings().kickedPlayerIds || []);
+  return players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id) && assignments[player.id] === teamColor);
 }
 
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
@@ -533,8 +550,61 @@ function isPlayerBuzzerEnabled(settings, playerId) {
   if (playerId === controllerId) {
     return false;
   }
+  if (isPlayerKicked(playerId, settings)) {
+    return false;
+  }
   const disabledPlayerIds = normalizeDisabledPlayerIds(settings.disabledPlayerIds, currentParticipants(), controllerId);
   return !disabledPlayerIds.includes(playerId);
+}
+
+// =============================================================================
+// Per-player host powers — kicked players, screw blocks, score keys
+// =============================================================================
+function normalizeKickedPlayerIds(kickedIds, players, controllerId) {
+  const cohostIds = getSafeState("cohostIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  return [...new Set((kickedIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
+}
+
+function isPlayerKicked(playerId, settings = getSettings()) {
+  if (!playerId || playerId === getControllerId()) return false;
+  const kicked = Array.isArray(settings.kickedPlayerIds) ? settings.kickedPlayerIds : [];
+  return kicked.includes(playerId);
+}
+
+function normalizeScrewBlockedIds(blockedIds, players, controllerId) {
+  const cohostIds = getSafeState("cohostIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  return [...new Set((blockedIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
+}
+
+function isScrewBlocked(playerId, settings = getSettings()) {
+  if (!playerId) return false;
+  const blocked = Array.isArray(settings.screwBlockedPlayerIds) ? settings.screwBlockedPlayerIds : [];
+  return blocked.includes(playerId);
+}
+
+// All score keys owned by one device (pid + coop:pid:*). In shared-team
+// mode the device shares its team key instead.
+function getScoreKeysForDevice(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
+  if (!playerId) return [];
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    return [getScoreKeyForPlayer(playerId, settings, assignments)];
+  }
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(playerId);
+    if (count <= 1) return [playerId];
+    const keys = [];
+    for (let slot = 0; slot < count; slot++) keys.push(getCoopScoreKey(playerId, slot));
+    return keys;
+  }
+  return [getScoreKeyForPlayer(playerId, settings, assignments)];
+}
+
+// Primary key for a manual adjust (slot 0 for multi-slot coop groups).
+function getPrimaryScoreKeyForDevice(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
+  const keys = getScoreKeysForDevice(playerId, settings, assignments);
+  return keys[0] || playerId;
 }
 
 function getEligibleBuzzerPlayerIds(settings) {
@@ -927,6 +997,8 @@ async function cohostDispatch(fnName, ...args) {
       setPlayerTeam, randomizeTeams,
       openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
       updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
+      adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
+      kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
     };
     dispatch[fnName]?.(...args);
     return;
@@ -965,6 +1037,9 @@ function canBuzz(playerId, option) {
   }
   const cohostIds = getSafeState("cohostIds", []);
   if (Array.isArray(cohostIds) && cohostIds.includes(deviceId)) {
+    return false;
+  }
+  if (isPlayerKicked(deviceId, settings)) {
     return false;
   }
   if (settings.teamModeEnabled && !getPlayerTeamColor(deviceId, assignments)) {
@@ -1140,6 +1215,8 @@ showScoresToPlayers: settings.showScoresToPlayers,
       showScoresToAudience: settings.showScoresToAudience,
       disabledOptions: settings.disabledOptions,
       disabledPlayerIds: settings.disabledPlayerIds,
+      kickedPlayerIds: settings.kickedPlayerIds,
+      screwBlockedPlayerIds: settings.screwBlockedPlayerIds,
       scoringMode: settings.scoringMode,
       uniformPoints: settings.uniformPoints,
       jackMultiplier: settings.jackMultiplier,
@@ -1163,6 +1240,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
     coopLastCorrect: getCoopLastCorrect(),
+    customNames: getCustomNames(),
     // Scores + rulings must invalidate the signature or other clients never
     // re-render after a host ruling (their tick only patches timers). The log
     // is append-only, so a compact per-entry digest stands in for the full
@@ -3465,6 +3543,12 @@ function initiateScrew(screwerId) {
   if (round.screwsUsedBy?.includes(screwerId)) {
     return { ok: false, reason: getSnark("player.screw.alreadyUsed", "You have already used your screw.") };
   }
+  if (isScrewBlocked(screwerId, settings)) {
+    return { ok: false, reason: getSnark("player.screw.blocked", "Your screw is blocked by the host.") };
+  }
+  if (isPlayerKicked(screwerId, settings)) {
+    return { ok: false, reason: getSnark("player.screw.kicked", "You were removed by the host.") };
+  }
   
   const screwer = currentParticipants().find((p) => p.id === screwerId);
   if (!screwer) {
@@ -3578,6 +3662,9 @@ function selectScrewee(screweeId) {
   const settings = getSettings();
   if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
     return { ok: false, reason: "That player's buzzer is disabled." };
+  }
+  if (isPlayerKicked(screwee.id, settings)) {
+    return { ok: false, reason: "That player was removed by the host." };
   }
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
     const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -4290,6 +4377,181 @@ function toggleCoopSlot(coopKey) {
 }
 
 // =============================================================================
+// Per-player host powers — manual score adjust, reset, rename, kick, screws.
+// All writes go through a gameLog entry (manual-*) so the signature digest
+// flips and re-ruling stays consistent. Never write non-finite deltas.
+// =============================================================================
+function pushManualLogEntry(playerId, scoreKey, delta, kind) {
+  const player = currentParticipants().find((p) => p.id === playerId);
+  const displayName = player ? getPlayerName(player) : playerId;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const entry = {
+    id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: kind === "reset" ? "manual-reset" : "manual-adjust",
+    ts: now(),
+    playerId,
+    playerName: displayName,
+    teamColor: getPlayerTeamColor(playerId, assignments),
+    scoreKey,
+    coopSlot: null,
+    coopKey: null,
+    scoreTarget: String(scoreKey || "").startsWith("team:") ? scoreKey : displayName,
+    option: null,
+    answerText: null,
+    timeLeftCs: 0,
+    scoringMode: settings.scoringMode,
+    jackMultiplier: settings.jackMultiplier,
+    uniformPoints: settings.uniformPoints,
+    basePoints: Math.abs(delta),
+    awardedDelta: delta,
+    resolved: true,
+  };
+  const log = getLog();
+  setState("gameLog", [...log, entry], true);
+  return entry;
+}
+
+function adjustPlayerScore(playerId, delta) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "adjustPlayerScore", args: [playerId, delta] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const amount = Number(delta);
+  if (!Number.isFinite(amount) || amount === 0) return;
+  const clamped = clamp(Math.trunc(amount), -9999, 9999);
+  if (!clamped) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const scoreKey = getPrimaryScoreKeyForDevice(playerId, settings, assignments);
+  const scores = { ...getScores() };
+  scores[scoreKey] = Number(scores[scoreKey] || 0) + clamped;
+  if (!Number.isFinite(Number(scores[scoreKey]))) return;
+  setState("scores", scores, true);
+  pushManualLogEntry(playerId, scoreKey, clamped, "adjust");
+  setBuzzNotice(`${getPlayerName(players.find((p) => p.id === playerId))} ${clamped > 0 ? "+" : ""}${clamped} points.`);
+  render();
+}
+
+function resetPlayerScore(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "resetPlayerScore", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const keys = getScoreKeysForDevice(playerId, settings, assignments);
+  if (!keys.length) return;
+  const scores = { ...getScores() };
+  let totalRemoved = 0;
+  keys.forEach((key) => {
+    totalRemoved += Number(scores[key] || 0);
+    scores[key] = 0;
+  });
+  setState("scores", scores, true);
+  pushManualLogEntry(playerId, keys[0], -totalRemoved, "reset");
+  setBuzzNotice(`Score reset for ${getPlayerName(players.find((p) => p.id === playerId))}.`);
+  render();
+}
+
+function setCustomPlayerName(playerId, name) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setCustomPlayerName", args: [playerId, name] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const trimmed = String(name || "").trim().slice(0, 32);
+  const next = { ...getCustomNames() };
+  if (!trimmed) delete next[playerId];
+  else next[playerId] = trimmed;
+  setState("customNames", next, true);
+  render();
+}
+
+function kickPlayer(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "kickPlayer", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) return;
+  const settings = getSettings();
+  const next = [...new Set([...(settings.kickedPlayerIds || []), playerId])];
+  setState("settings", { ...settings, kickedPlayerIds: normalizeKickedPlayerIds(next, players, controllerId) }, true);
+  // Release Jeopardy control / roulette holds owned by the kicked device.
+  try {
+    const round = getRound();
+    let nextRound = null;
+    if (round.coopControl) {
+      const parsed = parseCoopScoreKey(round.coopControl);
+      const holder = parsed ? parsed.deviceId : round.coopControl;
+      if (holder === playerId) nextRound = { ...(nextRound || round), coopControl: null };
+    }
+    if (Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.some((id) => {
+      const parsed = parseCoopScoreKey(id);
+      return (parsed ? parsed.deviceId : id) === playerId;
+    })) {
+      nextRound = { ...(nextRound || round) };
+      nextRound.buzzedPlayerIds = (nextRound.buzzedPlayerIds || []).filter((id) => {
+        const parsed = parseCoopScoreKey(id);
+        return (parsed ? parsed.deviceId : id) !== playerId;
+      });
+    }
+    if (nextRound) setState("round", nextRound, true);
+  } catch {}
+  render();
+}
+
+function unkickPlayer(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "unkickPlayer", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const settings = getSettings();
+  const next = (settings.kickedPlayerIds || []).filter((id) => id !== playerId);
+  setState("settings", { ...settings, kickedPlayerIds: next }, true);
+  render();
+}
+
+function setPlayerScrewBlocked(playerId, blocked) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerScrewBlocked", args: [playerId, blocked] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const settings = getSettings();
+  const current = Array.isArray(settings.screwBlockedPlayerIds) ? settings.screwBlockedPlayerIds : [];
+  const next = blocked ? [...new Set([...current, playerId])] : current.filter((id) => id !== playerId);
+  setState("settings", { ...settings, screwBlockedPlayerIds: normalizeScrewBlockedIds(next, players, controllerId) }, true);
+  render();
+}
+
+function refundPlayerScrew(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "refundPlayerScrew", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const round = getRound();
+  const used = Array.isArray(round.screwsUsedBy) ? round.screwsUsedBy : [];
+  if (!used.includes(playerId)) return;
+  setState("round", { ...round, screwsUsedBy: used.filter((id) => id !== playerId) }, true);
+  render();
+}
+
+// =============================================================================
 // Team management — assign a player to a color team
 // =============================================================================
 // Host-side write: validates the player, prunes stale assignments, applies the change.
@@ -4571,6 +4833,31 @@ function ensureHostInit() {
   if (!getState("coopLastCorrect")) {
     setState("coopLastCorrect", {}, true);
   }
+  if (getState("customNames") === undefined) {
+    setState("customNames", {}, true);
+  } else {
+    try {
+      const names = getCustomNames();
+      const liveIds = new Set(currentParticipants().map((p) => p.id));
+      const pruned = {};
+      Object.entries(names || {}).forEach(([id, name]) => {
+        if (liveIds.has(id) && typeof name === "string" && name.trim()) pruned[id] = String(name).trim().slice(0, 32);
+      });
+      if (JSON.stringify(pruned) !== JSON.stringify(names)) setState("customNames", pruned, true);
+    } catch {}
+  }
+  // Normalize per-player host-power lists (kicked / screw-blocked) against
+  // live participants so departed devices don't linger.
+  try {
+    const livePlayers = currentParticipants();
+    const liveController = getControllerId();
+    const s = getSettings();
+    const nextKicked = normalizeKickedPlayerIds(s.kickedPlayerIds, livePlayers, liveController);
+    const nextBlocked = normalizeScrewBlockedIds(s.screwBlockedPlayerIds, livePlayers, liveController);
+    if (JSON.stringify(nextKicked) !== JSON.stringify(s.kickedPlayerIds || []) || JSON.stringify(nextBlocked) !== JSON.stringify(s.screwBlockedPlayerIds || [])) {
+      setState("settings", { ...s, kickedPlayerIds: nextKicked, screwBlockedPlayerIds: nextBlocked }, true);
+    }
+  } catch {}
   if (!getState("fibbage")) {
     setState("fibbage", freshFibbageState(), true);
   }
@@ -6278,6 +6565,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isControllerPlayer() || isCohost()) {
     return "";
   }
+  if (isPlayerKicked(mePlayer.id, settings)) {
+    return `
+      <section class="card player-card">
+        <h2>${getSnark("player.kicked.title", "Removed by host")}</h2>
+        <p class="muted">${getSnark("player.kicked.body", "The host removed you from this game. You can watch the audience display — ask the host to re-admit you to buzz again.")}</p>
+      </section>
+    `;
+  }
   if (isCoopMode(settings)) {
     return renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs);
   }
@@ -6390,7 +6685,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
   const screwInProgress = round.screw?.active;
   const screwUsedByMe = round.screwsUsedBy?.includes(mePlayer.id);
-  const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwInProgress;
+  const screwBlockedMe = isScrewBlocked(mePlayer.id, settings);
+  const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwBlockedMe && !screwInProgress;
   const globalDisabled = disabled || (!rebuzzAllowed && (alreadyBuzzed || teamAlreadyBuzzed)) || playerDisabled || screwInProgress;
   const helperText = playerDisabled
     ? getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.")
@@ -6459,7 +6755,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const optionDisabled = !isOptionEnabled(settings, 1) || isPlayerAtOptionLimit(round, settings, mePlayer.id, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
 const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6489,7 +6787,9 @@ const screwBtn = settings.allowScrewing
       })
       .join("");
 const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6519,7 +6819,9 @@ const screwBtn = settings.allowScrewing
       })
       .join("");
 const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6549,7 +6851,9 @@ const screwBtn = settings.allowScrewing
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
       return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
-    const screwBtn = screwAvailable && !disabled && !playerDisabled
+    const screwBtn = screwBlockedMe
+      ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+      : screwAvailable && !disabled && !playerDisabled
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
       : "";
 
@@ -6582,7 +6886,9 @@ const screwBtn = settings.allowScrewing
     })
     .join("");
   const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6642,11 +6948,12 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
-  const buzzedPlayers = getBuzzedParticipants(round, players);
+  const cohostIds = getSafeState("cohostIds", []);
+  const kickedIds = new Set(settings.kickedPlayerIds || []);
+  const buzzedPlayers = getBuzzedParticipants(round, players).filter((p) => !kickedIds.has(p.id));
   const coopActive = isCoopMode(settings);
   const buzzedLabels = coopActive ? getBuzzedCoopLabels(round, players) : [];
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kickedIds.has(player.id));
   const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
   const coopLeaderName = coopActive
     ? (round.winnerCoopKey ? getCoopControlName({ coopControl: round.winnerCoopKey }) || null : null) || buzzedLabels[0] || null
@@ -6917,6 +7224,71 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   `;
 }
 
+// Audience player-stats panel — derived only (scores + buzz counts + log
+// hits). Capped to 8 rows so the 250ms audience poll stays cheap.
+function renderAudienceStatsPanel(settings, players, scores) {
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const eligible = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && !kicked.has(p.id));
+  if (eligible.length === 0) return "";
+  const round = getRound();
+  const log = getLog();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const hitsByKey = {};
+  log.forEach((entry) => {
+    if (Number(entry.awardedDelta || 0) > 0 && entry.scoreKey) {
+      hitsByKey[entry.scoreKey] = (hitsByKey[entry.scoreKey] || 0) + 1;
+    }
+  });
+  const buzzesByDevice = {};
+  Object.entries(round.buzzCounts || {}).forEach(([key, perOption]) => {
+    const parsed = parseCoopScoreKey(key);
+    const deviceId = parsed ? parsed.deviceId : key;
+    const n = Object.values(perOption || {}).reduce((sum, v) => sum + (Number(v) || 0), 0);
+    buzzesByDevice[deviceId] = (buzzesByDevice[deviceId] || 0) + n;
+  });
+  // Fall back to log buzz counts when rebuzz is off (buzzCounts stays empty).
+  log.forEach((entry) => {
+    if (entry.type !== "buzz" || !entry.playerId) return;
+    if (buzzesByDevice[entry.playerId] === undefined) buzzesByDevice[entry.playerId] = 0;
+  });
+  log.forEach((entry) => {
+    if (entry.type === "buzz" && entry.playerId && !(entry.playerId in buzzesByDevice)) buzzesByDevice[entry.playerId] = 1;
+    else if (entry.type === "buzz" && entry.playerId && round.buzzCounts && !round.buzzCounts[entry.playerId] && !round.buzzCounts[entry.scoreKey]) {
+      buzzesByDevice[entry.playerId] = (buzzesByDevice[entry.playerId] || 0) + 0;
+    }
+  });
+
+  let rows = [];
+  if (isCoopMode(settings)) {
+    rows = eligible.map((p) => {
+      const total = getCoopGroupTotal(p.id, scores);
+      const buzzes = buzzesByDevice[p.id] || log.filter((e) => e.playerId === p.id && e.type === "buzz").length;
+      const keys = getScoreKeysForDevice(p.id, settings, assignments);
+      const hits = keys.reduce((sum, k) => sum + (hitsByKey[k] || 0), 0);
+      return { name: getCoopGroupName(p.id, getPlayerName(p)), score: total, buzzes, hits };
+    });
+  } else {
+    rows = eligible.map((p) => {
+      const key = getScoreKeyForPlayer(p.id, settings, assignments);
+      const buzzes = buzzesByDevice[p.id] || buzzesByDevice[key] || log.filter((e) => e.playerId === p.id && e.type === "buzz").length;
+      return { name: getPlayerName(p), score: Number(scores[key] || 0), buzzes, hits: hitsByKey[key] || 0 };
+    });
+  }
+  rows = rows.sort((a, b) => b.score - a.score).slice(0, 8);
+  const items = rows
+    .map(({ name, score, buzzes, hits }, index) => `<li><span>${getRankBadgeHtml(index + 1)}${escapeHtml(name)}</span><span class="muted">${buzzes} buzz${buzzes === 1 ? "" : "es"} • ${hits} hit${hits === 1 ? "" : "s"}</span><strong>${score}</strong></li>`)
+    .join("");
+  return `
+    <section class="card audience-card audience-stats-card">
+      <p class="prejoin-kicker">${getSnark("audience.stats.kicker", "Player stats")}</p>
+      <h2>${getSnark("audience.stats.title", "Buzzes & hits")}</h2>
+      <ul class="audience-stats-list">${items}</ul>
+    </section>
+  `;
+}
+
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
@@ -6924,19 +7296,26 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isFibbageMode()) return renderFibbageAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
-  const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
+  const showStats = true;
+  const mainColumns = showScores || showScrews || showStats ? "audience-grid" : "audience-grid audience-grid-single";
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
     ? renderAudienceRoulettePanel(settings, round, players)
     : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const joinCount = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && !kicked.has(p.id)).length;
+  const roomCode = getRoomCode() || getSnark("audience.misc.roomFallback", "....");
 
   return `
     <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
-      <header class="hero audience-hero">
+      <header class="hero audience-hero audience-join-hero">
         <div>
           <p class="prejoin-kicker">Audience display</p>
           <h1>${getSnark("audience.misc.appTitle", "Instant Buzzers")}</h1>
-          <p class="muted">${getSnark("audience.misc.roomCodeLabel", "Room code")}</p>
-          <div class="room-code-badge">${escapeHtml(getRoomCode() || getSnark("audience.misc.roomFallback", "...."))}</div>
+          <p class="muted">${getSnark("audience.misc.joinHint", "Join the game on your phone — enter this room code")}</p>
+          <div class="room-code-badge room-code-badge-lg">${escapeHtml(roomCode)}</div>
+          <p class="muted audience-join-count">${getSnark("audience.misc.playersInRoom", `${joinCount} player${joinCount === 1 ? "" : "s"} in the room`, { count: joinCount })}</p>
         </div>
         <div class="hero-meta">
           <span>${getSnark("audience.misc.statusLabel", "Status")}: <strong>${escapeHtml(round.status || getSnark("shared.misc.statusUnknown", "unknown"))}</strong></span>
@@ -6947,6 +7326,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
       <section class="${mainColumns}">
         ${primaryPanel}
         ${showScores ? renderScores(players, scores) : ""}
+        ${renderAudienceStatsPanel(settings, players, scores)}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
     </main>
@@ -7017,6 +7397,71 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
       <div class="toggle-list">${toggles}</div>
     </div>
     ${coopSlotToggles}
+  `;
+}
+
+// Per-player host powers — score adjust/reset, rename, kick, screws.
+// One row per non-controller, non-cohost device.
+function renderPerPlayerHostControls(settings, players, controllerId) {
+  const cohostIds = getSafeState("cohostIds", []);
+  const rows = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  if (rows.length === 0) {
+    return `
+      <div class="toggle-group">
+        <span class="muted">Per-player controls</span>
+        <p class="muted">No non-Host participants connected yet.</p>
+      </div>
+    `;
+  }
+  const scores = getScores();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const round = getRound();
+  const customNames = getCustomNames();
+  const body = rows
+    .map((player) => {
+      const pid = player.id;
+      const name = getPlayerName(player);
+      const keys = getScoreKeysForDevice(pid, settings, assignments);
+      const total = keys.reduce((sum, key) => sum + Number(scores[key] || 0), 0);
+      const kicked = isPlayerKicked(pid, settings);
+      const screwBlocked = isScrewBlocked(pid, settings);
+      const screwUsed = Array.isArray(round.screwsUsedBy) && round.screwsUsedBy.includes(pid);
+      const isSharedTeam = Boolean(settings.teamModeEnabled && settings.teamScoringMode === "shared" && getPlayerTeamColor(pid, assignments));
+      const scoreNote = isSharedTeam ? " (team)" : isCoopMode(settings) && getCoopSlotCount(pid) > 1 ? " (group)" : "";
+      const custom = customNames?.[pid] || "";
+      return `
+        <div class="team-assignment-row per-player-row" data-per-player="${escapeHtml(pid)}">
+          <strong>${escapeHtml(name)}</strong>
+          <span class="muted">Score: <strong>${total}</strong>${scoreNote}${kicked ? " • removed" : ""}</span>
+          <div class="per-player-controls">
+            <input type="number" step="1" min="-9999" max="9999" placeholder="+/- pts" data-adjust-input="${escapeHtml(pid)}" aria-label="Points to adjust for ${escapeHtml(name)}" />
+            <button type="button" data-adjust-apply="${escapeHtml(pid)}">Apply</button>
+            <button type="button" data-adjust-quick="plus" data-adjust-id="${escapeHtml(pid)}">+1000</button>
+            <button type="button" class="red" data-adjust-quick="minus" data-adjust-id="${escapeHtml(pid)}">-1000</button>
+            <button type="button" data-reset-score="${escapeHtml(pid)}">Reset score</button>
+          </div>
+          <div class="per-player-controls">
+            <input type="text" maxlength="32" placeholder="Rename player" value="${escapeHtml(custom)}" data-rename-input="${escapeHtml(pid)}" aria-label="Rename ${escapeHtml(name)}" />
+            <button type="button" data-rename-apply="${escapeHtml(pid)}">Rename</button>
+            ${kicked
+              ? `<button type="button" data-unkick-player="${escapeHtml(pid)}">Re-admit</button>`
+              : `<button type="button" class="red" data-kick-player="${escapeHtml(pid)}">Remove</button>`}
+          </div>
+          ${isCoopMode(settings) ? "" : `
+          <div class="per-player-controls">
+            <button type="button" class="toggle-chip ${screwBlocked ? "is-off" : "is-on"}" data-screw-block="${escapeHtml(pid)}">Screw ${screwBlocked ? "blocked" : "allowed"}</button>
+            ${screwUsed ? `<button type="button" data-screw-refund="${escapeHtml(pid)}">Refund screw</button>` : ""}
+          </div>`}
+        </div>
+      `;
+    })
+    .join("");
+  return `
+    <div class="toggle-group team-setup-group">
+      <span class="muted">Per-player controls</span>
+      <p class="setting-helper">Adjust or reset one player's score, rename them, remove/re-admit them, or manage their screws. Score edits are logged so the audience display updates.</p>
+      <div class="team-assignment-list">${body}</div>
+    </div>
   `;
 }
 
@@ -7452,6 +7897,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
+            ${renderPerPlayerHostControls(settings, players, controllerId)}
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
               <label>
                 Co-host password
@@ -7642,7 +8088,8 @@ function renderLockedRuling(settings, pendingEntry) {
 // greyed in place; rank badges keep their 1st/2nd/3rd meaning on groups.
 function renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments, extraClass = "") {
   const round = getRound();
-  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id));
   const groups = devices
     .map((player) => {
       const deviceId = player.id;
@@ -7717,7 +8164,8 @@ function renderScores(players, scores, extraClass = "") {
   const settings = getSettings();
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
-  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (isCoopMode(settings)) {
@@ -8242,6 +8690,36 @@ function bindEvents() {
   delegate("click", "[data-toggle-option]", requireHost((e, btn) => toggleBuzzerOption(Number(btn.dataset.toggleOption))));
   delegate("click", "[data-toggle-player]", requireHost((e, btn) => togglePlayerBuzzer(btn.dataset.togglePlayer)));
   delegate("click", "[data-toggle-coop-slot]", requireHost((e, btn) => toggleCoopSlot(btn.dataset.toggleCoopSlot)));
+  delegate("click", "[data-adjust-apply]", requireHost((e, btn) => {
+    const id = btn.dataset.adjustApply;
+    const input = (getApp() || app).querySelector(`[data-adjust-input="${id}"]`);
+    adjustPlayerScore(id, Number(input?.value || 0));
+  }));
+  delegate("click", "[data-adjust-quick]", requireHost((e, btn) => {
+    const id = btn.dataset.adjustId;
+    adjustPlayerScore(id, btn.dataset.adjustQuick === "plus" ? 1000 : -1000);
+  }));
+  delegate("click", "[data-reset-score]", requireHost((e, btn) => {
+    const id = btn.dataset.resetScore;
+    if (typeof confirm === "function" && !confirm("Reset this player's score to 0?")) return;
+    resetPlayerScore(id);
+  }));
+  delegate("click", "[data-rename-apply]", requireHost((e, btn) => {
+    const id = btn.dataset.renameApply;
+    const input = (getApp() || app).querySelector(`[data-rename-input="${id}"]`);
+    setCustomPlayerName(id, String(input?.value || ""));
+  }));
+  delegate("click", "[data-kick-player]", requireHost((e, btn) => {
+    const id = btn.dataset.kickPlayer;
+    if (typeof confirm === "function" && !confirm("Remove this player from the game? They keep their connection but cannot buzz or score.")) return;
+    kickPlayer(id);
+  }));
+  delegate("click", "[data-unkick-player]", requireHost((e, btn) => unkickPlayer(btn.dataset.unkickPlayer)));
+  delegate("click", "[data-screw-block]", requireHost((e, btn) => {
+    const id = btn.dataset.screwBlock;
+    setPlayerScrewBlocked(id, !isScrewBlocked(id));
+  }));
+  delegate("click", "[data-screw-refund]", requireHost((e, btn) => refundPlayerScrew(btn.dataset.screwRefund)));
   delegate("click", "[data-set-correct-text]", requireHost(() => {
     const input = (getApp() || app).querySelector("#correct-answer-entry");
     const val = String(input?.value || "").trim();
@@ -9115,6 +9593,8 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
     updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
     setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
+    adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
+    kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
   };
   RPC.register("cohost-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };

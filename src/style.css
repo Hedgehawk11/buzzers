@@ -2276,3 +2276,14 @@ body:has([data-screw-active]) {
 @media (prefers-reduced-motion: reduce) {
   .coop-avatar-strip { animation-duration: 0.01s; }
 }
+
+/* Per-player host controls + audience stats/hero. */
+.per-player-row { align-items: flex-start; flex-direction: column; gap: 0.4rem; }
+.per-player-controls { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; }
+.per-player-controls input[type="number"] { width: 7rem; }
+.per-player-controls input[type="text"] { min-width: 10rem; }
+.room-code-badge-lg { font-size: clamp(1.8rem, 5vw, 2.8rem); letter-spacing: 0.28em; margin-top: 0.4rem; }
+.audience-join-count { margin-top: 0.4rem; font-size: 1rem; }
+.audience-stats-card ul.audience-stats-list { list-style: none; margin: 0.6rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.audience-stats-list li { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.audience-stats-list li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
