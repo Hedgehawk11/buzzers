@@ -9,7 +9,8 @@ npm run dev          # vite dev server
 npm run dev-server   # vite --host (LAN multi-device)
 npm run build        # vite build → dist/ (verify after every change)
 npm run preview      # vite preview built output
-npm run test:harness # node stub harness, 135 checks (see Verification)
+npm run test:harness     # node stub harness, coop-on run, 137 checks
+npm run test:harness:all  # both runs: HARNESS_COOP=on (137) + off (107)
 ```
 No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports.
 
@@ -61,8 +62,9 @@ No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — s
 ## Verification (no test runner — use these)
 - `npm run build` after every change.
 - `npm run test:harness` — stubbed PlayroomKit+DOM driving real handlers: buzz/ruling math, edits, bingo/disordat/fibbage gates, screw ban + victim-hijack rejection, non-cohost `cohost-action` rejection, roster accounting, roulette freeze, reset null-invariant, rendered HTML for host/player/audience views, no-render-warning check. A dedicated `coh1` co-host fixture drives all `cohost-action` calls (sender auth); player RPCs stay on `dev*` fixtures. Extend it before trusting multi-step logic by reasoning alone — stale-`round` overwrites and signature staleness both survived reasoning and died in the harness.
+- Harness runs each mode separately (`HARNESS_COOP=on|off`, default on; `test:harness:all` runs both). Coop-lock tests (roster, control/sibling, preset gate, bans, migration, forged slots, moods) are `if (COOP)`-guarded and skip off-coop; shared paths assert per-mode expectations (pid vs `coop:` keys). Mid-run coop toggles are left unconditional when they're no-ops in one mode, guarded when they'd pollute the other mode's state.
 - Harness blind spots (don't trust it here): drops the `,true` reliable flag, hardcodes `isHost`, `getElementById→null` (toasts/input-preservation untestable), `querySelectorAll→[]` (timer patch/deltas/smooth-timer untested), keyboard events, mobile/`matchMedia`, avatar `Image` probing.
-- Symptom cheatsheet: remote screens stale → signature missing the changed key; score `NaN`/frozen → ruling path wrote non-finite; host button works but players blocked → gate exists only in UI, add server-side check in the RPC handler; static roulette number → animation loop not restarted; `cohost-action` returns "Not co-host" → sender isn't in `cohostIds`.
+- Symptom cheatsheet: remote screens stale → signature missing the changed key; score `NaN`/frozen → ruling path wrote non-finite; host button works but players blocked → gate exists only in UI, add server-side check in the RPC handler; static roulette number → animation loop not restarted; `cohost-action` returns "Not co-host" → sender isn't in `cohostIds`. Never coerce ruling deltas with `Number(x || 0)` — it masks `NaN` as `0` and silently resets resolved entries; normalize nullish first, reject non-finite after.
 
 ## Conventions
 - Use `workdir` param, not `cd &&`. Quote paths with spaces.

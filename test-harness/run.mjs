@@ -25,15 +25,21 @@ function check(name, cond, extra = "") {
 const S = () => pk._store.state;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Dual-mode run: HARNESS_COOP=off starts with coopertition disabled so shared
+// paths are exercised both ways. Coop-lock tests (roster, control, preset
+// gate, bans) only run with coop on; each is guarded by `if (COOP)`.
+const COOP = process.env.HARNESS_COOP !== "off";
+console.log(`[harness] coop-${COOP ? "on" : "off"} run`);
+
 // --- boot as host ---
 pk._store.self = pk.makePlayer("host1", "Host");
 pk._store.participants = { host1: pk._store.self };
 await import("../src/main.js");
 
-// --- submit host prejoin form (coop checked) ---
+// --- submit host prejoin form (coop per run mode) ---
 queryMap["#prejoin-name"] = { value: "Host" };
 queryMap["#prejoin-team-mode"] = { value: "off" };
-queryMap["#prejoin-coop"] = { checked: true };
+queryMap["#prejoin-coop"] = { checked: COOP };
 const fakeForm = {
   dataset: { prejoinForm: "host" },
   closest: (sel) => (sel === "[data-prejoin-form]" ? fakeForm : null),
@@ -43,7 +49,7 @@ for (const fn of mount._listeners.submit || []) {
   await fn({ preventDefault() {}, target: fakeForm });
 }
 await sleep(50);
-check("coop enabled from prejoin", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+check(`coop ${COOP ? "enabled" : "disabled"} from prejoin`, S().settings?.coopertitionEnabled === COOP, JSON.stringify(S().settings?.coopertitionEnabled));
 
 // --- dedicated co-host fixture: drives all cohost-action calls below ---
 const coh = pk.makePlayer("coh1", "Cohost");
@@ -56,61 +62,95 @@ check(
   "impostor drove a host action",
 );
 
-// --- add device, set roster ---
+// --- add device, set roster (roster RPC is coop-gated) ---
 const dev1 = pk.makePlayer("dev1", "GroupA");
 pk._store.participants.dev1 = dev1;
-let res = await pk._store.rpc["coop-roster"](
-  { group: "GroupA", count: 2, names: ["Ann", "Bob"] },
-  dev1,
-);
-check("roster ok", res?.ok === true, JSON.stringify(res));
-check(
-  "roster stored",
-  JSON.stringify(S().coopRosters?.dev1) === JSON.stringify({ group: "GroupA", slots: ["Ann", "Bob"] }),
-  JSON.stringify(S().coopRosters?.dev1),
-);
+const dev2 = pk.makePlayer("dev2", "GroupB");
+pk._store.participants.dev2 = dev2;
+if (COOP) {
+  const res = await pk._store.rpc["coop-roster"](
+    { group: "GroupA", count: 2, names: ["Ann", "Bob"] },
+    dev1,
+  );
+  check("roster ok", res?.ok === true, JSON.stringify(res));
+  check(
+    "roster stored",
+    JSON.stringify(S().coopRosters?.dev1) === JSON.stringify({ group: "GroupA", slots: ["Ann", "Bob"] }),
+    JSON.stringify(S().coopRosters?.dev1),
+  );
+} else {
+  const res = await pk._store.rpc["coop-roster"](
+    { group: "GroupA", count: 2, names: ["Ann", "Bob"] },
+    dev1,
+  );
+  check("roster rejected off-coop", res?.ok === false, JSON.stringify(res));
+}
 
 // --- lock-after-buzz on, open ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
 check("round open", S().round?.status === "open", S().round?.status);
 
-// --- buzz-in then answer ---
-let r = await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
-check("buzz-in ok", r?.ok === true, JSON.stringify(r));
-check("control set", S().round?.coopControl === "coop:dev1:0", S().round?.coopControl);
-r = await pk._store.rpc.buzz({ option: 3 }, dev1);
-check("option pick ok", r?.ok === true, JSON.stringify(r));
-const entryId = S().pendingLogId;
-check("locked with pending entry", S().round?.status === "locked" && !!entryId, `${S().round?.status} ${entryId}`);
-const entry = S().gameLog.find((e) => e.id === entryId);
-check("entry keyed to slot", entry?.scoreKey === "coop:dev1:0", JSON.stringify(entry?.scoreKey));
+if (COOP) {
+  // --- buzz-in then answer ---
+  const r = await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
+  check("buzz-in ok", r?.ok === true, JSON.stringify(r));
+  check("control set", S().round?.coopControl === "coop:dev1:0", S().round?.coopControl);
+  const r2 = await pk._store.rpc.buzz({ option: 3 }, dev1);
+  check("option pick ok", r2?.ok === true, JSON.stringify(r2));
+  const entryId = S().pendingLogId;
+  check("locked with pending entry", S().round?.status === "locked" && !!entryId, `${S().round?.status} ${entryId}`);
+  const entry = S().gameLog.find((e) => e.id === entryId);
+  check("entry keyed to slot", entry?.scoreKey === "coop:dev1:0", JSON.stringify(entry?.scoreKey));
 
-// --- THE DEDUCTION TEST ---
-await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [entryId, -1000] }, coh);
-check("minus 1000 deducted", S().scores?.["coop:dev1:0"] === -1000, JSON.stringify(S().scores));
+  // --- THE DEDUCTION TEST ---
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [entryId, -1000] }, coh);
+  check("minus 1000 deducted", S().scores?.["coop:dev1:0"] === -1000, JSON.stringify(S().scores));
 
-// --- correct ruling on fresh round + sibling lock, other groups free ---
-await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-await pk._store.rpc.buzz({ coopSlot: 1, buzzIn: true }, dev1);
-await pk._store.rpc.buzz({ option: 2 }, dev1);
-const entryId2 = S().pendingLogId;
-await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [entryId2, 1000] }, coh);
-check("plus 1000 awarded", S().scores?.["coop:dev1:1"] === 1000, JSON.stringify(S().scores));
-check(
-  "sibling locked out",
-  (S().round?.buzzedPlayerIds || []).includes("coop:dev1:0"),
-  JSON.stringify(S().round?.buzzedPlayerIds),
-);
-const dev2 = pk.makePlayer("dev2", "GroupB");
-pk._store.participants.dev2 = dev2;
-await pk._store.rpc["coop-roster"]({ group: "GroupB", count: 1, names: [] }, dev2);
-pk._store.nextSender = dev2;
-const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
-pk._store.nextSender = null;
-check("other group can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+  // --- correct ruling on fresh round + sibling lock, other groups free ---
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  await pk._store.rpc.buzz({ coopSlot: 1, buzzIn: true }, dev1);
+  await pk._store.rpc.buzz({ option: 2 }, dev1);
+  const entryId2 = S().pendingLogId;
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [entryId2, 1000] }, coh);
+  check("plus 1000 awarded", S().scores?.["coop:dev1:1"] === 1000, JSON.stringify(S().scores));
+  check(
+    "sibling locked out",
+    (S().round?.buzzedPlayerIds || []).includes("coop:dev1:0"),
+    JSON.stringify(S().round?.buzzedPlayerIds),
+  );
+  await pk._store.rpc["coop-roster"]({ group: "GroupB", count: 1, names: [] }, dev2);
+  pk._store.nextSender = dev2;
+  const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
+  pk._store.nextSender = null;
+  check("other group can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+} else {
+  // --- plain equivalents: option buzz locks, ruling deducts/awards on pid ---
+  const r = await pk._store.rpc.buzz({ option: 3 }, dev1);
+  check("plain buzz ok", r?.ok === true, JSON.stringify(r));
+  const entryId = S().pendingLogId;
+  check("locked with pending entry", S().round?.status === "locked" && !!entryId, `${S().round?.status} ${entryId}`);
+  const entry = S().gameLog.find((e) => e.id === entryId);
+  check("entry keyed to pid", entry?.scoreKey === "dev1", JSON.stringify(entry?.scoreKey));
 
-// --- bingo quick-ruling NaN path ---
+  // --- THE DEDUCTION TEST ---
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [entryId, -1000] }, coh);
+  check("minus 1000 deducted", S().scores?.dev1 === -1000, JSON.stringify(S().scores));
+
+  // --- correct ruling on fresh round ---
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  await pk._store.rpc.buzz({ option: 2 }, dev1);
+  const entryId2 = S().pendingLogId;
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [entryId2, 1000] }, coh);
+  check("plus 1000 awarded", S().scores?.dev1 === 0, JSON.stringify(S().scores));
+
+  // --- buzz-in flag is meaningless off-coop: plain option buzz still works ---
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
+  check("other player can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+}
+
+// --- bingo quick-ruling NaN path (slot key in coop, pid off-coop) ---
 queryMap["#bingo-word"] = { value: "HELLO" };
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, coh);
 check("bingo mode on", S().settings?.inputMode === "bingo", S().settings?.inputMode);
@@ -121,16 +161,18 @@ await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, coh)
 const bz = await pk._store.rpc["bingo-buzz"]({ litIndex: 2, litSlot: 0, coopSlot: 0 }, dev1);
 check("bingo correct buzz", bz?.ok === true, JSON.stringify(bz));
 const bingoEntry = S().gameLog.filter((e) => e.type === "bingo").pop();
-const before = S().scores?.["coop:dev1:0"];
+const bingoKey = COOP ? "coop:dev1:0" : "dev1";
+const before = S().scores?.[bingoKey];
 await pk._store.rpc["cohost-action"](
   { fn: "updateScoresForLogEntry", args: [bingoEntry.id, -500] },
   coh,
 );
-const after = S().scores?.["coop:dev1:0"];
+const after = S().scores?.[bingoKey];
 check("bingo re-ruling finite", Number.isFinite(after), `before=${before} after=${after}`);
 check("bingo minus applied", after === before - 1000, `before=${before} after=${after}`);
 
 // --- no-lock open round: wrong answer deducts, round stays open ---
+// (the open-requires-preset gate is coop-only)
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, coh);
 await pk._store.rpc["cohost-action"](
@@ -138,15 +180,21 @@ await pk._store.rpc["cohost-action"](
   coh,
 );
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-check("open needs preset without lock", S().round?.status !== "open", S().round?.status);
+if (COOP) {
+  check("open needs preset without lock", S().round?.status !== "open", S().round?.status);
+} else {
+  check("open without preset off-coop", S().round?.status === "open", S().round?.status);
+}
 // set preset via round state path: use correctOptions through toggleCorrectOption
 await pk._store.rpc["cohost-action"]({ fn: "toggleCorrectOption", args: [1] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
 check("open with preset", S().round?.status === "open", S().round?.status);
 const dev3 = pk.makePlayer("dev3", "GroupC");
 pk._store.participants.dev3 = dev3;
-await pk._store.rpc["coop-roster"]({ group: "GroupC", count: 1, names: [] }, dev3);
-await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev3);
+if (COOP) {
+  await pk._store.rpc["coop-roster"]({ group: "GroupC", count: 1, names: [] }, dev3);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev3);
+}
 await pk._store.rpc.buzz({ option: 2 }, dev3); // wrong vs preset 1
 const openEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
 await pk._store.rpc["cohost-action"](
@@ -193,16 +241,30 @@ check(
 pk._store.self = dev1;
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
 await pk._store.rpc.buzz({ answerText: "player view probe", coopSlot: 0 }, dev1);
-check(
-  "player view renders group panel",
-  _mount.innerHTML.includes("GroupA") || _mount.innerHTML.includes("Ann"),
-  `html len=${_mount.innerHTML.length}`,
-);
-check(
-  "player view shows score",
-  _mount.innerHTML.includes("-1500"),
-  "dev1 slot0 should show -1500",
-);
+if (COOP) {
+  check(
+    "player view renders group panel",
+    _mount.innerHTML.includes("GroupA") || _mount.innerHTML.includes("Ann"),
+    `html len=${_mount.innerHTML.length}`,
+  );
+  check(
+    "player view shows score",
+    _mount.innerHTML.includes("-1500"),
+    "dev1 slot0 should show -1500",
+  );
+} else {
+  const d1 = S().scores?.dev1 ?? 0;
+  check(
+    "player view renders panel",
+    _mount.innerHTML.includes("GroupA"),
+    `html len=${_mount.innerHTML.length}`,
+  );
+  check(
+    "player view shows pid score",
+    _mount.innerHTML.includes(`>${d1}<`),
+    `dev1 should show ${d1}`,
+  );
+}
 // audience view: become a display client, open fresh round to trigger render
 const disp = pk.makePlayer("disp1", "Audience Display", "display");
 pk._store.participants.disp1 = disp;
@@ -286,45 +348,68 @@ const pBefore = S().scores?.plain1 || 0;
 clickQuick({ logQuick: "minus", logId: pEntry.id });
 check("non-coop quick-minus deducts", S().scores?.plain1 === pBefore - 1000, `before=${pBefore} after=${S().scores?.plain1}`);
 
-// --- screw fully banned in coop (player RPC rejected, host button hidden) ---
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+// --- screw fully banned in coop (player RPC rejected, host button hidden);
+// --- off-coop the same screw flow must initiate normally ---
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+}
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-const screwRes = await pk._store.rpc.screw({ screweeId: null }, dev1);
-check("screw RPC rejected in coop", screwRes?.ok === false, JSON.stringify(screwRes));
-check("no screw activated", S().round?.screw?.active !== true, JSON.stringify(S().round?.screw?.active));
-check("host screw button hidden in coop", !mount.innerHTML.includes("Screw a Player"), "button present");
+if (COOP) {
+  const screwRes = await pk._store.rpc.screw({ screweeId: null }, dev1);
+  check("screw RPC rejected in coop", screwRes?.ok === false, JSON.stringify(screwRes));
+  check("no screw activated", S().round?.screw?.active !== true, JSON.stringify(S().round?.screw?.active));
+  check("host screw button hidden in coop", !mount.innerHTML.includes("Screw a Player"), "button present");
+} else {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["allowScrewing", true] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  check("host screw button visible off-coop", mount.innerHTML.includes("Screw a Player"), "button missing");
+  const screwRes = await pk._store.rpc.screw({ screweeId: null }, dev1);
+  check("screw initiates off-coop", screwRes?.ok === true, JSON.stringify(screwRes));
+  await pk._store.rpc["cohost-action"]({ fn: "resetScrews", args: [] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "closeScrewMode", args: [] }, coh);
+}
 
-// --- fibbage RPCs rejected in coop ---
-const lieRes = await pk._store.rpc["fibbage-lie"]({ lieText: "x" }, dev1);
-const voteRes = await pk._store.rpc["fibbage-vote"]({ choiceIdx: 0 }, dev1);
-check("fibbage lie rejected in coop", lieRes?.ok === false, JSON.stringify(lieRes));
-check("fibbage vote rejected in coop", voteRes?.ok === false, JSON.stringify(voteRes));
+// --- fibbage RPCs rejected in coop (fibbage has no coop model) ---
+if (COOP) {
+  const lieRes = await pk._store.rpc["fibbage-lie"]({ lieText: "x" }, dev1);
+  const voteRes = await pk._store.rpc["fibbage-vote"]({ choiceIdx: 0 }, dev1);
+  check("fibbage lie rejected in coop", lieRes?.ok === false, JSON.stringify(lieRes));
+  check("fibbage vote rejected in coop", voteRes?.ok === false, JSON.stringify(voteRes));
+}
 
 // --- disordat locked in coop: mode entry blocked, RPCs rejected ---
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, coh);
-check("disordat mode blocked in coop", S().settings?.inputMode !== "disordat", S().settings?.inputMode);
-check("host disordat button disabled in coop", /data-set-mode="disordat"[^>]*disabled/.test(mount.innerHTML), "button not disabled");
-const ddAnsCoop = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis" }, dev1);
-const ddClaimCoop = await pk._store.rpc["disordat-claim"]({ q: 0 }, dev1);
-check("disordat answer rejected in coop", ddAnsCoop?.ok === false, JSON.stringify(ddAnsCoop));
-check("disordat claim rejected in coop", ddClaimCoop?.ok === false, JSON.stringify(ddClaimCoop));
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, coh);
+  check("disordat mode blocked in coop", S().settings?.inputMode !== "disordat", S().settings?.inputMode);
+  check("host disordat button disabled in coop", /data-set-mode="disordat"[^>]*disabled/.test(mount.innerHTML), "button not disabled");
+  const ddAnsCoop = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis" }, dev1);
+  const ddClaimCoop = await pk._store.rpc["disordat-claim"]({ q: 0 }, dev1);
+  check("disordat answer rejected in coop", ddAnsCoop?.ok === false, JSON.stringify(ddAnsCoop));
+  check("disordat claim rejected in coop", ddClaimCoop?.ok === false, JSON.stringify(ddClaimCoop));
+} else {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, coh);
+  check("disordat mode entered off-coop", S().settings?.inputMode === "disordat", S().settings?.inputMode);
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
+}
 
-// --- roster grow/shrink accounting: no orphans, no jumps ---
+// --- roster grow/shrink accounting: no orphans, no jumps (coop-only) ---
 const dev4 = pk.makePlayer("dev4", "GroupD");
 pk._store.participants.dev4 = dev4;
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopAllowEdit", true] }, coh);
-await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 1, names: [] }, dev4);
-await pk._store.rpc.buzz({ option: 1 }, dev4);
-const d4e = S().gameLog.filter((e) => e.type === "buzz").pop();
-await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [d4e.id, 500] }, coh);
-check("1-slot earns on pid", S().scores?.dev4 === 500, JSON.stringify(S().scores?.dev4));
-await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 3, names: ["D1", "D2", "D3"] }, dev4);
-check("grow folds pid into slot0", S().scores?.["coop:dev4:0"] === 500, JSON.stringify(S().scores));
-check("grow clears pid", S().scores?.dev4 === undefined, JSON.stringify(S().scores?.dev4));
-await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 1, names: [] }, dev4);
-check("shrink restores pid", S().scores?.dev4 === 500, JSON.stringify(S().scores?.dev4));
-check("shrink clears stale slot0", S().scores?.["coop:dev4:0"] === undefined, JSON.stringify(S().scores?.["coop:dev4:0"]));
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopAllowEdit", true] }, coh);
+  await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 1, names: [] }, dev4);
+  await pk._store.rpc.buzz({ option: 1 }, dev4);
+  const d4e = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [d4e.id, 500] }, coh);
+  check("1-slot earns on pid", S().scores?.dev4 === 500, JSON.stringify(S().scores?.dev4));
+  await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 3, names: ["D1", "D2", "D3"] }, dev4);
+  check("grow folds pid into slot0", S().scores?.["coop:dev4:0"] === 500, JSON.stringify(S().scores));
+  check("grow clears pid", S().scores?.dev4 === undefined, JSON.stringify(S().scores?.dev4));
+  await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 1, names: [] }, dev4);
+  check("shrink restores pid", S().scores?.dev4 === 500, JSON.stringify(S().scores?.dev4));
+  check("shrink clears stale slot0", S().scores?.["coop:dev4:0"] === undefined, JSON.stringify(S().scores?.["coop:dev4:0"]));
+}
 
 // --- disordat one-play (non-coop): pick, answer all, auto-finalize + score ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
@@ -353,16 +438,20 @@ check(
 );
 clickBtn({}, "[data-disordat-reset]");
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
-check("coop re-enabled after disordat", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+  check("coop re-enabled after disordat", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+}
 
 // --- bingo host progress per-slot in coop ---
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "startBingo", args: [] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [1] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, coh);
-await pk._store.rpc["bingo-buzz"]({ litIndex: 1, litSlot: 0, coopSlot: 0 }, dev1);
-check("host progress shows slot", mount.innerHTML.includes("Ann"), "slot name missing from host panel");
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "startBingo", args: [] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [1] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, coh);
+  await pk._store.rpc["bingo-buzz"]({ litIndex: 1, litSlot: 0, coopSlot: 0 }, dev1);
+  check("host progress shows slot", mount.innerHTML.includes("Ann"), "slot name missing from host panel");
+}
 
 // --- Wen: correct scores, no collection, no winner ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "wendithapn"] }, coh);
@@ -376,31 +465,35 @@ check("wen awards 500", (S().scores?.dev2 || 0) - d2Before === 500, JSON.stringi
 check("wen collects nothing", Object.keys(S().bingo?.playerItems || {}).length === 0, JSON.stringify(S().bingo?.playerItems));
 await pk._store.rpc["cohost-action"]({ fn: "endBingo", args: [] }, coh);
 
-// --- moods: wrong holds until reset; correct self-clears ---
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-await pk._store.rpc.buzz({ option: 3 }, dev2);
-const moodEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
-await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry.id, -1000] }, coh);
-check("wrong face set", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
-await pk._store.rpc["cohost-action"]({ fn: "resetRound", args: [] }, coh);
-check("reset clears faces", JSON.stringify(S().coopMoods) === "{}" || S().coopMoods === undefined, JSON.stringify(S().coopMoods));
-await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-await pk._store.rpc.buzz({ option: 4 }, dev2);
-const moodEntry2 = S().gameLog.filter((e) => e.type === "buzz").pop();
-await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry2.id, 1000] }, coh);
-check("correct face set", S().coopMoods?.dev2 === "correct" || S().coopMoods?.["coop:dev2:0"] === "correct", JSON.stringify(S().coopMoods));
-await sleep(1800);
-check("correct face self-clears", !S().coopMoods?.dev2 && !S().coopMoods?.["coop:dev2:0"], JSON.stringify(S().coopMoods));
+// --- moods: wrong holds until reset; correct self-clears (faces are coop-only) ---
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  const moodEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry.id, -1000] }, coh);
+  check("wrong face set", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
+  await pk._store.rpc["cohost-action"]({ fn: "resetRound", args: [] }, coh);
+  check("reset clears faces", JSON.stringify(S().coopMoods) === "{}" || S().coopMoods === undefined, JSON.stringify(S().coopMoods));
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  await pk._store.rpc.buzz({ option: 4 }, dev2);
+  const moodEntry2 = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry2.id, 1000] }, coh);
+  check("correct face set", S().coopMoods?.dev2 === "correct" || S().coopMoods?.["coop:dev2:0"] === "correct", JSON.stringify(S().coopMoods));
+  await sleep(1800);
+  check("correct face self-clears", !S().coopMoods?.dev2 && !S().coopMoods?.["coop:dev2:0"], JSON.stringify(S().coopMoods));
+}
 
-// --- control mismatch: other slots/devices rejected while held ---
-await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
-const steal = await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev2);
-check("control steal rejected", steal?.ok === false, JSON.stringify(steal));
-const sibSteal = await pk._store.rpc.buzz({ coopSlot: 1, buzzIn: true }, dev1);
-check("sibling steal rejected", sibSteal?.ok === false, JSON.stringify(sibSteal));
-await pk._store.rpc.buzz({ option: 2 }, dev1);
+// --- control mismatch: other slots/devices rejected while held (coop-only) ---
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
+  const steal = await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev2);
+  check("control steal rejected", steal?.ok === false, JSON.stringify(steal));
+  const sibSteal = await pk._store.rpc.buzz({ coopSlot: 1, buzzIn: true }, dev1);
+  check("sibling steal rejected", sibSteal?.ok === false, JSON.stringify(sibSteal));
+  await pk._store.rpc.buzz({ option: 2 }, dev1);
+}
 
 // --- NaN ruling is a silent no-op, scores untouched ---
 const nanEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
@@ -429,13 +522,17 @@ check("second question answered", hpAns2?.ok === true, JSON.stringify(hpAns2));
 clickBtn({}, "[data-disordat-end]");
 check("host-paced ended", S().disordat?.phase === "results", S().disordat?.phase);
 
-// --- coop can't enable mid-disordat ---
+// --- coop can't enable mid-disordat (block is disordat-based, runs both modes) ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
 check("coop enable blocked mid-disordat", S().settings?.coopertitionEnabled !== true, JSON.stringify(S().settings?.coopertitionEnabled));
 clickBtn({}, "[data-disordat-reset]");
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
-check("coop re-enabled from buttons", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+  check("coop re-enabled from buttons", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+} else {
+  check("coop stays off after disordat", S().settings?.coopertitionEnabled === false, JSON.stringify(S().settings?.coopertitionEnabled));
+}
 
 // --- all-answered auto-close (no-lock + preset) ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
@@ -444,42 +541,57 @@ if (!(S().round?.correctOptions || []).includes(1)) {
   await pk._store.rpc["cohost-action"]({ fn: "toggleCorrectOption", args: [1] }, coh);
 }
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
-const allSlots = [[dev1, 0], [dev1, 1], [dev2, undefined], [dev3, undefined], [dev4, undefined], [plain, undefined]];
-for (const [p, slot] of allSlots) {
-  const payload = slot === undefined ? { option: 2 } : { coopSlot: slot, buzzIn: true };
-  await pk._store.rpc.buzz(payload, p);
-  if (slot !== undefined) await pk._store.rpc.buzz({ option: 2 }, p);
+if (COOP) {
+  const allSlots = [[dev1, 0], [dev1, 1], [dev2, undefined], [dev3, undefined], [dev4, undefined], [plain, undefined]];
+  for (const [p, slot] of allSlots) {
+    const payload = slot === undefined ? { option: 2 } : { coopSlot: slot, buzzIn: true };
+    await pk._store.rpc.buzz(payload, p);
+    if (slot !== undefined) await pk._store.rpc.buzz({ option: 2 }, p);
+  }
+} else {
+  for (const p of [dev1, dev2, dev3, dev4, plain]) {
+    await pk._store.rpc.buzz({ option: 2 }, p);
+  }
 }
 check("all answered auto-closes", S().round?.status === "closed", S().round?.status);
-// preset button state: no preset + no lock => open disabled
+// preset button state: no preset + no lock => open disabled (coop-only gate)
 await pk._store.rpc["cohost-action"]({ fn: "toggleCorrectOption", args: [1] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, coh);
-check("open disabled without preset", mount.innerHTML.includes('data-host-action="open" disabled'), "open button enabled");
+if (COOP) {
+  check("open disabled without preset", mount.innerHTML.includes('data-host-action="open" disabled'), "open button enabled");
+} else {
+  check("open allowed without preset off-coop", !mount.innerHTML.includes('data-host-action="open" disabled'), "open button disabled");
+}
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, coh);
 
-// --- disable migration folds back, re-enable restores ---
-const d1Total = (S().scores?.["coop:dev1:0"] || 0) + (S().scores?.["coop:dev1:1"] || 0);
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
-check("disable folds to pid", S().scores?.dev1 === d1Total, `total=${d1Total} pid=${S().scores?.dev1}`);
-check("disable clears coop keys", S().scores?.["coop:dev1:0"] === undefined, JSON.stringify(S().scores?.["coop:dev1:0"]));
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
-check("re-enable restores slot0", S().scores?.["coop:dev1:0"] === d1Total, JSON.stringify(S().scores?.["coop:dev1:0"]));
+// --- disable migration folds back, re-enable restores (coop-only) ---
+if (COOP) {
+  const d1Total = (S().scores?.["coop:dev1:0"] || 0) + (S().scores?.["coop:dev1:1"] || 0);
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
+  check("disable folds to pid", S().scores?.dev1 === d1Total, `total=${d1Total} pid=${S().scores?.dev1}`);
+  check("disable clears coop keys", S().scores?.["coop:dev1:0"] === undefined, JSON.stringify(S().scores?.["coop:dev1:0"]));
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+  check("re-enable restores slot0", S().scores?.["coop:dev1:0"] === d1Total, JSON.stringify(S().scores?.["coop:dev1:0"]));
+}
 
 // --- removed slots stay dead: forged slot rejected (count>1), and on a
 // 1-slot device a forged slot attributes to slot 0 without touching frozen keys ---
-await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "startBingo", args: [] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [0] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, coh);
-const forgedRange = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 5 }, dev1);
-check("out-of-range slot rejected", forgedRange?.ok === false, JSON.stringify(forgedRange));
-await pk._store.rpc["coop-roster"]({ group: "GroupA", count: 1, names: [] }, dev1);
-const fBeforeFrozen = S().scores?.["coop:dev1:1"] || 0;
-const fBeforePid = S().scores?.dev1 || 0;
-const frozenBuzz = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 1 }, dev1);
-check("forged slot attributes to slot0", frozenBuzz?.ok === true, JSON.stringify(frozenBuzz));
-check("frozen key untouched", (S().scores?.["coop:dev1:1"] || 0) === fBeforeFrozen, `frozen=${S().scores?.["coop:dev1:1"]}`);
-check("slot0 credited", (S().scores?.dev1 || 0) === fBeforePid + 500, `pid=${S().scores?.dev1}`);
+// (coop-only: no slots exist off-coop)
+if (COOP) {
+  await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "startBingo", args: [] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "setBingoTarget", args: [0] }, coh);
+  await pk._store.rpc["cohost-action"]({ fn: "startBingoCycling", args: [] }, coh);
+  const forgedRange = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 5 }, dev1);
+  check("out-of-range slot rejected", forgedRange?.ok === false, JSON.stringify(forgedRange));
+  await pk._store.rpc["coop-roster"]({ group: "GroupA", count: 1, names: [] }, dev1);
+  const fBeforeFrozen = S().scores?.["coop:dev1:1"] || 0;
+  const fBeforePid = S().scores?.dev1 || 0;
+  const frozenBuzz = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 1 }, dev1);
+  check("forged slot attributes to slot0", frozenBuzz?.ok === true, JSON.stringify(frozenBuzz));
+  check("frozen key untouched", (S().scores?.["coop:dev1:1"] || 0) === fBeforeFrozen, `frozen=${S().scores?.["coop:dev1:1"]}`);
+  check("slot0 credited", (S().scores?.dev1 || 0) === fBeforePid + 500, `pid=${S().scores?.dev1}`);
+}
 // --- regression: co-host forced delta allowlisted, NaN rejected, jack clamped ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
@@ -631,7 +743,11 @@ await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["teamModeEna
 // shared scoring is coop-locked to alliance, so drop coop first
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, coh);
-await pk._store.rpc["cohost-action"]({ fn: "setPlayerTeam", args: ["solo1", "red"] }, coh);
+// team-mode open requires every non-controller/cohost player assigned
+for (const pid of Object.keys(pk._store.participants)) {
+  if (pid === "host1" || pid === "coh1") continue;
+  await pk._store.rpc["cohost-action"]({ fn: "setPlayerTeam", args: [pid, "red"] }, coh);
+}
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
 const eggShared = await pk._store.rpc.buzz({ answerText: "fuck you" }, solo);
 check("easter egg blocked in shared team mode", eggShared?.easterEgg?.id !== "f-you" && eggShared?.ok === true, JSON.stringify(eggShared?.easterEgg));

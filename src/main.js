@@ -1741,7 +1741,12 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const entryScoreKey = entry.scoreKey || getScoreKeyForPlayer(entry.playerId, settings, assignments);
   const oldAwarded = Number(entry.awardedDelta || 0);
-  let nextAwarded = Number(newAwardedDelta || 0);
+  // Never let a non-finite ruling corrupt scores. Note: `NaN || 0` is 0, so
+  // blank/nullish must be normalized first and NaN rejected after — otherwise
+  // re-ruling a resolved entry with NaN silently resets it to 0.
+  let nextAwarded = (newAwardedDelta === undefined || newAwardedDelta === null || newAwardedDelta === "")
+    ? 0
+    : Number(newAwardedDelta);
   // Never let a non-finite ruling corrupt scores (e.g. quick-ruling a log
   // entry with no base value would otherwise write NaN).
   if (!Number.isFinite(nextAwarded)) {
@@ -7937,7 +7942,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
-            ${renderPerPlayerHostControls(settings, players, controllerId)}
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
               <label>
                 Co-host password
@@ -7982,6 +7986,16 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage"
               ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
               : ""}
+          </div>
+        </details>
+      </div>
+
+      <!-- Section: Per-player settings (collapsed by default) -->
+      <div class="settings-section">
+        <details>
+          <summary>Per-player settings</summary>
+          <div class="section-body">
+            ${renderPerPlayerHostControls(settings, players, controllerId)}
           </div>
         </details>
       </div>
