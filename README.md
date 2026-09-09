@@ -120,7 +120,7 @@ npm run build
 npm run preview
 ```
 
-### Run the stub test harness:
+### Run the tests:
 ```
 npm run test:harness
 ```

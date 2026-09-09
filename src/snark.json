@@ -570,6 +570,11 @@
         "en": "Question {current}: buzz in to claim it!",
         "snark1": "Question {current}: buzz in to claim it! First come, first served.",
         "snark2": "Question {current} is up for grabs. Buzz in already."
+      },
+      "coopBlocked": {
+        "en": "Dis or Dat is off limits in coopertition mode.",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "fibbage": {

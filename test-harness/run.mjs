@@ -301,6 +301,15 @@ const voteRes = await pk._store.rpc["fibbage-vote"]({ choiceIdx: 0 }, dev1);
 check("fibbage lie rejected in coop", lieRes?.ok === false, JSON.stringify(lieRes));
 check("fibbage vote rejected in coop", voteRes?.ok === false, JSON.stringify(voteRes));
 
+// --- disordat locked in coop: mode entry blocked, RPCs rejected ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, coh);
+check("disordat mode blocked in coop", S().settings?.inputMode !== "disordat", S().settings?.inputMode);
+check("host disordat button disabled in coop", /data-set-mode="disordat"[^>]*disabled/.test(mount.innerHTML), "button not disabled");
+const ddAnsCoop = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis" }, dev1);
+const ddClaimCoop = await pk._store.rpc["disordat-claim"]({ q: 0 }, dev1);
+check("disordat answer rejected in coop", ddAnsCoop?.ok === false, JSON.stringify(ddAnsCoop));
+check("disordat claim rejected in coop", ddClaimCoop?.ok === false, JSON.stringify(ddClaimCoop));
+
 // --- roster grow/shrink accounting: no orphans, no jumps ---
 const dev4 = pk.makePlayer("dev4", "GroupD");
 pk._store.participants.dev4 = dev4;
@@ -317,27 +326,35 @@ await pk._store.rpc["coop-roster"]({ group: "GroupD", count: 1, names: [] }, dev
 check("shrink restores pid", S().scores?.dev4 === 500, JSON.stringify(S().scores?.dev4));
 check("shrink clears stale slot0", S().scores?.["coop:dev4:0"] === undefined, JSON.stringify(S().scores?.["coop:dev4:0"]));
 
-// --- disordat all-play auto-finalizes in coop ---
+// --- disordat one-play (non-coop): pick, answer all, auto-finalize + score ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, coh);
+check("disordat mode entered non-coop", S().settings?.inputMode === "disordat", S().settings?.inputMode);
 for (let q = 0; q < 7; q++) {
   clickBtn({ q: String(q), answer: ["dis", "dat", "dis", "dat", "dis", "dat", "dis"][q] }, "[data-disordat-answer-chip]");
 }
-clickBtn({ disordatStart: "allPlayTimed" }, "[data-disordat-start]");
-check("disordat all-play started", S().disordat?.active === true && S().disordat?.mode === "allPlayTimed", S().disordat?.mode);
-const ddBefore = S().scores?.["coop:dev1:0"] || 0;
-const slotPlan = [[dev1, 0], [dev1, 1], [dev2, 0], [dev3, 0], [dev4, 0], [plain, 0]];
-for (const [p, slot] of slotPlan) {
-  for (let q = 0; q < 7; q++) {
-    if (S().disordat?.phase !== "playing") break;
-    await pk._store.rpc["disordat-answer"]({ q, answer: S().disordat.answers[q], coopSlot: slot }, p);
-  }
+clickBtn({ disordatStart: "onePlayTimed" }, "[data-disordat-start]");
+await sleep(20);
+check("one-play pending pick", S().disordat?.pendingPick === true, JSON.stringify(S().disordat?.pendingPick));
+clickBtn({ disordatPickPlayer: "dev1" }, "[data-disordat-pick-player]");
+check("one-play pick honored", S().disordat?.activePlayerId === "dev1", S().disordat?.activePlayerId);
+const ddOther = await pk._store.rpc["disordat-answer"]({ q: 0, answer: S().disordat.answers[0] }, dev2);
+check("non-active player rejected", ddOther?.ok === false, JSON.stringify(ddOther));
+const ddBefore = S().scores?.dev1 || 0;
+for (let q = 0; q < 7; q++) {
+  if (S().disordat?.phase !== "playing") break;
+  await pk._store.rpc["disordat-answer"]({ q, answer: S().disordat.answers[q] }, dev1);
 }
 check("disordat auto-finalized", S().disordat?.phase === "results", S().disordat?.phase);
 check(
-  "disordat credited to slot",
-  (S().scores?.["coop:dev1:0"] || 0) - ddBefore >= 2100,
-  `before=${ddBefore} after=${S().scores?.["coop:dev1:0"]}`,
+  "disordat credited (non-coop)",
+  (S().scores?.dev1 || 0) - ddBefore >= 2100,
+  `before=${ddBefore} after=${S().scores?.dev1}`,
 );
+clickBtn({}, "[data-disordat-reset]");
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+check("coop re-enabled after disordat", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
 
 // --- bingo host progress per-slot in coop ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, coh);
@@ -392,38 +409,33 @@ await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [nan
 check("NaN ruling no-op", JSON.stringify(S().scores) === nanBefore, `${nanBefore} -> ${JSON.stringify(S().scores)}`);
 await pk._store.rpc["cohost-action"]({ fn: "updateScoresForLogEntry", args: [nanEntry.id, -500] }, coh);
 
-// --- disordat one-play: auto-pick highlighted, override works, gating ---
+// --- disordat host-paced (non-coop): answer direct, no claim needed ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, coh);
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, coh);
 clickBtn({}, "[data-disordat-reset]");
-for (let q = 0; q < 7; q++) {
-  clickBtn({ q: String(q), answer: "dis" }, "[data-disordat-answer-chip]");
-}
-clickBtn({ disordatStart: "onePlayTimed" }, "[data-disordat-start]");
-await sleep(20);
-check("one-play pending pick", S().disordat?.pendingPick === true, JSON.stringify(S().disordat?.pendingPick));
-check("last-place auto-pick shown", mount.innerHTML.includes("(last place)"), "auto tag missing");
-clickBtn({ disordatPickPlayer: "dev2" }, "[data-disordat-pick-player]");
-check("override pick honored", S().disordat?.activeCoopKey === "dev2", S().disordat?.activeCoopKey);
-const ddWrongSlot = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis", coopSlot: 0 }, dev1);
-check("non-active slot rejected", ddWrongSlot?.ok === false, JSON.stringify(ddWrongSlot));
-const ddRightSlot = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dis" }, dev2);
-check("active slot answers", ddRightSlot?.ok === true, JSON.stringify(ddRightSlot));
-clickBtn({}, "[data-disordat-reset]");
-
-// --- disordat host-paced: claim then answer, others blocked ---
 for (let q = 0; q < 7; q++) {
   clickBtn({ q: String(q), answer: "dat" }, "[data-disordat-answer-chip]");
 }
 clickBtn({ disordatStart: "allPlayHostPaced" }, "[data-disordat-start]");
-const claimNoQ = await pk._store.rpc["disordat-claim"]({ q: 1, coopSlot: 0 }, dev1);
-check("claim wrong question rejected", claimNoQ?.ok === false, JSON.stringify(claimNoQ));
-const claimOk = await pk._store.rpc["disordat-claim"]({ q: 0, coopSlot: 0 }, dev1);
-check("claim accepted", claimOk?.ok === true, JSON.stringify(claimOk));
-const unclaimed = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat", coopSlot: 1 }, dev1);
-check("unclaimed slot rejected", unclaimed?.ok === false, JSON.stringify(unclaimed));
-const claimed = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat", coopSlot: 0 }, dev1);
-check("claimant answers", claimed?.ok === true, JSON.stringify(claimed));
+check("host-paced started", S().disordat?.active === true && S().disordat?.mode === "allPlayHostPaced", S().disordat?.mode);
+const hpAns = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat" }, dev1);
+check("host-paced answer accepted", hpAns?.ok === true, JSON.stringify(hpAns));
+const hpClaim = await pk._store.rpc["disordat-claim"]({ q: 0 }, dev1);
+check("host-paced claim unneeded non-coop", hpClaim?.ok === false, JSON.stringify(hpClaim));
+clickBtn({}, "[data-disordat-next]");
+check("host-paced advanced", S().disordat?.currentQuestion === 1, JSON.stringify(S().disordat?.currentQuestion));
+const hpAns2 = await pk._store.rpc["disordat-answer"]({ q: 1, answer: "dat" }, dev1);
+check("second question answered", hpAns2?.ok === true, JSON.stringify(hpAns2));
+clickBtn({}, "[data-disordat-end]");
+check("host-paced ended", S().disordat?.phase === "results", S().disordat?.phase);
+
+// --- coop can't enable mid-disordat ---
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+check("coop enable blocked mid-disordat", S().settings?.coopertitionEnabled !== true, JSON.stringify(S().settings?.coopertitionEnabled));
 clickBtn({}, "[data-disordat-reset]");
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, coh);
+check("coop re-enabled from buttons", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
 
 // --- all-answered auto-close (no-lock + preset) ---
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, coh);
@@ -538,6 +550,17 @@ check(
 );
 await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["choiceLayout", "bogus"] }, coh);
 check("bad layout coerced", S().settings?.choiceLayout === "diamond", JSON.stringify(S().settings?.choiceLayout));
+// true player branch (harness hardcodes isHost): drop privileges, force a
+// re-render via an ungated click, then restore.
+pk._store.isHost = false;
+pk._store.self = plain;
+clickBtn({}, "[data-f-you-close]");
+await sleep(20);
+check("player view hides game log", !_mount.innerHTML.includes("Game Log"), "log leaked to player");
+pk._store.isHost = true;
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["cohost-action"]({ fn: "setHostSetting", args: ["choiceLayout", "diamond"] }, coh);
+check("host scores extended", _mount.innerHTML.includes("score-card-host"), "host class missing");
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

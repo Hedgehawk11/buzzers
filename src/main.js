@@ -2669,6 +2669,11 @@ function getCoopKeyDisplayName(key, participants = currentParticipants()) {
 
 function startDisOrDat(mode, playerId) {
   if (!isHost()) return;
+  if (isCoopMode()) {
+    setBuzzNotice("Dis or Dat is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+    render();
+    return;
+  }
   const dd = getDisOrDat();
   if (dd.answers.some(a => a !== "dis" && a !== "dat" && a !== "both")) return;
   const coopActive = isCoopMode();
@@ -2698,6 +2703,7 @@ function handleDisOrDatAnswer(player, payload) {
   if (!dd.active || dd.phase !== "playing") {
     return { ok: false, reason: getSnark("player.disdat.notActive", "Dis or Dat isn't active.") };
   }
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.disdat.coopBlocked", "Dis or Dat is off limits in coopertition mode.") };
   const q = Number(payload?.q);
   const answer = payload?.answer;
   if (!Number.isInteger(q) || q < 0 || q >= DIS_OR_DAT_QUESTION_COUNT) {
@@ -2824,6 +2830,7 @@ function handleDisOrDatClaim(player, payload) {
   if (!dd.active || dd.phase !== "playing" || dd.mode !== "allPlayHostPaced") {
     return { ok: false, reason: getSnark("player.disdat.notActive", "Dis or Dat isn't active.") };
   }
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.disdat.coopBlocked", "Dis or Dat is off limits in coopertition mode.") };
   const settings = getSettings();
   if (!isCoopMode(settings)) {
     return { ok: false, reason: getSnark("player.disdat.noClaimNeeded", "Just answer — no claim needed.") };
@@ -4006,6 +4013,11 @@ function setHostSetting(key, value) {
       render();
       return;
     }
+    if (key === "inputMode" && value === "disordat") {
+      setBuzzNotice("Dis or Dat is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+      render();
+      return;
+    }
   }
   if (key === "optionCount") {
     if (isCoopMode(next) && Number(value) < 4) {
@@ -4023,6 +4035,11 @@ function setHostSetting(key, value) {
     }
     if (value === true && getFibbage()?.active) {
       setBuzzNotice("Finish or exit the Fibbage round before enabling coopertition.");
+      render();
+      return;
+    }
+    if (value === true && getDisOrDat()?.active) {
+      setBuzzNotice("Finish or exit the Dis or Dat round before enabling coopertition.");
       render();
       return;
     }
@@ -5137,6 +5154,9 @@ function renderDisOrDatHostPanel(settings, players) {
 
 function renderDisOrDatPlayerPanel(settings, mePlayer) {
   const dd = getDisOrDat();
+  if (isCoopMode(settings)) {
+    return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${getSnark("player.disdat.coopBlocked", "Dis or Dat is off limits in coopertition mode.")}</p></section>`;
+  }
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
   const isOnePlay = dd.mode === "onePlayTimed";
 
@@ -6254,13 +6274,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
+  // Host/co-host have the full host panel already — no buzzer card needed.
   if (isControllerPlayer() || isCohost()) {
-    return `
-      <section class="card player-card controller-card">
-        <h2>Host Control Screen</h2>
-        <p>You are ${isCohost() ? "a Co-host" : "the Host"} and do not have a buzzer input.</p>
-      </section>
-    `;
+    return "";
   }
   if (isCoopMode(settings)) {
     return renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs);
@@ -7469,8 +7485,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <p class="setting-helper">Same collection race, but the tiles are "Before, Never, After". Pick the correct one for every question, then Start Cycling — players buzz to grab tiles as they light up. First to collect them all wins. (From YDKJ: Louder Faster Funnier, remade in the fangame YDKJ: The Re-ride, Recommended for small games (2-5 players) or team mode, not reccomended for large games)</p>
               </div>
               <div>
-                <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" ? "disabled" : ""}>Dis or Dat</button>
-                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)</p>
+                <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" || isCoopMode(settings) ? "disabled" : ""}>Dis or Dat</button>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
               <div>
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" || isCoopMode(settings) ? "disabled" : ""}>Fibbage</button>
@@ -7624,7 +7640,7 @@ function renderLockedRuling(settings, pendingEntry) {
 // Coopertition scoreboard — group rows sorted by group total, each with its
 // sub-player breakdown (avatar, name, key hint, score). Removed slots stay
 // greyed in place; rank badges keep their 1st/2nd/3rd meaning on groups.
-function renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments) {
+function renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments, extraClass = "") {
   const round = getRound();
   const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
   const groups = devices
@@ -7689,7 +7705,7 @@ function renderCoopScores(players, scores, settings, controllerId, cohostIds, as
     : "";
 
   return `
-    <section class="card score-card">
+    <section class="card score-card ${extraClass}">
       <h2>${getSnark("shared.scores.coopTitle", "Group Scores")}</h2>
       <ul class="coop-group-list">${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
       ${allianceTotals ? `<h3>${getSnark("shared.scores.allianceTotalsTitle", "Alliance totals")}</h3><ul>${allianceTotals}</ul>` : ""}
@@ -7697,7 +7713,7 @@ function renderCoopScores(players, scores, settings, controllerId, cohostIds, as
   `;
 }
 
-function renderScores(players, scores) {
+function renderScores(players, scores, extraClass = "") {
   const settings = getSettings();
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
@@ -7705,7 +7721,7 @@ function renderScores(players, scores) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (isCoopMode(settings)) {
-    return renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments);
+    return renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments, extraClass);
   }
 
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
@@ -7725,7 +7741,7 @@ function renderScores(players, scores) {
       .join("");
 
     return `
-      <section class="card score-card">
+      <section class="card score-card ${extraClass}">
         <h2>${getSnark("shared.scores.teamScoresTitle", "Team Scores")}</h2>
         <ul>${teamItems || `<li>${getSnark("shared.scores.noTeamsYet", "No teams assigned yet.")}</li>`}</ul>
       </section>
@@ -7760,7 +7776,7 @@ function renderScores(players, scores) {
     : "";
 
   return `
-    <section class="card score-card">
+    <section class="card score-card ${extraClass}">
       <h2>${settings.teamModeEnabled ? getSnark("shared.scores.playerScoresTitle", "Player Scores") : getSnark("shared.scores.scoresTitle", "Scores")}</h2>
       <ul>${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
       ${teamTotals ? `<h3>${getSnark("shared.scores.allianceTotalsTitle", "Alliance totals")}</h3><ul>${teamTotals}</ul>` : ""}
@@ -7908,7 +7924,7 @@ function render() {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
       <section class="grid">
-        ${renderScores(players, scores)}
+        ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
@@ -7943,7 +7959,7 @@ function render() {
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       <section class="grid">
-        ${renderScores(players, scores)}
+        ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
@@ -7976,7 +7992,7 @@ function render() {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       <section class="grid">
-        ${renderScores(players, scores)}
+        ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
@@ -8007,7 +8023,7 @@ function render() {
 
   if (isFibbageMode()) {
     const hideScores = shouldHideFibbageScores();
-    const fibScoresHost = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : renderScores(players, scores);
+    const fibScoresHost = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : renderScores(players, scores, "score-card-host");
     const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
@@ -8061,12 +8077,12 @@ function render() {
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
-          ? renderScores(players, scores)
+          ? renderScores(players, scores, showAdminData ? "score-card-host" : "")
           : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable."))}
       </section>
 
       ${renderLockedRuling(settings, pendingEntry)}
-      ${showAdminData ? renderLog(gameLog, settings) : renderHiddenPanel(getSnark("player.scores.logTitle", "Game Log"), getSnark("player.scores.logHidden", "Only the Host can view the game log."))}
+      ${showAdminData ? renderLog(gameLog, settings) : ""}
     </main>
   `;
 
@@ -9128,6 +9144,12 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   // Ensure delegated listeners are bound once before first render
   bindEvents();
   renderImmediate(render);
+  // Re-render 0.25s after login: displayName/controllerId can lag the first
+  // render, leaving the host with a wrong top-right name and a player buzzer.
+  // Same-key remount is a plain innerHTML swap (no transition flash).
+  setTimeout(() => {
+    try { scheduleRender(render); } catch {}
+  }, 250);
   startRouletteAnimationLoop();
 
   setInterval(() => {
