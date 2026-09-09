@@ -19,7 +19,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
+  font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
   color: var(--text);
   background:
     radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.2), transparent 58%),
