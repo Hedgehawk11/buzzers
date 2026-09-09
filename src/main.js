@@ -1133,9 +1133,15 @@ function formatSeconds(cs) {
 function updateTimerDisplays() {
   const round = getRound();
   const settings = getSettings();
-  const timeLeftText = `${formatSeconds(getTimeLeftCs(round, settings))}s`;
+  const liveCs = getTimeLeftCs(round, settings);
+  const timeLeftText = `${formatSeconds(liveCs)}s`;
+  const liveUrgent = Number.isFinite(liveCs) && liveCs <= 1000 && liveCs > 0 && round?.status === "OPEN";
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
+    try {
+      if (liveUrgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
   });
   // audience mirrors live timer
   document.querySelectorAll("[data-audience-time-left]").forEach((element) => {
@@ -1160,19 +1166,29 @@ function updateTimerDisplays() {
     }
   });
   if (isDisOrDatMode()) {
-    const ddText = `${formatSeconds(getDisOrDatTimeLeftCs(getDisOrDat()))}s`;
+    const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
+    const ddText = `${formatSeconds(ddCs)}s`;
+    const ddUrgent = Number.isFinite(ddCs) && ddCs <= 1000 && ddCs > 0;
     document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
       element.textContent = ddText;
+      try {
+        if (ddUrgent) element.setAttribute("data-timer-urgent", "true");
+        else element.removeAttribute("data-timer-urgent");
+      } catch {}
     });
   }
   if (isFibbageMode()) {
     const fb = getFibbage();
     if (fb.phase === "lying") {
-      const t = `${formatSeconds(getFibbageLieTimeLeftCs(fb))}s`;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; });
+      const cs = getFibbageLieTimeLeftCs(fb);
+      const t = `${formatSeconds(cs)}s`;
+      const urgent = Number.isFinite(cs) && cs <= 1000 && cs > 0;
+      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     } else if (fb.phase === "voting") {
-      const t = `${formatSeconds(getFibbageVoteTimeLeftCs(fb))}s`;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; });
+      const cs = getFibbageVoteTimeLeftCs(fb);
+      const t = `${formatSeconds(cs)}s`;
+      const urgent = Number.isFinite(cs) && cs <= 1000 && cs > 0;
+      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     }
   }
 }
