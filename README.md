@@ -32,9 +32,9 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 ### What's coming?
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
+ - Quixort gamemode
  - Some love to the main buzzers
  - Better UI 
- - more round types
  - YDKJ The Ride RNG preset for pick-a-value
  - whatever people ask via creating issues
  - ~~whatever I think of the next time I shower~~ other cool stuff.
