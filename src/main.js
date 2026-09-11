@@ -42,7 +42,7 @@ const DEFAULT_SETTINGS = {
   disabledCoopSlots: [],
   bingoAlternateViewers: false,
   bingoLessRandom: true,
-  bingoAllowMultipleCorrect: false,
+  bingoAllowMultipleCorrect: true,
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
 };
@@ -71,9 +71,10 @@ const DIS_OR_DAT_CORRECT_POINTS = 300;
 const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
-const DIS_OR_DAT_TIMED_OPTIONS = [30, 40];
+const DIS_OR_DAT_TIMED_OPTIONS = [30, 40, 60, 90];
 
 const FIBBAGE_TIMES = [30, 45, 60];
+const FIBBAGE_LIE_TIMES = [30, 45, 60, 90];
 const FIBBAGE_FOOL_POINTS = 500;
 const FIBBAGE_TRUTH_POINTS = 1000;
 const FIBBAGE_MAX_MULT = 5;
@@ -101,6 +102,7 @@ let disOrDatRevealUntil = 0;
 let lastAudienceParticipantCount = 0;
 let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
+let bingoSpaceKeydownBound = false;
 let coopTextSlot = 0;
 let coopEditing = false;
 // Room-code modal is module-local UI state (never shared PlayroomKit state —
@@ -1139,7 +1141,7 @@ function updateTimerDisplays() {
   const settings = getSettings();
   const liveCs = getTimeLeftCs(round, settings);
   const timeLeftText = `${formatSeconds(liveCs)}s`;
-  const liveUrgent = Number.isFinite(liveCs) && liveCs <= 1000 && liveCs > 0 && round?.status === "OPEN";
+  const liveUrgent = Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
     try {
@@ -1150,29 +1152,45 @@ function updateTimerDisplays() {
   // audience mirrors live timer
   document.querySelectorAll("[data-audience-time-left]").forEach((element) => {
     const ms = getScrewTimerMs(round);
+    let shownCs = null;
     if (ms != null) {
-      element.textContent = `${formatSeconds(Math.ceil(ms/10))}s`;
+      shownCs = Math.ceil(ms / 10);
+      element.textContent = `${formatSeconds(shownCs)}s`;
     } else if (round.screw?.active) {
       element.textContent = "SCREW";
     } else {
+      shownCs = liveCs;
       element.textContent = timeLeftText;
     }
+    try {
+      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || round?.screw?.active);
+      if (urgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
   });
   // tablet mirrors live/screw
   document.querySelectorAll("[data-tablet-time-left]").forEach((element) => {
     const ms = getScrewTimerMs(round);
+    let shownCs = null;
     if (ms != null) {
-      element.textContent = `${formatSeconds(Math.ceil(ms/10))}s`;
+      shownCs = Math.ceil(ms / 10);
+      element.textContent = `${formatSeconds(shownCs)}s`;
     } else if (round.screw?.active) {
       element.textContent = "SCREW";
     } else {
+      shownCs = liveCs;
       element.textContent = timeLeftText;
     }
+    try {
+      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || round?.screw?.active);
+      if (urgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
   });
   if (isDisOrDatMode()) {
     const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
     const ddText = `${formatSeconds(ddCs)}s`;
-    const ddUrgent = Number.isFinite(ddCs) && ddCs <= 1000 && ddCs > 0;
+    const ddUrgent = Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
     document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
       element.textContent = ddText;
       try {
@@ -1186,14 +1204,20 @@ function updateTimerDisplays() {
     if (fb.phase === "lying") {
       const cs = getFibbageLieTimeLeftCs(fb);
       const t = `${formatSeconds(cs)}s`;
-      const urgent = Number.isFinite(cs) && cs <= 1000 && cs > 0;
+      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     } else if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
       const t = `${formatSeconds(cs)}s`;
-      const urgent = Number.isFinite(cs) && cs <= 1000 && cs > 0;
+      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     }
+  }
+  // Screw countdown is itself a 5s timer — always urgent while it runs.
+  {
+    const ms = getScrewTimerMs(round);
+    const screwUrgent = round?.screw?.active && ms !== null && Number.isFinite(ms) && ms > 0;
+    document.querySelectorAll("[data-screw-timer]").forEach((el) => { try { if (screwUrgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
   }
 }
 
@@ -2516,10 +2540,11 @@ function endBingo() {
   render();
 }
 
-// Host picks which item is the correct target
+// Host picks which item is the correct target (locked while cycling)
 function setBingoTarget(index) {
   if (!isHost()) return;
   const bingo = getBingo();
+  if (bingo.cycling) return;
   if (!Array.isArray(bingo.items) || index < 0 || index >= bingo.items.length) return;
   // A new target re-arms locked-out coop siblings.
   setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {} }, true);
@@ -3152,6 +3177,10 @@ function normalizeFibbageTime(v) {
   const n = Number(v);
   return FIBBAGE_TIMES.includes(n) ? n : 30;
 }
+function normalizeFibbageLieTime(v) {
+  const n = Number(v);
+  return FIBBAGE_LIE_TIMES.includes(n) ? n : 30;
+}
 function getEligibleFibbageTrackKeys() {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -3185,7 +3214,7 @@ function startFibbageLying() {
     render();
     return;
   }
-  const lieTime = normalizeFibbageTime(fb.lieTimeSec);
+  const lieTime = normalizeFibbageLieTime(fb.lieTimeSec);
   setState("fibbage", {
     ...fb,
     active: true,
@@ -3229,7 +3258,7 @@ function setFibbageLieTime(sec) {
   if (!isHost()) return;
   const fb = getFibbage();
   if (fb.active && fb.phase !== "setup") return;
-  setState("fibbage", { ...fb, lieTimeSec: normalizeFibbageTime(sec) }, true);
+  setState("fibbage", { ...fb, lieTimeSec: normalizeFibbageLieTime(sec) }, true);
   render();
 }
 function setFibbageVoteTime(sec) {
@@ -5069,9 +5098,6 @@ function renderBingoHostPanel(settings, players) {
       </section>`;
   }
   const items = bingo.items;
-  const targetOptions = items.map((item, i) =>
-    `<option value="${i}" ${i === bingo.targetIndex ? "selected" : ""}>${item}</option>`
-  ).join("");
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const coopActive = isCoopMode(settings);
@@ -5111,11 +5137,9 @@ function renderBingoHostPanel(settings, players) {
       <div class="${isWen ? "bingo-tile-grid bingo-three" : "bingo-word-display"}">${items.map((item, i) => {
         const taken = bingo.itemStates[i]?.collectedBy;
         const isTarget = i === bingo.targetIndex;
-        return `<span class="bingo-tile ${isTarget ? "is-target" : ""} ${taken ? "is-collected" : ""}">${item}</span>`;
+        return `<button type="button" class="bingo-tile ${isTarget ? "is-target" : ""} ${taken ? "is-collected" : ""}" data-bingo-target-pick="${i}" aria-pressed="${isTarget ? "true" : "false"}" title="Set target: ${escapeHtml(item)}" ${bingo.cycling ? "disabled" : ""}>${escapeHtml(item)}</button>`;
       }).join("")}</div>
-      <label>${isWen ? "Correct answer" : "Target letter"}
-        <select data-bingo-target>${targetOptions}</select>
-      </label>
+      <p class="muted">${bingo.cycling ? "Target is locked while cycling — stop cycling to change it." : isWen ? "Tap an option to set it as the correct answer." : "Tap a letter to set it as the target."}</p>
       <div class="host-actions">
         <button type="button" data-bingo-cycle ${bingo.cycling ? "disabled" : ""}>${bingo.cycling ? "Cycling..." : "Start Cycling"}</button>
         <button type="button" data-bingo-stop-cycle ${bingo.cycling ? "" : "disabled"}>Stop Cycling</button>
@@ -5176,6 +5200,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
         ${waitHint}
         ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
       </div>`}
+      ${canBuzz ? `<p class="muted bingo-space-hint">${getSnark("player.bingo.spaceHint", "Tip: <kbd>Space</kbd> buzzes too.")}</p>` : ""}
       <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
     </section>`;
@@ -5775,7 +5800,7 @@ function renderFibbageHostPanel(settings, players) {
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const eligibleTracks = getEligibleFibbageTrackKeys();
   const liesCount = Object.keys(fb.lies || {}).length;
-  const timeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
+  const timeOpts = FIBBAGE_LIE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
   const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t}s</option>`).join("");
   const multOpts = Array.from({length:FIBBAGE_MAX_MULT},(_,i)=>i+1).map((m)=>`<option value="${m}" ${Number(fb.multiplier)===m?"selected":""}>${m}x</option>`).join("");
   if (!fb.active) {
@@ -7258,7 +7283,7 @@ function renderRoomCodeModal(roomCode) {
       <div class="room-code-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(getSnark("audience.misc.roomCodePopupTitle", "Room code"))}">
         <p class="prejoin-kicker">${escapeHtml(getSnark("audience.misc.roomCodePopupTitle", "Room code"))}</p>
         <div class="room-code-badge room-code-mega">${escapeHtml(roomCode)}</div>
-        <p class="muted">${escapeHtml(getSnark("audience.misc.roomCodePopupHint", "Enter this code on your phone to join the game"))}</p>
+        <p class="muted">${escapeHtml(getSnark("audience.misc.roomCodePopupHint", "Enter this code on your device to join the game"))}</p>
         <button type="button" data-room-code-close>${escapeHtml(getSnark("audience.misc.roomCodePopupClose", "Close"))}</button>
       </div>
     </div>`;
@@ -7291,7 +7316,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         <div>
           <p class="prejoin-kicker">Audience display</p>
           <h1>${getSnark("audience.misc.appTitle", "Instant Buzzers")}</h1>
-          <p class="muted">${getSnark("audience.misc.joinHint", "Join the game on your phone — enter this room code")}</p>
+          <p class="muted">${getSnark("audience.misc.joinHint", "Join the game on your device — enter this room code")}</p>
           <div class="room-code-badge room-code-clickable" data-room-code-open role="button" tabindex="0" title="${escapeHtml(getSnark("audience.misc.roomCodeBadgeHint", "Show large room code"))}">${escapeHtml(roomCode)}</div>
           <p class="muted audience-join-count">${getSnark("audience.misc.playersInRoom", `${joinCount} player${joinCount === 1 ? "" : "s"} in the room`, { count: joinCount })}</p>
         </div>
@@ -7944,13 +7969,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
             <button type="button" data-host-action="close">Close Buzzers</button>
             <button type="button" data-host-action="reset">Reset Round</button>
+            ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
+              ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
+              : ""}
+            <button type="button" data-host-action="reset-screws">Refund Screws</button>
           </div>
-        </div>
-        <div class="host-actions" style="margin-top:0.4rem">
-          ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
-            ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
-            : ""}
-          <button type="button" data-host-action="reset-screws">Refund Screws</button>
         </div>
         ${renderScrewNotice(round)}
         ${settings.allowScrewing && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && settings.inputMode !== "disordat" && players.length > 0
@@ -8553,6 +8576,10 @@ function bindEvents() {
     document.addEventListener("keydown", handleCoopBuzzKeydown);
     coopKeydownBound = true;
   }
+  if (!bingoSpaceKeydownBound) {
+    document.addEventListener("keydown", handleBingoSpaceKeydown);
+    bingoSpaceKeydownBound = true;
+  }
 
   // --- Delegated handlers below ---
   delegate("pointerdown", "[data-buzz]", (e, btn) => {
@@ -8783,7 +8810,7 @@ function bindEvents() {
   // Bingo
   delegate("click", "[data-bingo-init]", requireHost(() => startBingo()));
   delegate("click", "[data-bingo-end]", requireHost(() => endBingo()));
-  delegate("change", "[data-bingo-target]", requireHost((e, sel) => setBingoTarget(Number(sel.value))));
+  delegate("click", "[data-bingo-target-pick]", requireHost((e, btn) => setBingoTarget(Number(btn?.dataset?.bingoTargetPick))));
   delegate("click", "[data-bingo-cycle]", requireHost(() => startBingoCycling()));
   delegate("click", "[data-bingo-stop-cycle]", requireHost(() => stopBingoCycling()));
   delegate("click", "[data-bingo-exit]", requireHost(() => { endBingo(); setHostSetting("inputMode", "buttons"); }));
@@ -8957,6 +8984,44 @@ function bindEvents() {
 
 // =============================================================================
 // Space bar stops the roulette for players who are allowed to stop it
+// =============================================================================
+// Bingo / Wen Dit Happn cycling: Spacebar buzzes. Single-slot devices buzz
+// directly; multi-slot coop fields its first eligible slot (same lockout and
+// mute rules as the on-screen per-slot buttons).
+function handleBingoSpaceKeydown(event) {
+  if (event.code !== "Space" && event.key !== " ") {
+    return;
+  }
+  if (event.repeat) return;
+  if (isEditingControl()) {
+    return;
+  }
+  // A focused button already activates on Space natively — don't double-fire.
+  try { if (document.activeElement?.tagName === "BUTTON") return; } catch {}
+  if (!isBingoMode()) return;
+  const bingo = getBingo();
+  if (!bingo.active || !bingo.cycling) return;
+  if (isControllerPlayer() || isCohost() || isAudienceDisplayClient()) return;
+  const self = me();
+  if (!self?.id) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  if (!isBingoActiveViewer(bingo, bingo.currentLitSlot, self.id, settings, assignments)) return;
+  let slot = null;
+  if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) {
+    const lockout = bingo.coopLockout || {};
+    for (let s = 0; s < getCoopSlotCount(self.id); s++) {
+      if (isCoopSlotFrozen(self.id, s) || isCoopSlotMuted(settings, self.id, s)) continue;
+      if (lockout[self.id] && lockout[self.id] !== getCoopScoreKey(self.id, s)) continue;
+      slot = s;
+      break;
+    }
+    if (slot === null) return;
+  }
+  event.preventDefault();
+  submitBingoBuzz(slot);
+}
+
 // =============================================================================
 function handleRouletteKeydown(event) {
   if (event.code !== "Space" && event.key !== " ") {
@@ -9692,14 +9757,14 @@ function boot() {
   // Feature 3: smooth rAF timer (display/tablet + player OPEN; audience/tablet reuse same timers)
   try {
     startSmoothTimer([
-      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]" },
+      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && r?.status === "OPEN"; } },
       // audience main timer mirrors live timer, but shows SCREW when screw active without timer
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]" },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
       // tablet main timer: screw overrides live, otherwise live; SCREW shows static text
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]" },
-      { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]" },
-      { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]" },
-      { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]" },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
+      { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
+      { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
+      { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]", isUrgent: (cs) => { const r=getRound(); return r?.screw?.active && cs > 0; } },
     ]);
   } catch (e) { console.warn("[boot] smooth timer failed", e); }
   renderPrejoinScreen();

@@ -220,6 +220,17 @@ export function patchText(selector, text) {
   });
 }
 
+// Toggle the urgency flash attribute without touching text (patch-only,
+// never part of the UI signature).
+export function patchUrgent(selector, urgent) {
+  document.querySelectorAll(selector).forEach((el) => {
+    try {
+      if (urgent) el.setAttribute("data-timer-urgent", "true");
+      else el.removeAttribute("data-timer-urgent");
+    } catch {}
+  });
+}
+
 // =============================================================================
 // Feature 1: Toast layer (limit 3, delegated dismiss, no layout thrash)
 // =============================================================================
@@ -324,7 +335,7 @@ let rafTimerId = null;
 let rafTimerRunning = false;
 
 export function startSmoothTimer(getCsFns) {
-  // getCsFns: array of { getCs: ()=> number|null, selector: string }
+  // getCsFns: array of { getCs: ()=> number|null, selector: string, isUrgent?: (cs)=> boolean }
   if (rafTimerRunning) return;
   rafTimerRunning = true;
   const tick = () => {
@@ -352,12 +363,17 @@ export function startSmoothTimer(getCsFns) {
         rafTimerId = requestAnimationFrame(tick);
         return;
       }
-      getCsFns.forEach(({ getCs, selector }) => {
+      getCsFns.forEach(({ getCs, selector, isUrgent }) => {
         try {
           const cs = getCs();
           if (cs == null || !Number.isFinite(cs)) return;
           const text = `${(cs / 100).toFixed(2)}s`;
           patchText(selector, text);
+          if (typeof isUrgent === "function") {
+            let urgent = false;
+            try { urgent = Boolean(isUrgent(cs)); } catch {}
+            patchUrgent(selector, urgent);
+          }
         } catch {}
       });
     } catch {}

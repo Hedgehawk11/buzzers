@@ -33,6 +33,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Quixort gamemode
+ - BINGO/Wendit UI revamp
  - Some love to the main buzzers
  - Better UI 
  - YDKJ The Ride RNG preset for pick-a-value

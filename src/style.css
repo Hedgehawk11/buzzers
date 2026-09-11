@@ -404,14 +404,32 @@ button:disabled {
   display: grid;
   gap: 0.35rem;
   text-align: right;
+  justify-items: end;
+  min-width: 10ch;
 }
 
 .audience-timer {
+  display: inline-block;
+  min-width: 8ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
   font-size: clamp(2.2rem, 5vw, 3.6rem);
   font-weight: 900;
   letter-spacing: 0.04em;
   color: #fff4e7;
   line-height: 1;
+}
+
+/* Live/tablet timers tick every frame — fixed width + tabular digits so the
+   right edge stays anchored instead of jittering as digits change. */
+[data-live-time-left],
+[data-tablet-time-left],
+[data-disordat-time-left],
+[data-fibbage-time-left] {
+  display: inline-block;
+  min-width: 7ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .audience-points {
@@ -1582,6 +1600,7 @@ body[data-ui-anims="off"] #app .tablet-timer-layout {
 
   .audience-meta {
     text-align: left;
+    justify-items: start;
   }
 
   .audience-room-code {
@@ -1653,6 +1672,25 @@ body:not([data-ui-anims="off"]) .bingo-tile.is-lit {
 .bingo-tile.is-target {
   border-color: var(--green);
   box-shadow: 0 0 12px rgba(29, 185, 84, 0.4);
+}
+/* Host target picking — tiles are buttons only in the host panel, so scope
+   interactivity there and leave player/audience spans untouched. */
+.bingo-host-panel .bingo-tile[data-bingo-target-pick] {
+  cursor: pointer;
+  padding: 0;
+}
+.bingo-host-panel .bingo-tile[data-bingo-target-pick]:hover:enabled {
+  border-color: var(--green);
+}
+.bingo-host-panel .bingo-tile[data-bingo-target-pick]:active:enabled {
+  transform: scale(0.96);
+}
+.bingo-host-panel .bingo-tile[data-bingo-target-pick]:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.bingo-host-panel .bingo-tile[data-bingo-target-pick]:disabled {
+  cursor: not-allowed;
 }
 .bingo-tile.is-collected {
   opacity: 0.35;
@@ -2082,14 +2120,18 @@ body:not([data-ui-anims="off"]):has([data-screw-active]) .player-card {
   animation: screwShake 300ms ease-out 2;
 }
 
-/* Timer urgency: gentle pulse under 10s (attribute set by updateTimerDisplays) */
+/* Timer urgency: red under 5s (attribute set by updateTimerDisplays + smooth rAF).
+   Color always applies; only the pulse is gated behind ui-anims. */
 @keyframes timerUrgentPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
+/* Urgent red must beat .status-strip strong and the screw-active tablet color. */
+body [data-timer-urgent] {
+  color: #ff5a5a !important;
+}
 
 body:not([data-ui-anims="off"]) [data-timer-urgent] {
-  color: #ffb4a8;
   animation: timerUrgentPulse 1s ease-in-out infinite;
 }
 
@@ -2442,6 +2484,8 @@ body:has([data-screw-active]) {
 }
 .room-code-modal {
   width: min(560px, 100%);
+  max-width: 100%;
+  overflow: hidden;
   text-align: center;
   padding: 2rem 1.5rem;
   border-radius: 22px;
@@ -2453,10 +2497,19 @@ body:has([data-screw-active]) {
 }
 .room-code-modal .room-code-mega {
   display: inline-flex;
-  margin: 1rem 0;
-  font-size: clamp(3rem, 14vw, 6.5rem);
-  letter-spacing: 0.18em;
-  padding: 0.75rem 1.25rem 0.75rem 1.75rem;
+  justify-content: center;
+  /* Override the 8ch min-width from .room-code-badge — at mega font sizes
+     that alone overflows the modal. */
+  min-width: 0;
+  max-width: 100%;
+  margin: 1rem auto;
+  font-size: clamp(2.5rem, 12vw, 5rem);
+  letter-spacing: 0.12em;
+  /* Trailing letter-spacing adds dead space on the right — trim the right
+     padding by the same amount so the code stays optically centered
+     (text-indent has no effect on flex containers). */
+  padding: 0.75rem calc(1rem - 0.12em) 0.75rem 1rem;
+  overflow-wrap: anywhere;
   text-shadow: 0 0 30px rgba(255, 139, 36, 0.4);
 }
 @keyframes modalPopIn {
@@ -2467,12 +2520,12 @@ body:not([data-ui-anims="off"]) .room-code-modal {
   animation: modalPopIn 220ms ease-out;
 }
 
-/* Pre-set answer next to Open button. */
-.open-preset-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-start; }
-.preset-box { flex: 1 1 280px; min-width: min(280px, 100%); border: 1px solid var(--panel-border); border-radius: 12px; padding: 0.7rem 0.8rem; background: rgba(255, 255, 255, 0.03); }
+/* Pre-set answer above Open buttons. */
+.open-preset-row { display: flex; flex-direction: column; gap: 0.75rem; align-items: stretch; }
+.preset-box { width: 100%; border: 1px solid var(--panel-border); border-radius: 12px; padding: 0.7rem 0.8rem; background: rgba(255, 255, 255, 0.03); }
 .preset-box h3 { font-size: 0.85rem; margin: 0 0 0.25rem; color: var(--muted); }
 .preset-box p.muted { font-size: 0.8rem; margin: 0 0 0.5rem; }
 .preset-field { display: grid; gap: 0.4rem; }
 .preset-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .preset-options { margin-top: 0.25rem; }
-.open-actions { flex: 1 1 220px; align-content: flex-start; }
+.open-actions { width: 100%; align-content: flex-start; }
