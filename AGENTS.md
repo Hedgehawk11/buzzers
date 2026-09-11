@@ -9,38 +9,42 @@ npm run dev          # vite dev server
 npm run dev-server   # vite --host (LAN multi-device)
 npm run build        # vite build → dist/ (verify after every change)
 npm run preview      # vite preview built output
-npm run test:harness # node stub harness, 103 checks (see Verification)
+npm run test:harness     # node stub harness, coop-on run, 137 checks
+npm run test:harness:all  # both runs: HARNESS_COOP=on (137) + off (107)
 ```
 No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports.
 
 ## Key structure
-- `src/main.js` (~9170 lines) — entire game: state, RPC, render assembly. Game logic goes here.
+- `src/main.js` (~9730 lines) — entire game: state, RPC, render assembly. Game logic goes here.
 - `src/render.js` (~445 lines) — resilient renderer: rAF scheduler, delegated bus, input preservation (`[data-log-input]` keyed by entry id), `transitionMount` (`:393`), `showToast`, score-delta, smooth timer. Only split from `main.js` — keep it that way.
-- `src/snark.json` (~1250 lines) — `screen.group.key → {en,snark1,snark2}` with `{token}`. All player strings via `getSnark()`. **Vars are `escapeHtml`'d by `getSnark`** — pass raw values; pre-wrapped `<strong>` double-escapes in snark modes (off mode returns the fallback as-is, so keep its inline HTML).
-- `src/style.css` (~2230 lines) — flat CSS, custom properties, no modules. `body:has(...)` backgrounds are order-dependent: screw block is deliberately last (wins ties).
+- `src/snark.json` (~1260 lines) — `screen.group.key → {en,snark1,snark2}` with `{token}`. All player strings via `getSnark()`. **Vars are `escapeHtml`'d by `getSnark`** — pass raw values; pre-wrapped `<strong>` double-escapes in snark modes (off mode returns the fallback as-is, so keep its inline HTML).
+- `src/style.css` (~2420 lines) — flat CSS, custom properties, no modules. Font stack is Segoe-first (`"Segoe UI", system-ui, …`) — Avenir was dropped (missing/ugly off-Mac). `body:has(...)` backgrounds are order-dependent: screw block is deliberately last (wins ties).
 - `index.html` — `<div id="app">` + `<div id="toast-layer">` + `src/main.js` + footer.
 - `vite.config.js` — `VitePWA` only. Workbox precaches `gif` (coop faces).
-- `test-harness/` — node ESM harness stubbing PlayroomKit + DOM, drives real RPC handlers (`run.mjs`, `*-stub.mjs`, `hooks.mjs`).
+- `test-harness/` — node ESM harness stubbing PlayroomKit + DOM, drives real RPC handlers (`run.mjs`, `dom-stub.mjs`/`pk-stub.mjs`/`empty-style.mjs`, `hooks.mjs`).
 
 ## Architecture
 - **PlayroomKit** (`insertCoin({skipLobby:true, maxPlayersPerRoom:42})`) — host is SSOT via `setState(k,v,true)` (reliable). Players → host via `RPC.call(…,RPC.Mode.HOST)`. Hash cleared via `history.replaceState` before `insertCoin`.
 - Round: `IDLE → OPEN → LOCKED/ROULETTE → CLOSED → IDLE` (`ROUND_STATUSES`). Host drives `setState("round",…)`. Round shape has a null-invariant: `coopControl`/`winnerCoopKey`/`correctOptions`/`correctAnswer` are `null` when absent — `resetRound`/`open`/`close`/finalize must all write `null`, never drop keys (`undefined` breaks signature + strict checks).
 - Roles: `player` | `host` | `co-host` | `display` | `tablet_timer`. `clientMode` picks render path. `isAudienceDisplayClient()` true for display/tablet.
 - **Auth model**: `cohost-action` requires sender ∈ `cohostIds` — any other sender gets `{ok:false}`. `screw` victim-pick requires sender = screwer or co-host. Co-host password is broadcast state; only host/co-host clients render it. No rate-limiting on `claim-cohost` (accepted risk).
-- Shared keys (all `,true`): `settings`, `round`, `scores`, `gameLog`, `bingo`, `disordat`, `fibbage`, `teamAssignments`/`teamSelect`, `controllerId`, `cohostPassword`/`cohostIds`, plus coop `coopRosters`/`coopMoods`/`coopLastCorrect`. `ensureHostInit()` seeds defaults, prunes departed rosters/scores/`buzzedPlayerIds`/`coopControl`/`coopMoods`/`coopLastCorrect`, forces alliance when coop is on.
-- `getUiSignature()` (`main.js:1104`) is the dirty-check for the 1s host tick and 250ms audience poll. It carries `scores` + a bounded `gameLogDigest` (`id/awardedDelta/resolved/basePoints/result/scoreKey`) + `coopLastCorrect`/`buzzCounts`/presets — **any score/log change must flip it** or remote screens go stale (their tick otherwise only patches timers). Never put full `gameLog` back in (unbounded stringify every 250ms/display).
-- `updateTimerDisplays()` patches `data-*` timers without full `render()`.
+- **Host per-player powers** (all co-host callable via `cohost-action`): manual score adjust (NaN/zero are no-ops, never write non-finite), rename via `customNames` (blank clears the key), per-player screw block (`settings.screwBlockedPlayerIds`, enforced at `screw` RPC), kick/re-admit (`settings.kickedPlayerIds` — kicked can't buzz, shown as removed in host panel). All ids pruned to live players in `ensureHostInit`.
+- Shared keys (all `,true`): `settings`, `round`, `scores`, `gameLog`, `bingo`, `disordat`, `fibbage`, `teamAssignments`/`teamSelect`, `controllerId`, `cohostPassword`/`cohostIds`, `customNames` (host renames), plus coop `coopRosters`/`coopMoods`/`coopLastCorrect`. `ensureHostInit()` seeds defaults, prunes departed rosters/scores/`buzzedPlayerIds`/`coopControl`/`coopMoods`/`coopLastCorrect`/`customNames`/kicked+screw-blocked ids, forces alliance when coop is on.
+- `getUiSignature()` (`main.js:1196`) is the dirty-check for the 1s host tick and 250ms audience poll. It carries `scores` + a bounded `gameLogDigest` (`id/awardedDelta/resolved/basePoints/result/scoreKey`) + `coopLastCorrect`/`buzzCounts`/presets — **any score/log change must flip it** or remote screens go stale (their tick otherwise only patches timers). Never put full `gameLog` back in (unbounded stringify every 250ms/display).
+- `updateTimerDisplays()` patches `data-*` timers without full `render()`; it also sets `data-timer-urgent` when ≤10s remain (drives the urgency pulse — patch-only, never add it to the signature).
 - Timers: handlers enforce wall-clock (`timeEndsAt`/`voteEndsAt` with `>=`); the 1s `hostTick` only backstops. Screw without a started timer auto-releases after 60s (`activatedAt`); `startScrewTimer` won't extend a running timer.
 
 ## Renderer (do not revert to per-render rebinding)
-- `render()` (`main.js:7806`) assembles HTML, mounts via `transitionMount` (250ms out/in, interrupts pending, respects `uiAnimationsEnabled`/`prefers-reduced-motion`). Mode keys only change between gamemodes.
-- Delegated events: `bindEvents()` (`main.js:8051`) runs once (`delegatedBound`), `delegate(type, selector, fn)`. `render.js` attaches types registered before `#app` exists once it resolves (via `initRenderer` + `getApp`). Never add per-render listeners.
+- `render()` (`main.js:8321`) assembles HTML, mounts via `transitionMount` (250ms out/in, interrupts pending, respects `uiAnimationsEnabled`/`prefers-reduced-motion`). Mode keys only change between gamemodes.
+- Delegated events: `bindEvents()` (`main.js:8566`) runs once (`delegatedBound`), `delegate(type, selector, fn)`. `render.js` attaches types registered before `#app` exists once it resolves (via `initRenderer` + `getApp`). Never add per-render listeners.
 - `scheduleRender(render)` coalesces callers into one rAF with input capture/restore. `renderImmediate` for prejoin only.
-- `PRESERVED_INPUT_IDS` (`render.js`) + generic focused-input fallback — no manual draft logic. `isEditingControl()` (`main.js:8566`) treats any focused input/select/textarea as editing (Q/B/P/space suppressed).
+- Local-only UI state (modal open/dismiss flags, `coopEditing`) lives in module vars — never shared PlayroomKit state, or every screen would mirror one screen's popup.
+- `PRESERVED_INPUT_IDS` (`render.js`) + generic focused-input fallback — no manual draft logic. `isEditingControl()` (`main.js:9112`) treats any focused input/select/textarea as editing (Q/B/P/space suppressed).
 - `setBuzzNotice` auto-toasts to `#toast-layer` (top-right, limit 3). No bottom notice bar (removed).
 - Score delta: `renderScores` emits `data-score-key`/`data-score-value`; `applyScoreDeltas` adds the `::after` pill, which floats **above** the row (never over the number). Audience never shows deltas (guard + CSS).
 - Smooth timer is display-only; 1s `hostTick` stays authoritative.
 - Buzzers-open background flash applies **only** with anims on (`body:not([data-ui-anims="off"]):has([data-buzzers-open])`) — the flash animation is the sole background color source, so gating it (not just `animation:none`) is what keeps the closed background.
+- Animation suite is CSS-only and subtle (150–300ms): buzzer breathe/press, `scoreShake` for losses, log slide-in, `winnerPop`, roulette tick, bingo tile pop, screw shake, `data-timer-urgent` pulse, card stagger. Gate every new anim behind `body:not([data-ui-anims="off"])` + the `prefers-reduced-motion` kill block — the global `data-ui-anims="off"` kill covers the rest.
 
 ## Coopertition mode (`settings.coopertitionEnabled`)
 - Up to 3 sub-players per device. Join name = group name; setup screen takes count 1–3 + names (1P uses group name). Roster RPC `coop-roster`, edits gated by `coopAllowEdit`. Local drafts in `localStorage` (`buzzer_coop_*`); all `localStorage` access is try/catch (private-mode throws).
@@ -58,8 +62,9 @@ No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — s
 ## Verification (no test runner — use these)
 - `npm run build` after every change.
 - `npm run test:harness` — stubbed PlayroomKit+DOM driving real handlers: buzz/ruling math, edits, bingo/disordat/fibbage gates, screw ban + victim-hijack rejection, non-cohost `cohost-action` rejection, roster accounting, roulette freeze, reset null-invariant, rendered HTML for host/player/audience views, no-render-warning check. A dedicated `coh1` co-host fixture drives all `cohost-action` calls (sender auth); player RPCs stay on `dev*` fixtures. Extend it before trusting multi-step logic by reasoning alone — stale-`round` overwrites and signature staleness both survived reasoning and died in the harness.
+- Harness runs each mode separately (`HARNESS_COOP=on|off`, default on; `test:harness:all` runs both). Coop-lock tests (roster, control/sibling, preset gate, bans, migration, forged slots, moods) are `if (COOP)`-guarded and skip off-coop; shared paths assert per-mode expectations (pid vs `coop:` keys). Mid-run coop toggles are left unconditional when they're no-ops in one mode, guarded when they'd pollute the other mode's state.
 - Harness blind spots (don't trust it here): drops the `,true` reliable flag, hardcodes `isHost`, `getElementById→null` (toasts/input-preservation untestable), `querySelectorAll→[]` (timer patch/deltas/smooth-timer untested), keyboard events, mobile/`matchMedia`, avatar `Image` probing.
-- Symptom cheatsheet: remote screens stale → signature missing the changed key; score `NaN`/frozen → ruling path wrote non-finite; host button works but players blocked → gate exists only in UI, add server-side check in the RPC handler; static roulette number → animation loop not restarted; `cohost-action` returns "Not co-host" → sender isn't in `cohostIds`.
+- Symptom cheatsheet: remote screens stale → signature missing the changed key; score `NaN`/frozen → ruling path wrote non-finite; host button works but players blocked → gate exists only in UI, add server-side check in the RPC handler; static roulette number → animation loop not restarted; `cohost-action` returns "Not co-host" → sender isn't in `cohostIds`. Never coerce ruling deltas with `Number(x || 0)` — it masks `NaN` as `0` and silently resets resolved entries; normalize nullish first, reject non-finite after.
 
 ## Conventions
 - Use `workdir` param, not `cd &&`. Quote paths with spaces.

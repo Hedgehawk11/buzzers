@@ -11,7 +11,8 @@
     "dev-server": "vite --host",
     "build": "vite build",
     "preview": "vite preview",
-    "test:harness": "node test-harness/run.mjs"
+    "test:harness": "node test-harness/run.mjs",
+    "test:harness:all": "HARNESS_COOP=on node test-harness/run.mjs && HARNESS_COOP=off node test-harness/run.mjs"
   },
   "devDependencies": {
     "vite": "^8.0.0",

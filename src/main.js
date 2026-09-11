@@ -24,6 +24,8 @@ const DEFAULT_SETTINGS = {
   choiceLayout: "diamond",
   disabledOptions: [],
   disabledPlayerIds: [],
+  kickedPlayerIds: [],
+  screwBlockedPlayerIds: [],
   scoringMode: "uniform",
   uniformPoints: 1000,
   jackMultiplier: 1,
@@ -40,7 +42,7 @@ const DEFAULT_SETTINGS = {
   disabledCoopSlots: [],
   bingoAlternateViewers: false,
   bingoLessRandom: true,
-  bingoAllowMultipleCorrect: false,
+  bingoAllowMultipleCorrect: true,
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
 };
@@ -69,9 +71,10 @@ const DIS_OR_DAT_CORRECT_POINTS = 300;
 const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
-const DIS_OR_DAT_TIMED_OPTIONS = [30, 40];
+const DIS_OR_DAT_TIMED_OPTIONS = [30, 40, 60, 90];
 
 const FIBBAGE_TIMES = [30, 45, 60];
+const FIBBAGE_LIE_TIMES = [30, 45, 60, 90];
 const FIBBAGE_FOOL_POINTS = 500;
 const FIBBAGE_TRUTH_POINTS = 1000;
 const FIBBAGE_MAX_MULT = 5;
@@ -99,8 +102,13 @@ let disOrDatRevealUntil = 0;
 let lastAudienceParticipantCount = 0;
 let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
+let bingoSpaceKeydownBound = false;
 let coopTextSlot = 0;
 let coopEditing = false;
+// Room-code modal is module-local UI state (never shared PlayroomKit state —
+// every screen decides for itself whether the popup is open).
+let roomCodeModalOpen = false;
+let roomCodeModalAutoDismissed = false;
 const COOP_COUNT_KEY = "buzzer_coop_count";
 const COOP_NAMES_KEY = "buzzer_coop_names";
 
@@ -181,9 +189,23 @@ function isAudienceDisplayClient() {
 }
 
 // =============================================================================
-// Read a player's display name (custom override or profile name)
+// Read a player's display name (host rename override, custom override or profile name)
 // =============================================================================
+function getCustomNames() {
+  const names = getSafeState("customNames", {});
+  return names && typeof names === "object" ? names : {};
+}
+
 function getPlayerName(player) {
+  const pid = player?.id;
+  if (typeof pid === "string" && pid) {
+    try {
+      const override = getCustomNames()?.[pid];
+      if (typeof override === "string" && override.trim()) {
+        return override.trim().slice(0, 32);
+      }
+    } catch {}
+  }
   const custom = player?.getState?.("displayName");
   if (typeof custom === "string" && custom.trim()) {
     return custom.trim();
@@ -313,7 +335,8 @@ function getTeamMembers(teamColor, players = currentParticipants(), assignments 
   }
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
-  return players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
+  const kicked = new Set(getSettings().kickedPlayerIds || []);
+  return players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id) && assignments[player.id] === teamColor);
 }
 
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
@@ -533,8 +556,61 @@ function isPlayerBuzzerEnabled(settings, playerId) {
   if (playerId === controllerId) {
     return false;
   }
+  if (isPlayerKicked(playerId, settings)) {
+    return false;
+  }
   const disabledPlayerIds = normalizeDisabledPlayerIds(settings.disabledPlayerIds, currentParticipants(), controllerId);
   return !disabledPlayerIds.includes(playerId);
+}
+
+// =============================================================================
+// Per-player host powers — kicked players, screw blocks, score keys
+// =============================================================================
+function normalizeKickedPlayerIds(kickedIds, players, controllerId) {
+  const cohostIds = getSafeState("cohostIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  return [...new Set((kickedIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
+}
+
+function isPlayerKicked(playerId, settings = getSettings()) {
+  if (!playerId || playerId === getControllerId()) return false;
+  const kicked = Array.isArray(settings.kickedPlayerIds) ? settings.kickedPlayerIds : [];
+  return kicked.includes(playerId);
+}
+
+function normalizeScrewBlockedIds(blockedIds, players, controllerId) {
+  const cohostIds = getSafeState("cohostIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  return [...new Set((blockedIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
+}
+
+function isScrewBlocked(playerId, settings = getSettings()) {
+  if (!playerId) return false;
+  const blocked = Array.isArray(settings.screwBlockedPlayerIds) ? settings.screwBlockedPlayerIds : [];
+  return blocked.includes(playerId);
+}
+
+// All score keys owned by one device (pid + coop:pid:*). In shared-team
+// mode the device shares its team key instead.
+function getScoreKeysForDevice(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
+  if (!playerId) return [];
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    return [getScoreKeyForPlayer(playerId, settings, assignments)];
+  }
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(playerId);
+    if (count <= 1) return [playerId];
+    const keys = [];
+    for (let slot = 0; slot < count; slot++) keys.push(getCoopScoreKey(playerId, slot));
+    return keys;
+  }
+  return [getScoreKeyForPlayer(playerId, settings, assignments)];
+}
+
+// Primary key for a manual adjust (slot 0 for multi-slot coop groups).
+function getPrimaryScoreKeyForDevice(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
+  const keys = getScoreKeysForDevice(playerId, settings, assignments);
+  return keys[0] || playerId;
 }
 
 function getEligibleBuzzerPlayerIds(settings) {
@@ -927,6 +1003,8 @@ async function cohostDispatch(fnName, ...args) {
       setPlayerTeam, randomizeTeams,
       openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
       updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
+      adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
+      kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
     };
     dispatch[fnName]?.(...args);
     return;
@@ -965,6 +1043,9 @@ function canBuzz(playerId, option) {
   }
   const cohostIds = getSafeState("cohostIds", []);
   if (Array.isArray(cohostIds) && cohostIds.includes(deviceId)) {
+    return false;
+  }
+  if (isPlayerKicked(deviceId, settings)) {
     return false;
   }
   if (settings.teamModeEnabled && !getPlayerTeamColor(deviceId, assignments)) {
@@ -1058,47 +1139,85 @@ function formatSeconds(cs) {
 function updateTimerDisplays() {
   const round = getRound();
   const settings = getSettings();
-  const timeLeftText = `${formatSeconds(getTimeLeftCs(round, settings))}s`;
+  const liveCs = getTimeLeftCs(round, settings);
+  const timeLeftText = `${formatSeconds(liveCs)}s`;
+  const liveUrgent = Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
+    try {
+      if (liveUrgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
   });
   // audience mirrors live timer
   document.querySelectorAll("[data-audience-time-left]").forEach((element) => {
     const ms = getScrewTimerMs(round);
+    let shownCs = null;
     if (ms != null) {
-      element.textContent = `${formatSeconds(Math.ceil(ms/10))}s`;
+      shownCs = Math.ceil(ms / 10);
+      element.textContent = `${formatSeconds(shownCs)}s`;
     } else if (round.screw?.active) {
       element.textContent = "SCREW";
     } else {
+      shownCs = liveCs;
       element.textContent = timeLeftText;
     }
+    try {
+      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || round?.screw?.active);
+      if (urgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
   });
   // tablet mirrors live/screw
   document.querySelectorAll("[data-tablet-time-left]").forEach((element) => {
     const ms = getScrewTimerMs(round);
+    let shownCs = null;
     if (ms != null) {
-      element.textContent = `${formatSeconds(Math.ceil(ms/10))}s`;
+      shownCs = Math.ceil(ms / 10);
+      element.textContent = `${formatSeconds(shownCs)}s`;
     } else if (round.screw?.active) {
       element.textContent = "SCREW";
     } else {
+      shownCs = liveCs;
       element.textContent = timeLeftText;
     }
+    try {
+      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || round?.screw?.active);
+      if (urgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
   });
   if (isDisOrDatMode()) {
-    const ddText = `${formatSeconds(getDisOrDatTimeLeftCs(getDisOrDat()))}s`;
+    const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
+    const ddText = `${formatSeconds(ddCs)}s`;
+    const ddUrgent = Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
     document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
       element.textContent = ddText;
+      try {
+        if (ddUrgent) element.setAttribute("data-timer-urgent", "true");
+        else element.removeAttribute("data-timer-urgent");
+      } catch {}
     });
   }
   if (isFibbageMode()) {
     const fb = getFibbage();
     if (fb.phase === "lying") {
-      const t = `${formatSeconds(getFibbageLieTimeLeftCs(fb))}s`;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; });
+      const cs = getFibbageLieTimeLeftCs(fb);
+      const t = `${formatSeconds(cs)}s`;
+      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
+      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     } else if (fb.phase === "voting") {
-      const t = `${formatSeconds(getFibbageVoteTimeLeftCs(fb))}s`;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; });
+      const cs = getFibbageVoteTimeLeftCs(fb);
+      const t = `${formatSeconds(cs)}s`;
+      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
+      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     }
+  }
+  // Screw countdown is itself a 5s timer — always urgent while it runs.
+  {
+    const ms = getScrewTimerMs(round);
+    const screwUrgent = round?.screw?.active && ms !== null && Number.isFinite(ms) && ms > 0;
+    document.querySelectorAll("[data-screw-timer]").forEach((el) => { try { if (screwUrgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
   }
 }
 
@@ -1140,6 +1259,8 @@ showScoresToPlayers: settings.showScoresToPlayers,
       showScoresToAudience: settings.showScoresToAudience,
       disabledOptions: settings.disabledOptions,
       disabledPlayerIds: settings.disabledPlayerIds,
+      kickedPlayerIds: settings.kickedPlayerIds,
+      screwBlockedPlayerIds: settings.screwBlockedPlayerIds,
       scoringMode: settings.scoringMode,
       uniformPoints: settings.uniformPoints,
       jackMultiplier: settings.jackMultiplier,
@@ -1163,6 +1284,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
     coopLastCorrect: getCoopLastCorrect(),
+    customNames: getCustomNames(),
     // Scores + rulings must invalidate the signature or other clients never
     // re-render after a host ruling (their tick only patches timers). The log
     // is append-only, so a compact per-entry digest stands in for the full
@@ -1643,7 +1765,12 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const entryScoreKey = entry.scoreKey || getScoreKeyForPlayer(entry.playerId, settings, assignments);
   const oldAwarded = Number(entry.awardedDelta || 0);
-  let nextAwarded = Number(newAwardedDelta || 0);
+  // Never let a non-finite ruling corrupt scores. Note: `NaN || 0` is 0, so
+  // blank/nullish must be normalized first and NaN rejected after — otherwise
+  // re-ruling a resolved entry with NaN silently resets it to 0.
+  let nextAwarded = (newAwardedDelta === undefined || newAwardedDelta === null || newAwardedDelta === "")
+    ? 0
+    : Number(newAwardedDelta);
   // Never let a non-finite ruling corrupt scores (e.g. quick-ruling a log
   // entry with no base value would otherwise write NaN).
   if (!Number.isFinite(nextAwarded)) {
@@ -2098,7 +2225,10 @@ function hostHandleBuzz(player, payload) {
 
   const allEligibleBuzzed = !settings.rebuzzAllowed && isAllEligibleBuzzed(buzzedPlayerIds, settings);
 
-  if (usingTextEntry && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
+  // F-You easter egg stays enabled in alliance/individual scoring but is
+  // disabled under shared team scoring (penalty + scolding card don't fit teams).
+  const fYouAllowed = !(settings.teamModeEnabled && settings.teamScoringMode === "shared");
+  if (usingTextEntry && fYouAllowed && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
       setState(
         "round",
@@ -2410,10 +2540,11 @@ function endBingo() {
   render();
 }
 
-// Host picks which item is the correct target
+// Host picks which item is the correct target (locked while cycling)
 function setBingoTarget(index) {
   if (!isHost()) return;
   const bingo = getBingo();
+  if (bingo.cycling) return;
   if (!Array.isArray(bingo.items) || index < 0 || index >= bingo.items.length) return;
   // A new target re-arms locked-out coop siblings.
   setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {} }, true);
@@ -3046,6 +3177,10 @@ function normalizeFibbageTime(v) {
   const n = Number(v);
   return FIBBAGE_TIMES.includes(n) ? n : 30;
 }
+function normalizeFibbageLieTime(v) {
+  const n = Number(v);
+  return FIBBAGE_LIE_TIMES.includes(n) ? n : 30;
+}
 function getEligibleFibbageTrackKeys() {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -3079,7 +3214,7 @@ function startFibbageLying() {
     render();
     return;
   }
-  const lieTime = normalizeFibbageTime(fb.lieTimeSec);
+  const lieTime = normalizeFibbageLieTime(fb.lieTimeSec);
   setState("fibbage", {
     ...fb,
     active: true,
@@ -3123,7 +3258,7 @@ function setFibbageLieTime(sec) {
   if (!isHost()) return;
   const fb = getFibbage();
   if (fb.active && fb.phase !== "setup") return;
-  setState("fibbage", { ...fb, lieTimeSec: normalizeFibbageTime(sec) }, true);
+  setState("fibbage", { ...fb, lieTimeSec: normalizeFibbageLieTime(sec) }, true);
   render();
 }
 function setFibbageVoteTime(sec) {
@@ -3465,6 +3600,12 @@ function initiateScrew(screwerId) {
   if (round.screwsUsedBy?.includes(screwerId)) {
     return { ok: false, reason: getSnark("player.screw.alreadyUsed", "You have already used your screw.") };
   }
+  if (isScrewBlocked(screwerId, settings)) {
+    return { ok: false, reason: getSnark("player.screw.blocked", "Your screw is blocked by the host.") };
+  }
+  if (isPlayerKicked(screwerId, settings)) {
+    return { ok: false, reason: getSnark("player.screw.kicked", "You were removed by the host.") };
+  }
   
   const screwer = currentParticipants().find((p) => p.id === screwerId);
   if (!screwer) {
@@ -3578,6 +3719,9 @@ function selectScrewee(screweeId) {
   const settings = getSettings();
   if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
     return { ok: false, reason: "That player's buzzer is disabled." };
+  }
+  if (isPlayerKicked(screwee.id, settings)) {
+    return { ok: false, reason: "That player was removed by the host." };
   }
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
     const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
@@ -4290,6 +4434,181 @@ function toggleCoopSlot(coopKey) {
 }
 
 // =============================================================================
+// Per-player host powers — manual score adjust, reset, rename, kick, screws.
+// All writes go through a gameLog entry (manual-*) so the signature digest
+// flips and re-ruling stays consistent. Never write non-finite deltas.
+// =============================================================================
+function pushManualLogEntry(playerId, scoreKey, delta, kind) {
+  const player = currentParticipants().find((p) => p.id === playerId);
+  const displayName = player ? getPlayerName(player) : playerId;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const entry = {
+    id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: kind === "reset" ? "manual-reset" : "manual-adjust",
+    ts: now(),
+    playerId,
+    playerName: displayName,
+    teamColor: getPlayerTeamColor(playerId, assignments),
+    scoreKey,
+    coopSlot: null,
+    coopKey: null,
+    scoreTarget: String(scoreKey || "").startsWith("team:") ? scoreKey : displayName,
+    option: null,
+    answerText: null,
+    timeLeftCs: 0,
+    scoringMode: settings.scoringMode,
+    jackMultiplier: settings.jackMultiplier,
+    uniformPoints: settings.uniformPoints,
+    basePoints: Math.abs(delta),
+    awardedDelta: delta,
+    resolved: true,
+  };
+  const log = getLog();
+  setState("gameLog", [...log, entry], true);
+  return entry;
+}
+
+function adjustPlayerScore(playerId, delta) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "adjustPlayerScore", args: [playerId, delta] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const amount = Number(delta);
+  if (!Number.isFinite(amount) || amount === 0) return;
+  const clamped = clamp(Math.trunc(amount), -9999, 9999);
+  if (!clamped) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const scoreKey = getPrimaryScoreKeyForDevice(playerId, settings, assignments);
+  const scores = { ...getScores() };
+  scores[scoreKey] = Number(scores[scoreKey] || 0) + clamped;
+  if (!Number.isFinite(Number(scores[scoreKey]))) return;
+  setState("scores", scores, true);
+  pushManualLogEntry(playerId, scoreKey, clamped, "adjust");
+  setBuzzNotice(`${getPlayerName(players.find((p) => p.id === playerId))} ${clamped > 0 ? "+" : ""}${clamped} points.`);
+  render();
+}
+
+function resetPlayerScore(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "resetPlayerScore", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const keys = getScoreKeysForDevice(playerId, settings, assignments);
+  if (!keys.length) return;
+  const scores = { ...getScores() };
+  let totalRemoved = 0;
+  keys.forEach((key) => {
+    totalRemoved += Number(scores[key] || 0);
+    scores[key] = 0;
+  });
+  setState("scores", scores, true);
+  pushManualLogEntry(playerId, keys[0], -totalRemoved, "reset");
+  setBuzzNotice(`Score reset for ${getPlayerName(players.find((p) => p.id === playerId))}.`);
+  render();
+}
+
+function setCustomPlayerName(playerId, name) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setCustomPlayerName", args: [playerId, name] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const trimmed = String(name || "").trim().slice(0, 32);
+  const next = { ...getCustomNames() };
+  if (!trimmed) delete next[playerId];
+  else next[playerId] = trimmed;
+  setState("customNames", next, true);
+  render();
+}
+
+function kickPlayer(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "kickPlayer", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const cohostIds = getSafeState("cohostIds", []);
+  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) return;
+  const settings = getSettings();
+  const next = [...new Set([...(settings.kickedPlayerIds || []), playerId])];
+  setState("settings", { ...settings, kickedPlayerIds: normalizeKickedPlayerIds(next, players, controllerId) }, true);
+  // Release Jeopardy control / roulette holds owned by the kicked device.
+  try {
+    const round = getRound();
+    let nextRound = null;
+    if (round.coopControl) {
+      const parsed = parseCoopScoreKey(round.coopControl);
+      const holder = parsed ? parsed.deviceId : round.coopControl;
+      if (holder === playerId) nextRound = { ...(nextRound || round), coopControl: null };
+    }
+    if (Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.some((id) => {
+      const parsed = parseCoopScoreKey(id);
+      return (parsed ? parsed.deviceId : id) === playerId;
+    })) {
+      nextRound = { ...(nextRound || round) };
+      nextRound.buzzedPlayerIds = (nextRound.buzzedPlayerIds || []).filter((id) => {
+        const parsed = parseCoopScoreKey(id);
+        return (parsed ? parsed.deviceId : id) !== playerId;
+      });
+    }
+    if (nextRound) setState("round", nextRound, true);
+  } catch {}
+  render();
+}
+
+function unkickPlayer(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "unkickPlayer", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const settings = getSettings();
+  const next = (settings.kickedPlayerIds || []).filter((id) => id !== playerId);
+  setState("settings", { ...settings, kickedPlayerIds: next }, true);
+  render();
+}
+
+function setPlayerScrewBlocked(playerId, blocked) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerScrewBlocked", args: [playerId, blocked] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  const settings = getSettings();
+  const current = Array.isArray(settings.screwBlockedPlayerIds) ? settings.screwBlockedPlayerIds : [];
+  const next = blocked ? [...new Set([...current, playerId])] : current.filter((id) => id !== playerId);
+  setState("settings", { ...settings, screwBlockedPlayerIds: normalizeScrewBlockedIds(next, players, controllerId) }, true);
+  render();
+}
+
+function refundPlayerScrew(playerId) {
+  if (!isHost()) {
+    if (isCohost()) RPC.call("cohost-action", { fn: "refundPlayerScrew", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const round = getRound();
+  const used = Array.isArray(round.screwsUsedBy) ? round.screwsUsedBy : [];
+  if (!used.includes(playerId)) return;
+  setState("round", { ...round, screwsUsedBy: used.filter((id) => id !== playerId) }, true);
+  render();
+}
+
+// =============================================================================
 // Team management — assign a player to a color team
 // =============================================================================
 // Host-side write: validates the player, prunes stale assignments, applies the change.
@@ -4571,6 +4890,31 @@ function ensureHostInit() {
   if (!getState("coopLastCorrect")) {
     setState("coopLastCorrect", {}, true);
   }
+  if (getState("customNames") === undefined) {
+    setState("customNames", {}, true);
+  } else {
+    try {
+      const names = getCustomNames();
+      const liveIds = new Set(currentParticipants().map((p) => p.id));
+      const pruned = {};
+      Object.entries(names || {}).forEach(([id, name]) => {
+        if (liveIds.has(id) && typeof name === "string" && name.trim()) pruned[id] = String(name).trim().slice(0, 32);
+      });
+      if (JSON.stringify(pruned) !== JSON.stringify(names)) setState("customNames", pruned, true);
+    } catch {}
+  }
+  // Normalize per-player host-power lists (kicked / screw-blocked) against
+  // live participants so departed devices don't linger.
+  try {
+    const livePlayers = currentParticipants();
+    const liveController = getControllerId();
+    const s = getSettings();
+    const nextKicked = normalizeKickedPlayerIds(s.kickedPlayerIds, livePlayers, liveController);
+    const nextBlocked = normalizeScrewBlockedIds(s.screwBlockedPlayerIds, livePlayers, liveController);
+    if (JSON.stringify(nextKicked) !== JSON.stringify(s.kickedPlayerIds || []) || JSON.stringify(nextBlocked) !== JSON.stringify(s.screwBlockedPlayerIds || [])) {
+      setState("settings", { ...s, kickedPlayerIds: nextKicked, screwBlockedPlayerIds: nextBlocked }, true);
+    }
+  } catch {}
   if (!getState("fibbage")) {
     setState("fibbage", freshFibbageState(), true);
   }
@@ -4754,9 +5098,6 @@ function renderBingoHostPanel(settings, players) {
       </section>`;
   }
   const items = bingo.items;
-  const targetOptions = items.map((item, i) =>
-    `<option value="${i}" ${i === bingo.targetIndex ? "selected" : ""}>${item}</option>`
-  ).join("");
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const coopActive = isCoopMode(settings);
@@ -4796,11 +5137,9 @@ function renderBingoHostPanel(settings, players) {
       <div class="${isWen ? "bingo-tile-grid bingo-three" : "bingo-word-display"}">${items.map((item, i) => {
         const taken = bingo.itemStates[i]?.collectedBy;
         const isTarget = i === bingo.targetIndex;
-        return `<span class="bingo-tile ${isTarget ? "is-target" : ""} ${taken ? "is-collected" : ""}">${item}</span>`;
+        return `<button type="button" class="bingo-tile ${isTarget ? "is-target" : ""} ${taken ? "is-collected" : ""}" data-bingo-target-pick="${i}" aria-pressed="${isTarget ? "true" : "false"}" title="Set target: ${escapeHtml(item)}" ${bingo.cycling ? "disabled" : ""}>${escapeHtml(item)}</button>`;
       }).join("")}</div>
-      <label>${isWen ? "Correct answer" : "Target letter"}
-        <select data-bingo-target>${targetOptions}</select>
-      </label>
+      <p class="muted">${bingo.cycling ? "Target is locked while cycling — stop cycling to change it." : isWen ? "Tap an option to set it as the correct answer." : "Tap a letter to set it as the target."}</p>
       <div class="host-actions">
         <button type="button" data-bingo-cycle ${bingo.cycling ? "disabled" : ""}>${bingo.cycling ? "Cycling..." : "Start Cycling"}</button>
         <button type="button" data-bingo-stop-cycle ${bingo.cycling ? "" : "disabled"}>Stop Cycling</button>
@@ -4861,6 +5200,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
         ${waitHint}
         ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
       </div>`}
+      ${canBuzz ? `<p class="muted bingo-space-hint">${getSnark("player.bingo.spaceHint", "Tip: <kbd>Space</kbd> buzzes too.")}</p>` : ""}
       <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
     </section>`;
@@ -5460,7 +5800,7 @@ function renderFibbageHostPanel(settings, players) {
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const eligibleTracks = getEligibleFibbageTrackKeys();
   const liesCount = Object.keys(fb.lies || {}).length;
-  const timeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
+  const timeOpts = FIBBAGE_LIE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
   const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t}s</option>`).join("");
   const multOpts = Array.from({length:FIBBAGE_MAX_MULT},(_,i)=>i+1).map((m)=>`<option value="${m}" ${Number(fb.multiplier)===m?"selected":""}>${m}x</option>`).join("");
   if (!fb.active) {
@@ -6278,6 +6618,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isControllerPlayer() || isCohost()) {
     return "";
   }
+  if (isPlayerKicked(mePlayer.id, settings)) {
+    return `
+      <section class="card player-card">
+        <h2>${getSnark("player.kicked.title", "Removed by host")}</h2>
+        <p class="muted">${getSnark("player.kicked.body", "The host removed you from this game. You can watch the audience display — ask the host to re-admit you to buzz again.")}</p>
+      </section>
+    `;
+  }
   if (isCoopMode(settings)) {
     return renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs);
   }
@@ -6390,7 +6738,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
   const screwInProgress = round.screw?.active;
   const screwUsedByMe = round.screwsUsedBy?.includes(mePlayer.id);
-  const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwInProgress;
+  const screwBlockedMe = isScrewBlocked(mePlayer.id, settings);
+  const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwBlockedMe && !screwInProgress;
   const globalDisabled = disabled || (!rebuzzAllowed && (alreadyBuzzed || teamAlreadyBuzzed)) || playerDisabled || screwInProgress;
   const helperText = playerDisabled
     ? getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.")
@@ -6459,7 +6808,9 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const optionDisabled = !isOptionEnabled(settings, 1) || isPlayerAtOptionLimit(round, settings, mePlayer.id, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
 const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6489,7 +6840,9 @@ const screwBtn = settings.allowScrewing
       })
       .join("");
 const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6519,7 +6872,9 @@ const screwBtn = settings.allowScrewing
       })
       .join("");
 const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6549,7 +6904,9 @@ const screwBtn = settings.allowScrewing
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
       return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
     };
-    const screwBtn = screwAvailable && !disabled && !playerDisabled
+    const screwBtn = screwBlockedMe
+      ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+      : screwAvailable && !disabled && !playerDisabled
       ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
       : "";
 
@@ -6582,7 +6939,9 @@ const screwBtn = settings.allowScrewing
     })
     .join("");
   const screwBtn = settings.allowScrewing
-    ? (screwUsedByMe
+    ? (screwBlockedMe
+        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
+        : screwUsedByMe
         ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
         : screwInProgress
             ? ""
@@ -6642,11 +7001,12 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
-  const buzzedPlayers = getBuzzedParticipants(round, players);
+  const cohostIds = getSafeState("cohostIds", []);
+  const kickedIds = new Set(settings.kickedPlayerIds || []);
+  const buzzedPlayers = getBuzzedParticipants(round, players).filter((p) => !kickedIds.has(p.id));
   const coopActive = isCoopMode(settings);
   const buzzedLabels = coopActive ? getBuzzedCoopLabels(round, players) : [];
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kickedIds.has(player.id));
   const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
   const coopLeaderName = coopActive
     ? (round.winnerCoopKey ? getCoopControlName({ coopControl: round.winnerCoopKey }) || null : null) || buzzedLabels[0] || null
@@ -6917,6 +7277,18 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   `;
 }
 
+function renderRoomCodeModal(roomCode) {
+  return `
+    <div class="room-code-modal-overlay" data-room-code-overlay>
+      <div class="room-code-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(getSnark("audience.misc.roomCodePopupTitle", "Room code"))}">
+        <p class="prejoin-kicker">${escapeHtml(getSnark("audience.misc.roomCodePopupTitle", "Room code"))}</p>
+        <div class="room-code-badge room-code-mega">${escapeHtml(roomCode)}</div>
+        <p class="muted">${escapeHtml(getSnark("audience.misc.roomCodePopupHint", "Enter this code on your device to join the game"))}</p>
+        <button type="button" data-room-code-close>${escapeHtml(getSnark("audience.misc.roomCodePopupClose", "Close"))}</button>
+      </div>
+    </div>`;
+}
+
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
@@ -6928,15 +7300,25 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
     ? renderAudienceRoulettePanel(settings, round, players)
     : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
+  const controllerId = getControllerId();
+  const cohostIds = getSafeState("cohostIds", []);
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const joinCount = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && !kicked.has(p.id)).length;
+  const roomCode = getRoomCode() || getSnark("audience.misc.roomFallback", "....");
+  // Auto-popup when the room is empty; re-arms once players join. Explicit
+  // open/close via the badge always wins over the auto behavior.
+  if (joinCount > 0) roomCodeModalAutoDismissed = false;
+  const showRoomCodeModal = roomCodeModalOpen || (joinCount === 0 && !roomCodeModalAutoDismissed);
 
   return `
     <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
-      <header class="hero audience-hero">
+      <header class="hero audience-hero audience-join-hero">
         <div>
           <p class="prejoin-kicker">Audience display</p>
           <h1>${getSnark("audience.misc.appTitle", "Instant Buzzers")}</h1>
-          <p class="muted">${getSnark("audience.misc.roomCodeLabel", "Room code")}</p>
-          <div class="room-code-badge">${escapeHtml(getRoomCode() || getSnark("audience.misc.roomFallback", "...."))}</div>
+          <p class="muted">${getSnark("audience.misc.joinHint", "Join the game on your device — enter this room code")}</p>
+          <div class="room-code-badge room-code-clickable" data-room-code-open role="button" tabindex="0" title="${escapeHtml(getSnark("audience.misc.roomCodeBadgeHint", "Show large room code"))}">${escapeHtml(roomCode)}</div>
+          <p class="muted audience-join-count">${getSnark("audience.misc.playersInRoom", `${joinCount} player${joinCount === 1 ? "" : "s"} in the room`, { count: joinCount })}</p>
         </div>
         <div class="hero-meta">
           <span>${getSnark("audience.misc.statusLabel", "Status")}: <strong>${escapeHtml(round.status || getSnark("shared.misc.statusUnknown", "unknown"))}</strong></span>
@@ -6949,6 +7331,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         ${showScores ? renderScores(players, scores) : ""}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
+      ${showRoomCodeModal ? renderRoomCodeModal(roomCode) : ""}
     </main>
   `;
 }
@@ -7017,6 +7400,71 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
       <div class="toggle-list">${toggles}</div>
     </div>
     ${coopSlotToggles}
+  `;
+}
+
+// Per-player host powers — score adjust/reset, rename, kick, screws.
+// One row per non-controller, non-cohost device.
+function renderPerPlayerHostControls(settings, players, controllerId) {
+  const cohostIds = getSafeState("cohostIds", []);
+  const rows = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  if (rows.length === 0) {
+    return `
+      <div class="toggle-group">
+        <span class="muted">Per-player controls</span>
+        <p class="muted">No non-Host participants connected yet.</p>
+      </div>
+    `;
+  }
+  const scores = getScores();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const round = getRound();
+  const customNames = getCustomNames();
+  const body = rows
+    .map((player) => {
+      const pid = player.id;
+      const name = getPlayerName(player);
+      const keys = getScoreKeysForDevice(pid, settings, assignments);
+      const total = keys.reduce((sum, key) => sum + Number(scores[key] || 0), 0);
+      const kicked = isPlayerKicked(pid, settings);
+      const screwBlocked = isScrewBlocked(pid, settings);
+      const screwUsed = Array.isArray(round.screwsUsedBy) && round.screwsUsedBy.includes(pid);
+      const isSharedTeam = Boolean(settings.teamModeEnabled && settings.teamScoringMode === "shared" && getPlayerTeamColor(pid, assignments));
+      const scoreNote = isSharedTeam ? " (team)" : isCoopMode(settings) && getCoopSlotCount(pid) > 1 ? " (group)" : "";
+      const custom = customNames?.[pid] || "";
+      return `
+        <div class="team-assignment-row per-player-row" data-per-player="${escapeHtml(pid)}">
+          <strong>${escapeHtml(name)}</strong>
+          <span class="muted">Score: <strong>${total}</strong>${scoreNote}${kicked ? " • removed" : ""}</span>
+          <div class="per-player-controls">
+            <input type="number" step="1" min="-9999" max="9999" placeholder="+/- pts" data-adjust-input="${escapeHtml(pid)}" aria-label="Points to adjust for ${escapeHtml(name)}" />
+            <button type="button" data-adjust-apply="${escapeHtml(pid)}">Apply</button>
+            <button type="button" data-adjust-quick="plus" data-adjust-id="${escapeHtml(pid)}">+1000</button>
+            <button type="button" class="red" data-adjust-quick="minus" data-adjust-id="${escapeHtml(pid)}">-1000</button>
+            <button type="button" data-reset-score="${escapeHtml(pid)}">Reset score</button>
+          </div>
+          <div class="per-player-controls">
+            <input type="text" maxlength="32" placeholder="Rename player" value="${escapeHtml(custom)}" data-rename-input="${escapeHtml(pid)}" aria-label="Rename ${escapeHtml(name)}" />
+            <button type="button" data-rename-apply="${escapeHtml(pid)}">Rename</button>
+            ${kicked
+              ? `<button type="button" data-unkick-player="${escapeHtml(pid)}">Re-admit</button>`
+              : `<button type="button" class="red" data-kick-player="${escapeHtml(pid)}">Remove</button>`}
+          </div>
+          ${isCoopMode(settings) ? "" : `
+          <div class="per-player-controls">
+            <button type="button" class="toggle-chip ${screwBlocked ? "is-off" : "is-on"}" data-screw-block="${escapeHtml(pid)}">Screw ${screwBlocked ? "blocked" : "allowed"}</button>
+            ${screwUsed ? `<button type="button" data-screw-refund="${escapeHtml(pid)}">Refund screw</button>` : ""}
+          </div>`}
+        </div>
+      `;
+    })
+    .join("");
+  return `
+    <div class="toggle-group team-setup-group">
+      <span class="muted">Per-player controls</span>
+      <p class="setting-helper">Adjust or reset one player's score, rename them, remove/re-admit them, or manage their screws. Score edits are logged so the audience display updates.</p>
+      <div class="team-assignment-list">${body}</div>
+    </div>
   `;
 }
 
@@ -7123,6 +7571,29 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       : Array.isArray(round.correctOptions) && round.correctOptions.length > 0);
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
+  // Pre-set correct answer lives next to the Open button so hosts set it
+  // right before opening (auto-rules when present, manual ruling otherwise).
+  const presetCorrectAnswerHtml = settings.inputMode === "text"
+    ? `<label class="preset-field">Correct answer text
+         <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
+         <div class="preset-actions">
+           <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
+           <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
+         </div>
+       </label>`
+    : `<div class="preset-field">
+         <span class="muted">Correct options</span>
+         <div class="toggle-list preset-options">
+           ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
+             .map((opt) => {
+               const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
+               const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
+               return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+             })
+             .join("")}
+         </div>
+         <div class="preset-actions"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
+       </div>`;
 
   const statusText = {
     [ROUND_STATUSES.IDLE]: "Idle",
@@ -7234,33 +7705,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                       <p class="setting-helper">How the 4 choice buttons are arranged. Grid and list use 1–4 labels.</p>
                     </label>`
               }
-            </div>
-
-            <!-- Pre-set correct answer -->
-            <div style="margin-top:0.75rem">
-              <h3 style="font-size:0.85rem;margin:0 0 0.4rem;color:var(--muted)">Pre-set correct answer</h3>
-              <p class="muted" style="font-size:0.8rem">Auto-rule points when a player answers (wrong answers lose points).</p>
-              ${settings.inputMode === "text"
-                ? `<label style="margin-top:0.4rem">Correct answer text
-                     <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
-                     <div style="margin-top:0.4rem">
-                       <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
-                       <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
-                     </div>
-                   </label>`
-                : `<div style="margin-top:0.4rem">
-                     <span class="muted">Correct options</span>
-                     <div class="toggle-list" style="margin-top:0.4rem">
-                       ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
-                         .map((opt) => {
-                           const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
-                           const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
-                           return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
-                         })
-                         .join("")}
-                     </div>
-                     <div style="margin-top:0.4rem"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
-                   </div>`}
             </div>
 
             ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
@@ -7500,21 +7944,36 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         </details>
       </div>
 
-      <!-- Action buttons -->
+      <!-- Section: Per-player settings (collapsed by default) -->
+      <div class="settings-section">
+        <details>
+          <summary>Per-player settings</summary>
+          <div class="section-body">
+            ${renderPerPlayerHostControls(settings, players, controllerId)}
+          </div>
+        </details>
+      </div>
+
+      <!-- Action buttons + pre-set answer -->
       <div style="margin-top:1rem">
-        <div class="host-actions">
-          ${settings.scoringMode === "roulette"
-            ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
-            : ""}
-          <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
-          <button type="button" data-host-action="close">Close Buzzers</button>
-          <button type="button" data-host-action="reset">Reset Round</button>
-        </div>
-        <div class="host-actions" style="margin-top:0.4rem">
-          ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
-            ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
-            : ""}
-          <button type="button" data-host-action="reset-screws">Refund Screws</button>
+        <div class="open-preset-row">
+          <div class="preset-box">
+            <h3>Pre-set correct answer</h3>
+            <p class="muted">Auto-rule points when a player answers (wrong answers lose points).</p>
+            ${presetCorrectAnswerHtml}
+          </div>
+          <div class="host-actions open-actions">
+            ${settings.scoringMode === "roulette"
+              ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
+              : ""}
+            <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
+            <button type="button" data-host-action="close">Close Buzzers</button>
+            <button type="button" data-host-action="reset">Reset Round</button>
+            ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
+              ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
+              : ""}
+            <button type="button" data-host-action="reset-screws">Refund Screws</button>
+          </div>
         </div>
         ${renderScrewNotice(round)}
         ${settings.allowScrewing && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && settings.inputMode !== "disordat" && players.length > 0
@@ -7642,7 +8101,8 @@ function renderLockedRuling(settings, pendingEntry) {
 // greyed in place; rank badges keep their 1st/2nd/3rd meaning on groups.
 function renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments, extraClass = "") {
   const round = getRound();
-  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id));
   const groups = devices
     .map((player) => {
       const deviceId = player.id;
@@ -7717,7 +8177,8 @@ function renderScores(players, scores, extraClass = "") {
   const settings = getSettings();
   const controllerId = getControllerId();
   const cohostIds = getSafeState("cohostIds", []);
-  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (isCoopMode(settings)) {
@@ -8115,6 +8576,10 @@ function bindEvents() {
     document.addEventListener("keydown", handleCoopBuzzKeydown);
     coopKeydownBound = true;
   }
+  if (!bingoSpaceKeydownBound) {
+    document.addEventListener("keydown", handleBingoSpaceKeydown);
+    bingoSpaceKeydownBound = true;
+  }
 
   // --- Delegated handlers below ---
   delegate("pointerdown", "[data-buzz]", (e, btn) => {
@@ -8151,6 +8616,17 @@ function bindEvents() {
   });
   delegate("click", "[data-coop-edit]", () => { coopEditing = true; scheduleRender(render); });
   delegate("click", "[data-coop-cancel]", () => { coopEditing = false; scheduleRender(render); });
+  delegate("click", "[data-room-code-open]", () => { roomCodeModalOpen = true; scheduleRender(render); });
+  delegate("keydown", "[data-room-code-open]", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); roomCodeModalOpen = true; scheduleRender(render); }
+  });
+  delegate("click", "[data-room-code-close]", () => { roomCodeModalOpen = false; roomCodeModalAutoDismissed = true; scheduleRender(render); });
+  delegate("click", "[data-room-code-overlay]", (e, el) => {
+    if (e.target !== el) return; // backdrop only — dialog clicks stay open
+    roomCodeModalOpen = false;
+    roomCodeModalAutoDismissed = true;
+    scheduleRender(render);
+  });
   delegate("change", "#coop-count", () => { scheduleRender(render); });
   delegate("click", "[data-answer-submit]", () => {
     const input = (getApp() || app).querySelector("#answer-entry");
@@ -8242,6 +8718,36 @@ function bindEvents() {
   delegate("click", "[data-toggle-option]", requireHost((e, btn) => toggleBuzzerOption(Number(btn.dataset.toggleOption))));
   delegate("click", "[data-toggle-player]", requireHost((e, btn) => togglePlayerBuzzer(btn.dataset.togglePlayer)));
   delegate("click", "[data-toggle-coop-slot]", requireHost((e, btn) => toggleCoopSlot(btn.dataset.toggleCoopSlot)));
+  delegate("click", "[data-adjust-apply]", requireHost((e, btn) => {
+    const id = btn.dataset.adjustApply;
+    const input = (getApp() || app).querySelector(`[data-adjust-input="${id}"]`);
+    adjustPlayerScore(id, Number(input?.value || 0));
+  }));
+  delegate("click", "[data-adjust-quick]", requireHost((e, btn) => {
+    const id = btn.dataset.adjustId;
+    adjustPlayerScore(id, btn.dataset.adjustQuick === "plus" ? 1000 : -1000);
+  }));
+  delegate("click", "[data-reset-score]", requireHost((e, btn) => {
+    const id = btn.dataset.resetScore;
+    if (typeof confirm === "function" && !confirm("Reset this player's score to 0?")) return;
+    resetPlayerScore(id);
+  }));
+  delegate("click", "[data-rename-apply]", requireHost((e, btn) => {
+    const id = btn.dataset.renameApply;
+    const input = (getApp() || app).querySelector(`[data-rename-input="${id}"]`);
+    setCustomPlayerName(id, String(input?.value || ""));
+  }));
+  delegate("click", "[data-kick-player]", requireHost((e, btn) => {
+    const id = btn.dataset.kickPlayer;
+    if (typeof confirm === "function" && !confirm("Remove this player from the game? They keep their connection but cannot buzz or score.")) return;
+    kickPlayer(id);
+  }));
+  delegate("click", "[data-unkick-player]", requireHost((e, btn) => unkickPlayer(btn.dataset.unkickPlayer)));
+  delegate("click", "[data-screw-block]", requireHost((e, btn) => {
+    const id = btn.dataset.screwBlock;
+    setPlayerScrewBlocked(id, !isScrewBlocked(id));
+  }));
+  delegate("click", "[data-screw-refund]", requireHost((e, btn) => refundPlayerScrew(btn.dataset.screwRefund)));
   delegate("click", "[data-set-correct-text]", requireHost(() => {
     const input = (getApp() || app).querySelector("#correct-answer-entry");
     const val = String(input?.value || "").trim();
@@ -8304,7 +8810,7 @@ function bindEvents() {
   // Bingo
   delegate("click", "[data-bingo-init]", requireHost(() => startBingo()));
   delegate("click", "[data-bingo-end]", requireHost(() => endBingo()));
-  delegate("change", "[data-bingo-target]", requireHost((e, sel) => setBingoTarget(Number(sel.value))));
+  delegate("click", "[data-bingo-target-pick]", requireHost((e, btn) => setBingoTarget(Number(btn?.dataset?.bingoTargetPick))));
   delegate("click", "[data-bingo-cycle]", requireHost(() => startBingoCycling()));
   delegate("click", "[data-bingo-stop-cycle]", requireHost(() => stopBingoCycling()));
   delegate("click", "[data-bingo-exit]", requireHost(() => { endBingo(); setHostSetting("inputMode", "buttons"); }));
@@ -8478,6 +8984,44 @@ function bindEvents() {
 
 // =============================================================================
 // Space bar stops the roulette for players who are allowed to stop it
+// =============================================================================
+// Bingo / Wen Dit Happn cycling: Spacebar buzzes. Single-slot devices buzz
+// directly; multi-slot coop fields its first eligible slot (same lockout and
+// mute rules as the on-screen per-slot buttons).
+function handleBingoSpaceKeydown(event) {
+  if (event.code !== "Space" && event.key !== " ") {
+    return;
+  }
+  if (event.repeat) return;
+  if (isEditingControl()) {
+    return;
+  }
+  // A focused button already activates on Space natively — don't double-fire.
+  try { if (document.activeElement?.tagName === "BUTTON") return; } catch {}
+  if (!isBingoMode()) return;
+  const bingo = getBingo();
+  if (!bingo.active || !bingo.cycling) return;
+  if (isControllerPlayer() || isCohost() || isAudienceDisplayClient()) return;
+  const self = me();
+  if (!self?.id) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  if (!isBingoActiveViewer(bingo, bingo.currentLitSlot, self.id, settings, assignments)) return;
+  let slot = null;
+  if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) {
+    const lockout = bingo.coopLockout || {};
+    for (let s = 0; s < getCoopSlotCount(self.id); s++) {
+      if (isCoopSlotFrozen(self.id, s) || isCoopSlotMuted(settings, self.id, s)) continue;
+      if (lockout[self.id] && lockout[self.id] !== getCoopScoreKey(self.id, s)) continue;
+      slot = s;
+      break;
+    }
+    if (slot === null) return;
+  }
+  event.preventDefault();
+  submitBingoBuzz(slot);
+}
+
 // =============================================================================
 function handleRouletteKeydown(event) {
   if (event.code !== "Space" && event.key !== " ") {
@@ -9115,6 +9659,8 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
     updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
     setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
+    adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
+    kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
   };
   RPC.register("cohost-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };
@@ -9211,14 +9757,14 @@ function boot() {
   // Feature 3: smooth rAF timer (display/tablet + player OPEN; audience/tablet reuse same timers)
   try {
     startSmoothTimer([
-      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]" },
+      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && r?.status === "OPEN"; } },
       // audience main timer mirrors live timer, but shows SCREW when screw active without timer
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]" },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
       // tablet main timer: screw overrides live, otherwise live; SCREW shows static text
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]" },
-      { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]" },
-      { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]" },
-      { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]" },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
+      { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
+      { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
+      { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]", isUrgent: (cs) => { const r=getRound(); return r?.screw?.active && cs > 0; } },
     ]);
   } catch (e) { console.warn("[boot] smooth timer failed", e); }
   renderPrejoinScreen();
