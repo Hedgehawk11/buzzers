@@ -2411,7 +2411,7 @@ body:has([data-screw-active]) {
   #app[data-transition="in"] .grid .card { animation: none !important; }
 }
 
-/* Per-player host controls + audience stats/hero. */
+/* Per-player host controls + audience hero. */
 .per-player-row { align-items: flex-start; flex-direction: column; gap: 0.4rem; }
 .per-player-controls { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; }
 .per-player-controls input[type="number"] { width: 7rem; }
@@ -2466,6 +2466,13 @@ body:has([data-screw-active]) {
 body:not([data-ui-anims="off"]) .room-code-modal {
   animation: modalPopIn 220ms ease-out;
 }
-.audience-stats-card ul.audience-stats-list { list-style: none; margin: 0.6rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
-.audience-stats-list li { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
-.audience-stats-list li > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Pre-set answer next to Open button. */
+.open-preset-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-start; }
+.preset-box { flex: 1 1 280px; min-width: min(280px, 100%); border: 1px solid var(--panel-border); border-radius: 12px; padding: 0.7rem 0.8rem; background: rgba(255, 255, 255, 0.03); }
+.preset-box h3 { font-size: 0.85rem; margin: 0 0 0.25rem; color: var(--muted); }
+.preset-box p.muted { font-size: 0.8rem; margin: 0 0 0.5rem; }
+.preset-field { display: grid; gap: 0.4rem; }
+.preset-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+.preset-options { margin-top: 0.25rem; }
+.open-actions { flex: 1 1 220px; align-content: flex-start; }

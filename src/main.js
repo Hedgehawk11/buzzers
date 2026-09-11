@@ -7252,71 +7252,6 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   `;
 }
 
-// Audience player-stats panel — derived only (scores + buzz counts + log
-// hits). Capped to 8 rows so the 250ms audience poll stays cheap.
-function renderAudienceStatsPanel(settings, players, scores) {
-  const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const kicked = new Set(settings.kickedPlayerIds || []);
-  const eligible = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && !kicked.has(p.id));
-  if (eligible.length === 0) return "";
-  const round = getRound();
-  const log = getLog();
-  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
-  const hitsByKey = {};
-  log.forEach((entry) => {
-    if (Number(entry.awardedDelta || 0) > 0 && entry.scoreKey) {
-      hitsByKey[entry.scoreKey] = (hitsByKey[entry.scoreKey] || 0) + 1;
-    }
-  });
-  const buzzesByDevice = {};
-  Object.entries(round.buzzCounts || {}).forEach(([key, perOption]) => {
-    const parsed = parseCoopScoreKey(key);
-    const deviceId = parsed ? parsed.deviceId : key;
-    const n = Object.values(perOption || {}).reduce((sum, v) => sum + (Number(v) || 0), 0);
-    buzzesByDevice[deviceId] = (buzzesByDevice[deviceId] || 0) + n;
-  });
-  // Fall back to log buzz counts when rebuzz is off (buzzCounts stays empty).
-  log.forEach((entry) => {
-    if (entry.type !== "buzz" || !entry.playerId) return;
-    if (buzzesByDevice[entry.playerId] === undefined) buzzesByDevice[entry.playerId] = 0;
-  });
-  log.forEach((entry) => {
-    if (entry.type === "buzz" && entry.playerId && !(entry.playerId in buzzesByDevice)) buzzesByDevice[entry.playerId] = 1;
-    else if (entry.type === "buzz" && entry.playerId && round.buzzCounts && !round.buzzCounts[entry.playerId] && !round.buzzCounts[entry.scoreKey]) {
-      buzzesByDevice[entry.playerId] = (buzzesByDevice[entry.playerId] || 0) + 0;
-    }
-  });
-
-  let rows = [];
-  if (isCoopMode(settings)) {
-    rows = eligible.map((p) => {
-      const total = getCoopGroupTotal(p.id, scores);
-      const buzzes = buzzesByDevice[p.id] || log.filter((e) => e.playerId === p.id && e.type === "buzz").length;
-      const keys = getScoreKeysForDevice(p.id, settings, assignments);
-      const hits = keys.reduce((sum, k) => sum + (hitsByKey[k] || 0), 0);
-      return { name: getCoopGroupName(p.id, getPlayerName(p)), score: total, buzzes, hits };
-    });
-  } else {
-    rows = eligible.map((p) => {
-      const key = getScoreKeyForPlayer(p.id, settings, assignments);
-      const buzzes = buzzesByDevice[p.id] || buzzesByDevice[key] || log.filter((e) => e.playerId === p.id && e.type === "buzz").length;
-      return { name: getPlayerName(p), score: Number(scores[key] || 0), buzzes, hits: hitsByKey[key] || 0 };
-    });
-  }
-  rows = rows.sort((a, b) => b.score - a.score).slice(0, 8);
-  const items = rows
-    .map(({ name, score, buzzes, hits }, index) => `<li><span>${getRankBadgeHtml(index + 1)}${escapeHtml(name)}</span><span class="muted">${buzzes} buzz${buzzes === 1 ? "" : "es"} • ${hits} hit${hits === 1 ? "" : "s"}</span><strong>${score}</strong></li>`)
-    .join("");
-  return `
-    <section class="card audience-card audience-stats-card">
-      <p class="prejoin-kicker">${getSnark("audience.stats.kicker", "Player stats")}</p>
-      <h2>${getSnark("audience.stats.title", "Buzzes & hits")}</h2>
-      <ul class="audience-stats-list">${items}</ul>
-    </section>
-  `;
-}
-
 function renderRoomCodeModal(roomCode) {
   return `
     <div class="room-code-modal-overlay" data-room-code-overlay>
@@ -7336,8 +7271,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isFibbageMode()) return renderFibbageAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
-  const showStats = true;
-  const mainColumns = showScores || showScrews || showStats ? "audience-grid" : "audience-grid audience-grid-single";
+  const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
     ? renderAudienceRoulettePanel(settings, round, players)
     : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
@@ -7370,7 +7304,6 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
       <section class="${mainColumns}">
         ${primaryPanel}
         ${showScores ? renderScores(players, scores) : ""}
-        ${renderAudienceStatsPanel(settings, players, scores)}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
       ${showRoomCodeModal ? renderRoomCodeModal(roomCode) : ""}
@@ -7613,6 +7546,29 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
       : Array.isArray(round.correctOptions) && round.correctOptions.length > 0);
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
+  // Pre-set correct answer lives next to the Open button so hosts set it
+  // right before opening (auto-rules when present, manual ruling otherwise).
+  const presetCorrectAnswerHtml = settings.inputMode === "text"
+    ? `<label class="preset-field">Correct answer text
+         <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
+         <div class="preset-actions">
+           <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
+           <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
+         </div>
+       </label>`
+    : `<div class="preset-field">
+         <span class="muted">Correct options</span>
+         <div class="toggle-list preset-options">
+           ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
+             .map((opt) => {
+               const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
+               const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
+               return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+             })
+             .join("")}
+         </div>
+         <div class="preset-actions"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
+       </div>`;
 
   const statusText = {
     [ROUND_STATUSES.IDLE]: "Idle",
@@ -7724,33 +7680,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                       <p class="setting-helper">How the 4 choice buttons are arranged. Grid and list use 1–4 labels.</p>
                     </label>`
               }
-            </div>
-
-            <!-- Pre-set correct answer -->
-            <div style="margin-top:0.75rem">
-              <h3 style="font-size:0.85rem;margin:0 0 0.4rem;color:var(--muted)">Pre-set correct answer</h3>
-              <p class="muted" style="font-size:0.8rem">Auto-rule points when a player answers (wrong answers lose points).</p>
-              ${settings.inputMode === "text"
-                ? `<label style="margin-top:0.4rem">Correct answer text
-                     <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
-                     <div style="margin-top:0.4rem">
-                       <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
-                       <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
-                     </div>
-                   </label>`
-                : `<div style="margin-top:0.4rem">
-                     <span class="muted">Correct options</span>
-                     <div class="toggle-list" style="margin-top:0.4rem">
-                       ${Array.from({ length: settings.optionCount }, (_, i) => i + 1)
-                         .map((opt) => {
-                           const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
-                           const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
-                           return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
-                         })
-                         .join("")}
-                     </div>
-                     <div style="margin-top:0.4rem"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
-                   </div>`}
             </div>
 
             ${settings.inputMode === "text" ? "" : renderBuzzerToggles(settings, settingDisabledAttr)}
@@ -8000,15 +7929,22 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         </details>
       </div>
 
-      <!-- Action buttons -->
+      <!-- Action buttons + pre-set answer -->
       <div style="margin-top:1rem">
-        <div class="host-actions">
-          ${settings.scoringMode === "roulette"
-            ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
-            : ""}
-          <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
-          <button type="button" data-host-action="close">Close Buzzers</button>
-          <button type="button" data-host-action="reset">Reset Round</button>
+        <div class="open-preset-row">
+          <div class="preset-box">
+            <h3>Pre-set correct answer</h3>
+            <p class="muted">Auto-rule points when a player answers (wrong answers lose points).</p>
+            ${presetCorrectAnswerHtml}
+          </div>
+          <div class="host-actions open-actions">
+            ${settings.scoringMode === "roulette"
+              ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
+              : ""}
+            <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
+            <button type="button" data-host-action="close">Close Buzzers</button>
+            <button type="button" data-host-action="reset">Reset Round</button>
+          </div>
         </div>
         <div class="host-actions" style="margin-top:0.4rem">
           ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)

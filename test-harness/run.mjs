@@ -720,11 +720,11 @@ check("kicked cannot buzz", kickedBuzz?.ok === false, JSON.stringify(kickedBuzz)
 check("host panel shows removed", _mount.innerHTML.includes("removed") || _mount.innerHTML.includes("Re-admit"), "kick row missing");
 await pk._store.rpc["cohost-action"]({ fn: "unkickPlayer", args: ["solo1"] }, coh);
 check("unkick clears", !(S().settings?.kickedPlayerIds || []).includes("solo1"), JSON.stringify(S().settings?.kickedPlayerIds));
-// --- audience hero + stats ---
+// --- audience hero (stats card removed) ---
 pk._store.self = pk._store.participants.disp1 || disp;
 await pk._store.rpc["cohost-action"]({ fn: "openBuzzers", args: [] }, coh);
 check("audience join hero", _mount.innerHTML.includes("room-code-badge") && _mount.innerHTML.includes("in the room"), "join hero missing");
-check("audience stats panel", _mount.innerHTML.includes("audience-stats-card"), "stats panel missing");
+check("audience stats panel removed", !_mount.innerHTML.includes("audience-stats-card"), "stats panel still present");
 // room-code modal: badge click opens, close button dismisses (rAF is async in stub)
 check("room code badge clickable", _mount.innerHTML.includes("data-room-code-open"), "badge click hook missing");
 clickBtn({}, "[data-room-code-open]");
