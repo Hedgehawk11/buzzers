@@ -1441,8 +1441,12 @@ function getRouletteFinalValue(roulette) {
 }
 
 // =============================================================================
-// Roulette animation — re-renders every 500 ms while roulette is active
-// Now uses scheduleRender and auto-cleans when roulette ends.
+// Roulette animation — re-renders every 500 ms while roulette is active.
+// The interval persists for the whole session (a cheap status check when
+// idle) so EVERY screen animates every phase. It used to self-clear the
+// first time it saw a non-roulette status — i.e. 500ms after login — so only
+// the host (restarted via startRoulettePhase) ever animated and all other
+// screens froze on the first frame. Start stays idempotent.
 // =============================================================================
 function startRouletteAnimationLoop() {
   if (rouletteAnimationInterval) {
@@ -1451,9 +1455,6 @@ function startRouletteAnimationLoop() {
   rouletteAnimationInterval = setInterval(() => {
     if (getRound().status === ROUND_STATUSES.ROULETTE) {
       scheduleRender(render);
-    } else {
-      clearInterval(rouletteAnimationInterval);
-      rouletteAnimationInterval = null;
     }
   }, 500);
 }
@@ -7996,7 +7997,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
         ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
         ${settings.allowScrewing && settings.reopenBuzzersAfterScrew ? "<span>Buzzers reopen with the remaining time after a screw.</span>" : ""}
-        ${round.status === ROUND_STATUSES.ROULETTE ? "<span>Pick-a-value is running.</span>" : ""}
+        ${round.status === ROUND_STATUSES.ROULETTE && round.roulette?.active
+          ? `<span>Pick-a-value: <strong>${getRouletteFrame(round.roulette).value}</strong> · ${Array.isArray(round.roulette.completedPlayerIds) ? round.roulette.completedPlayerIds.length : 0}/${getRouletteExpectedCount(round.roulette)} locked</span>`
+          : ""}
+        ${round.status === ROUND_STATUSES.ROULETTE && !round.roulette?.active ? "<span>Pick-a-value is running.</span>" : ""}
         ${settings.teamModeEnabled && missingTeamAssignments
           ? "<span>Assign every player to a team before opening buzzers.</span>"
           : ""}
@@ -8167,8 +8171,8 @@ function renderCoopScores(players, scores, settings, controllerId, producerIds, 
   return `
     <section class="card score-card ${extraClass}">
       <h2>${getSnark("shared.scores.coopTitle", "Group Scores")}</h2>
-      <ul class="coop-group-list">${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
       ${allianceTotals ? `<h3>${getSnark("shared.scores.allianceTotalsTitle", "Alliance totals")}</h3><ul>${allianceTotals}</ul>` : ""}
+      <ul class="coop-group-list">${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
     </section>
   `;
 }
@@ -8239,8 +8243,8 @@ function renderScores(players, scores, extraClass = "") {
   return `
     <section class="card score-card ${extraClass}">
       <h2>${settings.teamModeEnabled ? getSnark("shared.scores.playerScoresTitle", "Player Scores") : getSnark("shared.scores.scoresTitle", "Scores")}</h2>
-      <ul>${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
       ${teamTotals ? `<h3>${getSnark("shared.scores.allianceTotalsTitle", "Alliance totals")}</h3><ul>${teamTotals}</ul>` : ""}
+      <ul>${items || `<li>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
     </section>
   `;
 }

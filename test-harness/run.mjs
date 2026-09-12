@@ -629,6 +629,7 @@ await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["valueSelectionMethod", "roulette"] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "startRoulettePhase", args: [] }, prod);
 check("roulette starts", S().round?.status === "roulette", S().round?.status);
+check("host panel shows live pick-a-value", _mount.innerHTML.includes("Pick-a-value:"), `html len=${_mount.innerHTML.length}`);
 const frozenCount = (S().round?.roulette?.expectedPlayerIds || []).length;
 const late = pk.makePlayer("late1", "Late");
 pk._store.participants.late1 = late;
@@ -751,6 +752,15 @@ for (const pid of Object.keys(pk._store.participants)) {
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 const eggShared = await pk._store.rpc.buzz({ answerText: "fuck you" }, solo);
 check("easter egg blocked in shared team mode", eggShared?.easterEgg?.id !== "f-you" && eggShared?.ok === true, JSON.stringify(eggShared?.easterEgg));
+// alliance totals render above player scores on the scorecard
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "alliance"] }, prod);
+{
+  const html = _mount.innerHTML;
+  const totalsIdx = html.indexOf("Alliance totals");
+  const playerIdx = html.indexOf('data-score-key="solo1"');
+  check("alliance totals above player scores", totalsIdx !== -1 && playerIdx !== -1 && totalsIdx < playerIdx, `totals=${totalsIdx} player=${playerIdx}`);
+}
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);
