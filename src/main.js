@@ -277,8 +277,8 @@ function isTeamSelectActive() {
 
 // Prune stale/deleted players from team assignment map
 function normalizeTeamAssignments(assignments, players, controllerId) {
-  const cohostIds = getSafeState("cohostIds", []);
-  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  const producerIds = getSafeState("producerIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(id))));
   const normalized = {};
   Object.entries(assignments || {}).forEach(([playerId, teamColor]) => {
     if (validIds.has(playerId) && TEAM_COLORS.includes(String(teamColor))) {
@@ -334,9 +334,9 @@ function getTeamMembers(teamColor, players = currentParticipants(), assignments 
     return [];
   }
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const kicked = new Set(getSettings().kickedPlayerIds || []);
-  return players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id) && assignments[player.id] === teamColor);
+  return players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id) && assignments[player.id] === teamColor);
 }
 
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
@@ -344,8 +344,8 @@ function hasUnassignedTeamPlayers(settings = getSettings(), players = currentPar
     return false;
   }
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const activePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const activePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   return activePlayers.some((player) => !getPlayerTeamColor(player.id, assignments));
 }
 
@@ -546,8 +546,8 @@ function isOptionEnabled(settings, option) {
 }
 
 function normalizeDisabledPlayerIds(disabledIds, players, controllerId) {
-  const cohostIds = getSafeState("cohostIds", []);
-  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  const producerIds = getSafeState("producerIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(id))));
   return [...new Set((disabledIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
 }
 
@@ -567,8 +567,8 @@ function isPlayerBuzzerEnabled(settings, playerId) {
 // Per-player host powers — kicked players, screw blocks, score keys
 // =============================================================================
 function normalizeKickedPlayerIds(kickedIds, players, controllerId) {
-  const cohostIds = getSafeState("cohostIds", []);
-  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  const producerIds = getSafeState("producerIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(id))));
   return [...new Set((kickedIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
 }
 
@@ -579,8 +579,8 @@ function isPlayerKicked(playerId, settings = getSettings()) {
 }
 
 function normalizeScrewBlockedIds(blockedIds, players, controllerId) {
-  const cohostIds = getSafeState("cohostIds", []);
-  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(id))));
+  const producerIds = getSafeState("producerIds", []);
+  const validIds = new Set(players.map((player) => player.id).filter((id) => id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(id))));
   return [...new Set((blockedIds || []).filter((id) => typeof id === "string" && validIds.has(id)))];
 }
 
@@ -615,11 +615,11 @@ function getPrimaryScoreKeyForDevice(playerId, settings = getSettings(), assignm
 
 function getEligibleBuzzerPlayerIds(settings) {
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const devices = currentParticipants().filter(
     (p) =>
       p.id !== controllerId &&
-      !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) &&
+      !(Array.isArray(producerIds) && producerIds.includes(p.id)) &&
       isPlayerBuzzerEnabled(settings, p.id)
   );
   if (!isCoopMode(settings)) return devices.map((p) => p.id);
@@ -979,20 +979,20 @@ function isControllerPlayer() {
 
 function isPlayerExcluded(playerId) {
   if (playerId === getControllerId()) return true;
-  const cohostIds = getSafeState("cohostIds", []);
-  return Array.isArray(cohostIds) && cohostIds.includes(playerId);
+  const producerIds = getSafeState("producerIds", []);
+  return Array.isArray(producerIds) && producerIds.includes(playerId);
 }
 
-function isCohost() {
-  const cohostIds = getSafeState("cohostIds", []);
-  return Array.isArray(cohostIds) && cohostIds.includes(me()?.id);
+function isProducer() {
+  const producerIds = getSafeState("producerIds", []);
+  return Array.isArray(producerIds) && producerIds.includes(me()?.id);
 }
 
 function hasHostPrivileges() {
-  return isHost() || isCohost();
+  return isHost() || isProducer();
 }
 
-async function cohostDispatch(fnName, ...args) {
+async function producerDispatch(fnName, ...args) {
   if (isHost()) {
     const     dispatch = {
       openBuzzers, closeBuzzers, resetRound, resetScrews,
@@ -1009,9 +1009,9 @@ async function cohostDispatch(fnName, ...args) {
     dispatch[fnName]?.(...args);
     return;
   }
-  if (isCohost()) {
+  if (isProducer()) {
     try {
-      await RPC.call("cohost-action", { fn: fnName, args }, RPC.Mode.HOST);
+      await RPC.call("producer-action", { fn: fnName, args }, RPC.Mode.HOST);
     } catch {
       // ignore RPC errors — the host tick will re-render if needed
     }
@@ -1041,8 +1041,8 @@ function canBuzz(playerId, option) {
   if (deviceId === controllerId) {
     return false;
   }
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(deviceId)) {
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(deviceId)) {
     return false;
   }
   if (isPlayerKicked(deviceId, settings)) {
@@ -1298,7 +1298,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     teamSelect: getTeamSelect(),
     pendingLogId,
     controllerId: getControllerId(),
-    cohostIds: getSafeState("cohostIds", []),
+    producerIds: getSafeState("producerIds", []),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     bingo: (() => {
@@ -1382,8 +1382,8 @@ function getRouletteFrame(roulette, tick = null) {
 }
 
 function getRoulettePlayers() {
-  const cohostIds = getSafeState("cohostIds", []);
-  return currentParticipants().filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  return currentParticipants().filter((player) => player.id !== getControllerId() && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
 }
 
 function isRoulettePlayerAllowed(roulette, playerId) {
@@ -1391,8 +1391,8 @@ function isRoulettePlayerAllowed(roulette, playerId) {
     return false;
   }
   const settings = getSettings();
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) {
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(playerId)) {
     return false;
   }
   if (settings.teamModeEnabled) {
@@ -1572,7 +1572,7 @@ function maybeFinalizeRoulettePhase() {
 // Host-only: transition from IDLE to ROULETTE (or directly to OPEN if no players)
 function startRoulettePhase() {
   if (!isHost()) {
-    if (isCohost()) { RPC.call("cohost-action", { fn: "startRoulettePhase", args: [] }, RPC.Mode.HOST); return { ok: true }; }
+    if (isProducer()) { RPC.call("producer-action", { fn: "startRoulettePhase", args: [] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can start pick-a-value." };
   }
 
@@ -1717,7 +1717,7 @@ function renderRoulettePanel(settings, round, mePlayer) {
     : getSnark("player.roulette.waitingPlayers", "Waiting for players.");
   // Coopertition: telegraph this device's rep (last-correct slot) with dance/highlight.
   let coopRepLine = "";
-  if (isCoopMode(settings) && !isControllerPlayer() && !isCohost()) {
+  if (isCoopMode(settings) && !isControllerPlayer() && !isProducer()) {
     const repKey = getRouletteRepKeyForDevice(roulette, mePlayer.id);
     const repSlot = parseCoopScoreKey(repKey)?.slot ?? 0;
     const repName = getCoopSlotName(mePlayer.id, repSlot, getPlayerName(mePlayer));
@@ -1750,7 +1750,7 @@ function renderRoulettePanel(settings, round, mePlayer) {
 // =============================================================================
 function updateScoresForLogEntry(logId, newAwardedDelta) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "updateScoresForLogEntry", args: [logId, newAwardedDelta] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "updateScoresForLogEntry", args: [logId, newAwardedDelta] }, RPC.Mode.HOST);
     return;
   }
   const log = getLog();
@@ -1930,7 +1930,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
 // Force-set a delta (used by the F-You easter egg penalty)
 function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "resolveLogEntryWithForcedDelta", args: [logId, forcedDelta] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "resolveLogEntryWithForcedDelta", args: [logId, forcedDelta] }, RPC.Mode.HOST);
     return;
   }
 
@@ -2333,7 +2333,7 @@ function hostHandleBuzz(player, payload) {
 // Player calls this to send their buzz to the host via RPC
 // =============================================================================
 async function submitResponse(payload) {
-  if (isControllerPlayer() || isCohost()) {
+  if (isControllerPlayer() || isProducer()) {
     return;
   }
   try {
@@ -2363,7 +2363,7 @@ async function submitResponse(payload) {
 // =============================================================================
 function openBuzzers() {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
     return;
   }
   console.log("openBuzzers: host triggered");
@@ -2450,7 +2450,7 @@ function openBuzzers() {
 
 // Immediately close buzzers mid-round
 function closeBuzzers() {
-  if (!isHost()) { if (isCohost()) RPC.call("cohost-action", { fn: "closeBuzzers", args: [] }, RPC.Mode.HOST); return; }
+  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "closeBuzzers", args: [] }, RPC.Mode.HOST); return; }
   console.log("closeBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
@@ -2755,8 +2755,8 @@ function handleBingoBuzz(player, payload) {
 // coop so tracks are always per-slot there).
 function getDisOrDatTracks(settings = getSettings(), assignments = getTeamAssignments(), participants = null) {
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   if (!isCoopMode(settings)) {
     return [...new Set(list.map((p) => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
   }
@@ -2930,8 +2930,8 @@ function handleDisOrDatAnswer(player, payload) {
   }, true);
 
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   let activeTracks;
   if (dd.mode === "onePlayTimed") {
     activeTracks = coopActive
@@ -3003,8 +3003,8 @@ function nextDisOrDatQuestion() {
   const q = dd.currentQuestion;
   const nextResponses = { ...(dd.responses || {}) };
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
   const tracks = getDisOrDatTracks(settings, assignments, participants);
@@ -3033,8 +3033,8 @@ function finalizeDisOrDat() {
 
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
 
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
@@ -3185,8 +3185,8 @@ function getEligibleFibbageTrackKeys() {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const players = currentParticipants().filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const players = currentParticipants().filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   if (players.length === 0) return [];
   const tracks = [...new Set(players.filter((p) => !settings.teamModeEnabled || getPlayerTeamColor(p.id, assignments)).map((p) => getTeamTrackKey(p.id, settings, assignments)))];
   return tracks;
@@ -3344,7 +3344,7 @@ function finalizeFibbageScores() {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const participants = currentParticipants();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const eligibleTracks = getEligibleFibbageTrackKeys();
   const choices = fb.choices || [];
   const votes = fb.votes || {};
@@ -3439,8 +3439,8 @@ function handleFibbageLie(senderPlayer, payload) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const trackKey = getTeamTrackKey(senderPlayer.id, settings, assignments);
   if (senderPlayer.id === getControllerId()) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot lie.") };
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id)) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot lie.") };
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(senderPlayer.id)) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot lie.") };
   if (settings.teamModeEnabled && !getPlayerTeamColor(senderPlayer.id, assignments)) return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   if (fb.lies[trackKey] !== undefined) return { ok: false, reason: getSnark("player.fibbage.alreadyLied", "You already submitted a lie.") };
   if (fb.blocked[trackKey]) return { ok: false, reason: getSnark("player.fibbage.blocked", "Your lie was blocked.") };
@@ -3469,8 +3469,8 @@ function handleFibbageVote(senderPlayer, payload) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   const trackKey = getTeamTrackKey(senderPlayer.id, settings, assignments);
   if (senderPlayer.id === getControllerId()) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot vote.") };
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id)) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot vote.") };
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(senderPlayer.id)) return { ok: false, reason: getSnark("player.fibbage.notPlayer", "Host cannot vote.") };
   if (settings.teamModeEnabled && !getPlayerTeamColor(senderPlayer.id, assignments)) return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
   if (fb.votes[trackKey] !== undefined) return { ok: false, reason: getSnark("player.fibbage.alreadyVoted", "You already voted.") };
   const idx = Number(payload?.choiceIdx);
@@ -3516,7 +3516,7 @@ function handleFibbageTick() {
 // =============================================================================
 function resetRound() {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "resetRound", args: [] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "resetRound", args: [] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -3577,7 +3577,7 @@ function resetRound() {
 // =============================================================================
 function initiateScrew(screwerId) {
   if (!isHost()) {
-    if (isCohost()) { RPC.call("cohost-action", { fn: "initiateScrew", args: [screwerId] }, RPC.Mode.HOST); return { ok: true }; }
+    if (isProducer()) { RPC.call("producer-action", { fn: "initiateScrew", args: [screwerId] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can initiate screw." };
   }
   const round = getRound();
@@ -3639,7 +3639,7 @@ function initiateScrew(screwerId) {
   return { ok: true, message: getSnark("player.screw.initiated", `${getPlayerName(screwer)} initiated a screw.`, { player: getPlayerName(screwer) }) };
 }
 
-// Host/co-host initiates a screw without needing allowScrewing or screw cap
+// Host/producer initiates a screw without needing allowScrewing or screw cap
 function hostInitiateScrew() {
   if (!hasHostPrivileges()) return;
   if (isCoopMode()) {
@@ -3688,7 +3688,7 @@ function hostInitiateScrew() {
 // Host selects the target player being screwed
 function selectScrewee(screweeId) {
   if (!isHost()) {
-    if (isCohost()) { RPC.call("cohost-action", { fn: "selectScrewee", args: [screweeId] }, RPC.Mode.HOST); return { ok: true }; }
+    if (isProducer()) { RPC.call("producer-action", { fn: "selectScrewee", args: [screweeId] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can select screwee." };
   }
   const round = getRound();
@@ -3712,9 +3712,9 @@ function selectScrewee(screweeId) {
   if (screwee.id === round.screw?.screwerId) {
     return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
   }
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(screwee.id)) {
-    return { ok: false, reason: "Cannot screw a co-host." };
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(screwee.id)) {
+    return { ok: false, reason: "Cannot screw a producer." };
   }
   const settings = getSettings();
   if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
@@ -3753,7 +3753,7 @@ function selectScrewee(screweeId) {
 // Start the 5-second screw countdown — only screwee can buzz during this window
 function startScrewTimer() {
   if (!isHost()) {
-    if (isCohost()) { RPC.call("cohost-action", { fn: "startScrewTimer", args: [] }, RPC.Mode.HOST); return { ok: true }; }
+    if (isProducer()) { RPC.call("producer-action", { fn: "startScrewTimer", args: [] }, RPC.Mode.HOST); return { ok: true }; }
     return { ok: false, reason: "Only host can start screw timer." };
   }
   const round = getRound();
@@ -3793,7 +3793,7 @@ function startScrewTimer() {
 // End the screw and increment the screw-use counter
 function closeScrewMode() {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "closeScrewMode", args: [] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "closeScrewMode", args: [] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -3831,7 +3831,7 @@ function closeScrewMode() {
 // Reset the screw counter (e.g. between games)
 function resetScrews() {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "resetScrews", args: [] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "resetScrews", args: [] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -4009,11 +4009,11 @@ function hostTick() {
 function migrateScoresForCoopToggle(enable) {
   const players = currentParticipants();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const scores = { ...getScores() };
   const rosters = { ...getCoopRosters() };
   players.forEach((player) => {
-    if (player.id === controllerId || (Array.isArray(cohostIds) && cohostIds.includes(player.id))) return;
+    if (player.id === controllerId || (Array.isArray(producerIds) && producerIds.includes(player.id))) return;
     if (enable) {
       if (!rosters[player.id] || !Array.isArray(rosters[player.id].slots)) {
         const name = getPlayerName(player);
@@ -4047,9 +4047,9 @@ function handleCoopRoster(senderPlayer, payload) {
   if (senderPlayer.id === getControllerId()) {
     return { ok: false, reason: "The host does not need a group." };
   }
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id)) {
-    return { ok: false, reason: "Co-hosts do not need a group." };
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(senderPlayer.id)) {
+    return { ok: false, reason: "Producers do not need a group." };
   }
   const existing = getCoopRoster(senderPlayer.id);
   const settings = getSettings();
@@ -4107,7 +4107,7 @@ function handleCoopRoster(senderPlayer, payload) {
 // =============================================================================
 function setHostSetting(key, value) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "setHostSetting", args: [key, value] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "setHostSetting", args: [key, value] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -4307,7 +4307,7 @@ function setHostSetting(key, value) {
 // =============================================================================
 function toggleBuzzerOption(option) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "toggleBuzzerOption", args: [option] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "toggleBuzzerOption", args: [option] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -4342,7 +4342,7 @@ function toggleBuzzerOption(option) {
 // Host sets the correct text answer
 function setCorrectAnswerValue(val) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "setCorrectAnswerValue", args: [val] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "setCorrectAnswerValue", args: [val] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -4353,7 +4353,7 @@ function setCorrectAnswerValue(val) {
 
 function clearCorrectAnswerValue() {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "clearCorrectAnswerValue", args: [] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "clearCorrectAnswerValue", args: [] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -4363,7 +4363,7 @@ function clearCorrectAnswerValue() {
 
 function toggleCorrectOption(opt) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "toggleCorrectOption", args: [opt] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "toggleCorrectOption", args: [opt] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -4381,7 +4381,7 @@ function toggleCorrectOption(opt) {
 // Host enables/disables a specific player's ability to buzz
 function togglePlayerBuzzer(playerId) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "togglePlayerBuzzer", args: [playerId] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "togglePlayerBuzzer", args: [playerId] }, RPC.Mode.HOST);
     return;
   }
 
@@ -4412,7 +4412,7 @@ function togglePlayerBuzzer(playerId) {
 // Host mutes/unmutes a single coop slot (whole devices mute via togglePlayerBuzzer).
 function toggleCoopSlot(coopKey) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "toggleCoopSlot", args: [coopKey] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "toggleCoopSlot", args: [coopKey] }, RPC.Mode.HOST);
     return;
   }
   const parsed = parseCoopScoreKey(coopKey);
@@ -4471,7 +4471,7 @@ function pushManualLogEntry(playerId, scoreKey, delta, kind) {
 
 function adjustPlayerScore(playerId, delta) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "adjustPlayerScore", args: [playerId, delta] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "adjustPlayerScore", args: [playerId, delta] }, RPC.Mode.HOST);
     return;
   }
   const players = currentParticipants();
@@ -4495,7 +4495,7 @@ function adjustPlayerScore(playerId, delta) {
 
 function resetPlayerScore(playerId) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "resetPlayerScore", args: [playerId] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "resetPlayerScore", args: [playerId] }, RPC.Mode.HOST);
     return;
   }
   const players = currentParticipants();
@@ -4519,7 +4519,7 @@ function resetPlayerScore(playerId) {
 
 function setCustomPlayerName(playerId, name) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "setCustomPlayerName", args: [playerId, name] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "setCustomPlayerName", args: [playerId, name] }, RPC.Mode.HOST);
     return;
   }
   const players = currentParticipants();
@@ -4535,14 +4535,14 @@ function setCustomPlayerName(playerId, name) {
 
 function kickPlayer(playerId) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "kickPlayer", args: [playerId] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "kickPlayer", args: [playerId] }, RPC.Mode.HOST);
     return;
   }
   const players = currentParticipants();
   const controllerId = getControllerId();
   if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
-  const cohostIds = getSafeState("cohostIds", []);
-  if (Array.isArray(cohostIds) && cohostIds.includes(playerId)) return;
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(playerId)) return;
   const settings = getSettings();
   const next = [...new Set([...(settings.kickedPlayerIds || []), playerId])];
   setState("settings", { ...settings, kickedPlayerIds: normalizeKickedPlayerIds(next, players, controllerId) }, true);
@@ -4572,7 +4572,7 @@ function kickPlayer(playerId) {
 
 function unkickPlayer(playerId) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "unkickPlayer", args: [playerId] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "unkickPlayer", args: [playerId] }, RPC.Mode.HOST);
     return;
   }
   const settings = getSettings();
@@ -4583,7 +4583,7 @@ function unkickPlayer(playerId) {
 
 function setPlayerScrewBlocked(playerId, blocked) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerScrewBlocked", args: [playerId, blocked] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "setPlayerScrewBlocked", args: [playerId, blocked] }, RPC.Mode.HOST);
     return;
   }
   const players = currentParticipants();
@@ -4598,7 +4598,7 @@ function setPlayerScrewBlocked(playerId, blocked) {
 
 function refundPlayerScrew(playerId) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "refundPlayerScrew", args: [playerId] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "refundPlayerScrew", args: [playerId] }, RPC.Mode.HOST);
     return;
   }
   const round = getRound();
@@ -4634,7 +4634,7 @@ function applyTeamAssignment(playerId, teamColor) {
 
 function setPlayerTeam(playerId, teamColor) {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "setPlayerTeam", args: [playerId, teamColor] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "setPlayerTeam", args: [playerId, teamColor] }, RPC.Mode.HOST);
     return;
   }
 
@@ -4644,15 +4644,15 @@ function setPlayerTeam(playerId, teamColor) {
 
 function randomizeTeams() {
   if (!isHost()) {
-    if (isCohost()) RPC.call("cohost-action", { fn: "randomizeTeams", args: [] }, RPC.Mode.HOST);
+    if (isProducer()) RPC.call("producer-action", { fn: "randomizeTeams", args: [] }, RPC.Mode.HOST);
     return;
   }
 
   const players = currentParticipants();
   const controllerId = getControllerId();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
 
   if (nonControllerPlayers.length === 0) {
     return;
@@ -4684,7 +4684,7 @@ function openTeamSelect() {
     return;
   }
   if (!isHost()) {
-    cohostDispatch("openTeamSelect");
+    producerDispatch("openTeamSelect");
     return;
   }
   if (getRound().status !== ROUND_STATUSES.IDLE) {
@@ -4702,7 +4702,7 @@ function closeTeamSelect() {
     return;
   }
   if (!isHost()) {
-    cohostDispatch("closeTeamSelect");
+    producerDispatch("closeTeamSelect");
     return;
   }
   setState("teamSelect", { ...getTeamSelect(), active: false, locked: false }, true);
@@ -4714,7 +4714,7 @@ function setTeamSelectLocked(locked) {
     return;
   }
   if (!isHost()) {
-    cohostDispatch("setTeamSelectLocked", locked);
+    producerDispatch("setTeamSelectLocked", locked);
     return;
   }
   setState("teamSelect", { ...getTeamSelect(), locked: Boolean(locked) }, true);
@@ -4726,7 +4726,7 @@ function setTeamSelectTeams(teamColors) {
     return;
   }
   if (!isHost()) {
-    cohostDispatch("setTeamSelectTeams", teamColors);
+    producerDispatch("setTeamSelectTeams", teamColors);
     return;
   }
   const enabledTeams = (Array.isArray(teamColors) ? teamColors : []).filter((c) => TEAM_COLORS.includes(String(c)));
@@ -4749,7 +4749,7 @@ function setTeamSelectLimit(value) {
     return;
   }
   if (!isHost()) {
-    cohostDispatch("setTeamSelectLimit", value);
+    producerDispatch("setTeamSelectLimit", value);
     return;
   }
   const maxPerTeam = Math.max(0, Math.min(42, parseInt(value, 10) || 0));
@@ -4761,8 +4761,8 @@ function setTeamSelectLimit(value) {
 function handleSelectTeam(senderPlayer, teamColor) {
   const settings = getSettings();
   const teamSelect = getTeamSelect();
-  const cohostIds = getSafeState("cohostIds", []);
-  if (senderPlayer.id === getControllerId() || (Array.isArray(cohostIds) && cohostIds.includes(senderPlayer.id))) {
+  const producerIds = getSafeState("producerIds", []);
+  if (senderPlayer.id === getControllerId() || (Array.isArray(producerIds) && producerIds.includes(senderPlayer.id))) {
     return { ok: false, reason: getSnark("player.teamSelect.notOpen", "Team selection is not open.") };
   }
   if (!settings.teamModeEnabled || !teamSelect.active) {
@@ -4865,9 +4865,9 @@ function ensureHostInit() {
       setState("coopRosters", pruned, true);
     }
     // Prune score keys of departed devices (pid + coop:pid:*). Live keys for
-    // the controller/co-hosts are kept; team:* legacy balances are untouched.
+    // the controller/producers are kept; team:* legacy balances are untouched.
     try {
-      const keepIds = new Set([...activeIds, getControllerId(), ...(getSafeState("cohostIds", []) || [])]);
+      const keepIds = new Set([...activeIds, getControllerId(), ...(getSafeState("producerIds", []) || [])]);
       const scores = getScores();
       const prunedScores = {};
       Object.entries(scores || {}).forEach(([key, value]) => {
@@ -4918,18 +4918,18 @@ function ensureHostInit() {
   if (!getState("fibbage")) {
     setState("fibbage", freshFibbageState(), true);
   }
-  if (!getState("cohostPassword")) {
+  if (!getState("producerPassword")) {
     const password = String(Math.floor(10000 + Math.random() * 90000));
-    setState("cohostPassword", password, true);
+    setState("producerPassword", password, true);
   }
-  if (!getState("cohostIds")) {
-    setState("cohostIds", [], true);
+  if (!getState("producerIds")) {
+    setState("producerIds", [], true);
   } else {
-    const currentIds = getSafeState("cohostIds", []);
+    const currentIds = getSafeState("producerIds", []);
     const activeIds = currentParticipants().map((p) => p.id);
     const cleaned = Array.isArray(currentIds) ? currentIds.filter((id) => activeIds.includes(id)) : [];
     if (cleaned.length !== (Array.isArray(currentIds) ? currentIds.length : 0)) {
-      setState("cohostIds", cleaned, true);
+      setState("producerIds", cleaned, true);
     }
   }
   assignControllerIfNeeded();
@@ -5078,8 +5078,8 @@ function renderBingoHostPanel(settings, players) {
   const bingo = getBingo();
   const isWen = isWenDitHapnMode();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   if (!bingo.active) {
     const wordInput = isWen ? "" : `
       <label>
@@ -5175,7 +5175,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
     if (isMine) cls += " is-mine";
     return `<span class="${cls}">${item}</span>`;
   }).join("");
-  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isCohost() && activeViewer;
+  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isProducer() && activeViewer;
   const coopActive = isCoopMode(settings);
   const waitHint = bingo.active && bingo.cycling && settings.bingoAlternateViewers && isSharedTeam && !activeViewer
     ? `<p class="muted bingo-wait-hint">${getSnark("player.bingo.waitForTeammate", "Wait for your teammate to call the letter!")}</p>`
@@ -5194,7 +5194,7 @@ function renderBingoPlayerPanel(settings, mePlayer) {
       <h2>${isWen ? "Wen Dit Happn" : "Bingo"} ${teamPill}</h2>
       ${isWen ? "" : `<p class="muted">${getSnark("player.bingo.collectedLabel", "Collected")}: ${collected.length}/${items.length}</p>`}
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
-      ${coopActive && !isControllerPlayer() && !isCohost() ? renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz) : `
+      ${coopActive && !isControllerPlayer() && !isProducer() ? renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz) : `
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
         ${waitHint}
@@ -5261,10 +5261,10 @@ function renderBingoAudienceDisplay(settings, players) {
     return `<span class="${cls}">${item}</span>`;
   }).join("");
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
-  const visible = players.filter(p => !isAudienceDisplayClient() && p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const visible = players.filter(p => !isAudienceDisplayClient() && p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   let standings = "";
   if (isSharedTeam) {
     standings = TEAM_COLORS
@@ -5327,8 +5327,8 @@ function renderDisOrDatHostPanel(settings, players) {
   if (!hasHostPrivileges()) return "";
   const dd = getDisOrDat();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonController = players.filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
@@ -5504,7 +5504,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     return `<section class="card player-card"><h2>Dis or Dat</h2><p class="muted">${getSnark("player.disdat.waitingHost", "Waiting for the host to start...")}</p></section>`;
   }
 
-  if (isCoopMode(settings) && !isControllerPlayer() && !isCohost()) {
+  if (isCoopMode(settings) && !isControllerPlayer() && !isProducer()) {
     return renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePlay);
   }
 
@@ -5722,8 +5722,8 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
 function renderDisOrDatAudienceDisplay(settings, players) {
   const dd = getDisOrDat();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
-  const participants = players.filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const participants = players.filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const isTimed = dd.mode === "onePlayTimed" || dd.mode === "allPlayTimed";
@@ -5792,10 +5792,10 @@ function renderDisOrDatAudienceDisplay(settings, players) {
 // Fibbage — host / player / audience panels
 // =============================================================================
 function renderFibbageHostPanel(settings, players) {
-  if (!hasHostPrivileges()) return `<section class="card host-panel"><p>Co-hosts cannot control Fibbage. The host must manage it.</p></section>`;
+  if (!hasHostPrivileges()) return `<section class="card host-panel"><p>Producers cannot control Fibbage. The host must manage it.</p></section>`;
   const fb = getFibbage();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const eligibleTracks = getEligibleFibbageTrackKeys();
@@ -5977,8 +5977,8 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
   const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
   const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
   const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
-  if (isControllerPlayer() || isCohost()) {
-    return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Host/Co-host has no lie input.</p></section>`;
+  if (isControllerPlayer() || isProducer()) {
+    return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Host/Producer has no lie input.</p></section>`;
   }
   if (settings.teamModeEnabled && !myTeamColor) {
     return `<section class="card player-card"><h2>Fibbage</h2><p class="muted">${getSnark("player.buzzer.waitingTeamAssignment","Waiting For Team Assignment")}</p></section>`;
@@ -6157,13 +6157,13 @@ function renderFibbageAudienceDisplay(settings, players) {
 function renderTeamSelectPlayerPanel(settings, players, mePlayer) {
   const teamSelect = getTeamSelect();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const controllerId = getControllerId();
   const myTeam = getPlayerTeamColor(mePlayer.id, assignments);
   const maxPerTeam = Number(teamSelect.maxPerTeam) || 0;
   const teamCards = teamSelect.enabledTeams
     .map((teamColor) => {
-      const members = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
+      const members = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && assignments[player.id] === teamColor);
       const memberNames = members.length > 0
         ? members.map((p) => `<li>${escapeHtml(getPlayerName(p))}</li>`).join("")
         : `<li class="muted">${getSnark("player.teamSelect.emptyTeam", "No one here yet.")}</li>`;
@@ -6203,8 +6203,8 @@ function renderTeamSelectHostPanel(settings, round, players, controllerId) {
   const teamSelect = getTeamSelect();
   const maxPerTeam = Number(teamSelect.maxPerTeam) || 0;
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   const unassigned = nonControllerPlayers.filter((player) => !getPlayerTeamColor(player.id, assignments));
   const teamToggles = TEAM_COLORS
     .map((teamColor) => {
@@ -6295,12 +6295,12 @@ function renderTeamSelectHostPanel(settings, round, players, controllerId) {
 function renderTeamSelectAudienceDisplay(settings, players) {
   const teamSelect = getTeamSelect();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const controllerId = getControllerId();
   const maxPerTeam = Number(teamSelect.maxPerTeam) || 0;
   const teamColumns = teamSelect.enabledTeams
     .map((teamColor) => {
-      const members = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && assignments[player.id] === teamColor);
+      const members = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && assignments[player.id] === teamColor);
       const memberNames = members.length > 0
         ? members.map((p) => `<li>${escapeHtml(getPlayerName(p))}</li>`).join("")
         : `<li class="muted">${getSnark("audience.teamSelect.empty", "No one here yet.")}</li>`;
@@ -6606,7 +6606,7 @@ function renderCoopRoulettePanel(settings, round, mePlayer, count, group, editBt
 // (roulette, screw, buttons, text entry, etc.)
 // =============================================================================
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
-  if (isCoopMode(settings) && !isControllerPlayer() && !isCohost()) {
+  if (isCoopMode(settings) && !isControllerPlayer() && !isProducer()) {
     const gate = renderCoopGate(settings, mePlayer);
     if (gate) return gate;
   }
@@ -6614,8 +6614,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
-  // Host/co-host have the full host panel already — no buzzer card needed.
-  if (isControllerPlayer() || isCohost()) {
+  // Host/producer have the full host panel already — no buzzer card needed.
+  if (isControllerPlayer() || isProducer()) {
     return "";
   }
   if (isPlayerKicked(mePlayer.id, settings)) {
@@ -7001,12 +7001,12 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const kickedIds = new Set(settings.kickedPlayerIds || []);
   const buzzedPlayers = getBuzzedParticipants(round, players).filter((p) => !kickedIds.has(p.id));
   const coopActive = isCoopMode(settings);
   const buzzedLabels = coopActive ? getBuzzedCoopLabels(round, players) : [];
-  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kickedIds.has(player.id));
+  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kickedIds.has(player.id));
   const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
   const coopLeaderName = coopActive
     ? (round.winnerCoopKey ? getCoopControlName({ coopControl: round.winnerCoopKey }) || null : null) || buzzedLabels[0] || null
@@ -7191,7 +7191,7 @@ function isTabletTimerFlashing(cs) {
 
 function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
 
   // Bingo / Wen Dit Happn / Fibbage tablets handle separately
   if (isBingoMode()) {
@@ -7249,7 +7249,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   }
 
   const buzzedCount = (round.buzzedPlayerIds || []).length;
-  const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
+  const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
   const isScrewActive = round.screw?.active;
   const screwTimerMs = getScrewTimerMs(round);
 
@@ -7301,9 +7301,9 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
     ? renderAudienceRoulettePanel(settings, round, players)
     : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const kicked = new Set(settings.kickedPlayerIds || []);
-  const joinCount = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && !kicked.has(p.id)).length;
+  const joinCount = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && !kicked.has(p.id)).length;
   const roomCode = getRoomCode() || getSnark("audience.misc.roomFallback", "....");
   // Auto-popup when the room is empty; re-arms once players join. Explicit
   // open/close via the badge always wins over the auto behavior.
@@ -7355,8 +7355,8 @@ function renderBuzzerToggles(settings, settingDisabledAttr) {
 }
 
 function renderPlayerToggles(settings, players, controllerId, settingDisabledAttr) {
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   if (nonControllerPlayers.length === 0) {
     return `
       <div class="toggle-group">
@@ -7404,10 +7404,10 @@ function renderPlayerToggles(settings, players, controllerId, settingDisabledAtt
 }
 
 // Per-player host powers — score adjust/reset, rename, kick, screws.
-// One row per non-controller, non-cohost device.
+// One row per non-controller, non-producer device.
 function renderPerPlayerHostControls(settings, players, controllerId) {
-  const cohostIds = getSafeState("cohostIds", []);
-  const rows = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const rows = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   if (rows.length === 0) {
     return `
       <div class="toggle-group">
@@ -7474,8 +7474,8 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
   }
 
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   if (nonControllerPlayers.length === 0) {
     return `
       <div class="toggle-group team-setup-group">
@@ -7514,19 +7514,19 @@ function renderTeamAssignmentControls(settings, players, controllerId, settingDi
 }
 
 // =============================================================================
-// Renders the co-host list for the host to manage
+// Renders the producer list for the host to manage
 // =============================================================================
-function renderCohostList(players) {
-  const cohostIds = getSafeState("cohostIds", []);
-  if (!Array.isArray(cohostIds) || cohostIds.length === 0) {
-    return `<span class="muted">No co-hosts assigned.</span>`;
+function renderProducerList(players) {
+  const producerIds = getSafeState("producerIds", []);
+  if (!Array.isArray(producerIds) || producerIds.length === 0) {
+    return `<span class="muted">No producers assigned.</span>`;
   }
-  const rows = cohostIds
+  const rows = producerIds
     .map((id) => {
       const player = players.find((p) => p.id === id);
       const name = player ? getPlayerName(player) : "(disconnected)";
       const removeBtn = isHost()
-        ? `<button type="button" class="toggle-chip is-off" data-remove-cohost="${id}" style="margin-left:0.5rem">Remove</button>`
+        ? `<button type="button" class="toggle-chip is-off" data-remove-producer="${id}" style="margin-left:0.5rem">Remove</button>`
         : "";
       return `<div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.3rem"><span>${escapeHtml(name)}</span>${removeBtn}</div>`;
     })
@@ -7543,24 +7543,24 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   }
 
   if (isBingoMode()) {
-    if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control BINGO/Wen Dit Happn. The host must manage it. This is a technical restriction I think</p></section>`;
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control BINGO/Wen Dit Happn. The host must manage it. This is a technical restriction I think</p></section>`;
     return renderBingoHostPanel(settings, players);
   }
 
   if (isDisOrDatMode()) {
-    if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control Dis or Dat. The host must manage it.</p></section>`;
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Dis or Dat. The host must manage it.</p></section>`;
     return renderDisOrDatHostPanel(settings, players);
   }
 
   if (isFibbageMode()) {
-    if (!isHost()) return `<section class="card host-panel"><p>Co-hosts cannot control Fibbage. The host must manage it.</p></section>`;
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Fibbage. The host must manage it.</p></section>`;
     return renderFibbageHostPanel(settings, players);
   }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
-  const cohostIds = getSafeState("cohostIds", []);
-  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)));
+  const producerIds = getSafeState("producerIds", []);
+  const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const missingTeamAssignments = hasUnassignedTeamPlayers(settings, players, teamAssignments);
   // Coopertition without lock-after-buzz requires a pre-set answer to open.
@@ -7898,14 +7898,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
               <label>
-                Co-host password
-                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${hasHostPrivileges() ? escapeHtml(getSafeState("cohostPassword", "")) : "•••••"}</div>
-                <p class="setting-helper">Share this 5-digit code with your co-hosts (option to co-host under host menu).</p>
+                Producer password
+                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${hasHostPrivileges() ? escapeHtml(getSafeState("producerPassword", "")) : "•••••"}</div>
+                <p class="setting-helper">Share this 5-digit code with your producers (producer option under host menu).</p>
               </label>
               <label>
-                Co-hosts
+                Producers
                 <div style="margin-top:0.3rem">
-                  ${renderCohostList(players)}
+                  ${renderProducerList(players)}
                 </div>
               </label>
             </div>
@@ -8019,9 +8019,9 @@ function renderScrewNotice(round) {
     const isScrewer = round.screw?.screwerId === me()?.id;
     if (isScrewer) {
       const controllerId = getControllerId();
-      const cohostIds = getSafeState("cohostIds", []);
+      const producerIds = getSafeState("producerIds", []);
       const targets = currentParticipants()
-        .filter(p => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && p.id !== round.screw?.screwerId);
+        .filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && p.id !== round.screw?.screwerId);
       const targetButtons = targets.map(p =>
         `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`
       ).join("");
@@ -8099,10 +8099,10 @@ function renderLockedRuling(settings, pendingEntry) {
 // Coopertition scoreboard — group rows sorted by group total, each with its
 // sub-player breakdown (avatar, name, key hint, score). Removed slots stay
 // greyed in place; rank badges keep their 1st/2nd/3rd meaning on groups.
-function renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments, extraClass = "") {
+function renderCoopScores(players, scores, settings, controllerId, producerIds, assignments, extraClass = "") {
   const round = getRound();
   const kicked = new Set(settings.kickedPlayerIds || []);
-  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id));
+  const devices = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id));
   const groups = devices
     .map((player) => {
       const deviceId = player.id;
@@ -8176,13 +8176,13 @@ function renderCoopScores(players, scores, settings, controllerId, cohostIds, as
 function renderScores(players, scores, extraClass = "") {
   const settings = getSettings();
   const controllerId = getControllerId();
-  const cohostIds = getSafeState("cohostIds", []);
+  const producerIds = getSafeState("producerIds", []);
   const kicked = new Set(settings.kickedPlayerIds || []);
-  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(player.id)) && !kicked.has(player.id));
+  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (isCoopMode(settings)) {
-    return renderCoopScores(players, scores, settings, controllerId, cohostIds, assignments, extraClass);
+    return renderCoopScores(players, scores, settings, controllerId, producerIds, assignments, extraClass);
   }
 
   if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
@@ -8357,8 +8357,8 @@ function render() {
   if (isAudienceDisplayClient()) {
     const buzzedCount = (round.buzzedPlayerIds || []).length;
     const controllerId = controller?.id || getControllerId();
-    const cohostIds = getSafeState("cohostIds", []);
-    const totalPlayers = players.filter((p) => p.id !== controllerId && !(Array.isArray(cohostIds) && cohostIds.includes(p.id)) && isPlayerBuzzerEnabled(settings, p.id)).length;
+    const producerIds = getSafeState("producerIds", []);
+    const totalPlayers = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && isPlayerBuzzerEnabled(settings, p.id)).length;
     const timerRunning = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
     const allBuzzed = buzzedCount >= totalPlayers && totalPlayers > 0;
     // Use helper without mutating global inside render; keep global in sync via computed
@@ -8402,7 +8402,7 @@ function render() {
           </div>
           <div class="hero-meta">
             <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
-            ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
+            ${settings.teamModeEnabled && !isControllerPlayer() && !isProducer() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
             <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
           </div>
         </header>
@@ -8528,8 +8528,8 @@ function render() {
         </div>
         <div class="hero-meta">
           <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
-          ${isCohost() ? `<span class="cohost-badge">${getSnark("player.misc.cohostBadge", "Co-host")}</span>` : ""}
-          ${settings.teamModeEnabled && !isControllerPlayer() && !isCohost() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
+          ${isProducer() ? `<span class="producer-badge">${getSnark("player.misc.producerBadge", "Producer")}</span>` : ""}
+          ${settings.teamModeEnabled && !isControllerPlayer() && !isProducer() ? `<span>${getSnark("player.misc.allianceLabel", "Alliance")}: <strong>${myTeamColor || getSnark("player.misc.unassigned", "Unassigned")}</strong></span>` : ""}
           <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
         </div>
       </header>
@@ -8760,12 +8760,12 @@ function bindEvents() {
     if (!Number.isInteger(opt)) return;
     toggleCorrectOption(opt);
   }));
-  delegate("click", "[data-remove-cohost]", (e, btn) => {
+  delegate("click", "[data-remove-producer]", (e, btn) => {
     if (!isHost()) return;
-    const removeId = btn.dataset.removeCohost;
-    const current = getSafeState("cohostIds", []);
+    const removeId = btn.dataset.removeProducer;
+    const current = getSafeState("producerIds", []);
     if (Array.isArray(current) && current.includes(removeId)) {
-      setState("cohostIds", current.filter((id) => id !== removeId), true);
+      setState("producerIds", current.filter((id) => id !== removeId), true);
       scheduleRender(render);
     }
   });
@@ -8816,7 +8816,7 @@ function bindEvents() {
   delegate("click", "[data-bingo-exit]", requireHost(() => { endBingo(); setHostSetting("inputMode", "buttons"); }));
   delegate("pointerdown", "[data-bingo-buzz]", async (e, btn) => {
     e.preventDefault();
-    if (isControllerPlayer() || isCohost()) return;
+    if (isControllerPlayer() || isProducer()) return;
     const slotRaw = btn?.dataset?.coopSlot;
     const slot = slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw);
     await submitBingoBuzz(Number.isInteger(slot) ? slot : null);
@@ -8849,7 +8849,7 @@ function bindEvents() {
   delegate("click", "[data-disordat-reset]", requireHost(() => resetDisOrDat()));
   delegate("click", "[data-disordat-exit]", requireHost(() => exitDisOrDat()));
   delegate("click", "[data-disordat-answer]", async (e, btn) => {
-    if (isControllerPlayer() || isCohost()) return;
+    if (isControllerPlayer() || isProducer()) return;
     const q = Number(btn.dataset.q);
     const answer = btn.dataset.answer;
     const slotRaw = btn?.dataset?.coopSlot;
@@ -8865,7 +8865,7 @@ function bindEvents() {
     } catch { setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer.")); scheduleRender(render); }
   });
   delegate("click", "[data-disordat-claim]", async (e, btn) => {
-    if (isControllerPlayer() || isCohost()) return;
+    if (isControllerPlayer() || isProducer()) return;
     const q = Number(btn.dataset.q);
     const slotRaw = btn?.dataset?.coopSlot;
     await submitDisOrDatClaim(q, slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw));
@@ -8911,7 +8911,7 @@ function bindEvents() {
   delegate("click", "[data-fibbage-reset]", requireHost(() => resetFibbage()));
   delegate("click", "[data-fibbage-exit]", requireHost(() => exitFibbage()));
   delegate("click", "[data-fibbage-submit-lie]", async () => {
-    if (isControllerPlayer() || isCohost()) return;
+    if (isControllerPlayer() || isProducer()) return;
     const inp = (getApp() || app).querySelector("#fibbage-lie-entry");
     const lieText = String(inp?.value || "").trim();
     try {
@@ -8923,7 +8923,7 @@ function bindEvents() {
     scheduleRender(render);
   });
   delegate("click", "[data-fibbage-vote]", async (e, btn) => {
-    if (isControllerPlayer() || isCohost()) return;
+    if (isControllerPlayer() || isProducer()) return;
     const idx = Number(btn.dataset.fibbageVote);
     try {
       const res = await RPC.call("fibbage-vote", { choiceIdx: idx }, RPC.Mode.HOST);
@@ -8954,13 +8954,13 @@ function bindEvents() {
     const teamModeInput = mount.querySelector("#prejoin-team-mode");
     const chosenName = nameInput?.value?.trim() || "";
     const roomCode = roomInput?.value?.trim()?.toUpperCase() || "";
-    const cohostPasswordInput = mount.querySelector("#prejoin-cohost-password");
-    const cohostPassword = cohostPasswordInput?.value?.trim() || "";
+    const producerPasswordInput = mount.querySelector("#prejoin-producer-password");
+    const producerPassword = producerPasswordInput?.value?.trim() || "";
     if (mode !== "display" && mode !== "tablet_timer" && !chosenName) { renderPrejoinScreen(mode || "landing", "Please choose a player name."); return; }
-    if ((mode === "join" || mode === "cohost") && !roomCode) { renderPrejoinScreen(mode, "Enter a room code to join."); return; }
+    if ((mode === "join" || mode === "producer") && !roomCode) { renderPrejoinScreen(mode, "Enter a room code to join."); return; }
     if (mode === "display" && !roomCode) { renderPrejoinScreen("display", "Enter a room code for the display."); return; }
     if (mode === "tablet_timer" && !roomCode) { renderPrejoinScreen("tablet_timer", "Enter a room code for the timer display."); return; }
-    if (mode === "cohost" && !/^\d{5}$/.test(cohostPassword)) { renderPrejoinScreen("cohost", "Enter a valid 5-digit co-host password."); return; }
+    if (mode === "producer" && !/^\d{5}$/.test(producerPassword)) { renderPrejoinScreen("producer", "Enter a valid 5-digit producer password."); return; }
     if (mode !== "display" && mode !== "tablet_timer") {
       try { localStorage.setItem(NAME_KEY, chosenName); } catch {}
     }
@@ -8973,9 +8973,9 @@ function bindEvents() {
     if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
     await launchGame({
       playerName: mode === "display" ? "Audience Display" : mode === "tablet_timer" ? "Tablet Timer" : chosenName,
-      roomCode: mode === "join" || mode === "display" || mode === "tablet_timer" || mode === "cohost" ? roomCode : undefined,
+      roomCode: mode === "join" || mode === "display" || mode === "tablet_timer" || mode === "producer" ? roomCode : undefined,
       clientMode: mode === "display" ? "display" : mode === "tablet_timer" ? "tablet_timer" : "player",
-      cohostPassword: mode === "cohost" ? cohostPassword : undefined,
+      producerPassword: mode === "producer" ? producerPassword : undefined,
     });
   });
   // forms submit handled via submit listener below
@@ -9001,7 +9001,7 @@ function handleBingoSpaceKeydown(event) {
   if (!isBingoMode()) return;
   const bingo = getBingo();
   if (!bingo.active || !bingo.cycling) return;
-  if (isControllerPlayer() || isCohost() || isAudienceDisplayClient()) return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
   const self = me();
   if (!self?.id) return;
   const settings = getSettings();
@@ -9045,7 +9045,7 @@ function handleRouletteKeydown(event) {
 
 // Player submits their roulette stop (locks in current value)
 function submitRouletteStop() {
-  if (isControllerPlayer() || isCohost()) {
+  if (isControllerPlayer() || isProducer()) {
     return;
   }
 
@@ -9092,7 +9092,7 @@ function handleCoopBuzzKeydown(event) {
   const code = event?.code;
   if (code !== "KeyQ" && code !== "KeyB" && code !== "KeyP") return;
   if (isEditingControl()) return;
-  if (isControllerPlayer() || isCohost() || isAudienceDisplayClient()) return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
   if (!isCoopMode()) return;
   const self = me();
   if (!self?.id) return;
@@ -9135,7 +9135,7 @@ function handleCoopBuzzKeydown(event) {
 }
 
 async function submitBingoBuzz(slot = null) {
-  if (isControllerPlayer() || isCohost()) return;
+  if (isControllerPlayer() || isProducer()) return;
   const bState = getBingo();
   const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
   if (slot !== null && slot !== undefined) payload.coopSlot = slot;
@@ -9148,7 +9148,7 @@ async function submitBingoBuzz(slot = null) {
 }
 
 async function submitDisOrDatClaim(q, slot = null) {
-  if (isControllerPlayer() || isCohost()) return;
+  if (isControllerPlayer() || isProducer()) return;
   try {
     const result = await RPC.call("disordat-claim", { q, coopSlot: slot }, RPC.Mode.HOST);
     if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
@@ -9260,27 +9260,27 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 
             <div class="prejoin-actions">
               <button class="primary-action" type="submit">Host Game</button>
-              <button class="secondary-action" data-prejoin-switch="cohost" type="button">Cohost Instead</button>
+              <button class="secondary-action" data-prejoin-switch="producer" type="button">Join as producer Instead</button>
               <button class="secondary-action" data-prejoin-switch="join" type="button">Join Instead</button>
             </div>
           </form>
         </section>
       </main>
     `;
-  } else if (mode === "cohost") {
+  } else if (mode === "producer") {
     prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-join">
           <div class="prejoin-header">
             <button class="prejoin-back" data-prejoin-back type="button">Back</button>
             <div>
-              <p class="prejoin-kicker">Co-host game</p>
+              <p class="prejoin-kicker">Producer game</p>
               <h1>Enter room code &amp; password</h1>
-              <p class="muted">Ask the host for the room code and the 5-digit co-host password.</p>
+              <p class="muted">Ask the host for the room code and the 5-digit producer password.</p>
             </div>
           </div>
 
-          <form class="prejoin-form" data-prejoin-form="cohost">
+          <form class="prejoin-form" data-prejoin-form="producer">
             <label>
               Your name
               <input data-prejoin-input id="prejoin-name" type="text" maxlength="32" value="${escapeHtml(savedName)}" placeholder="Your name" />
@@ -9292,14 +9292,14 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             </label>
 
             <label>
-              Co-host password
-              <input data-prejoin-input id="prejoin-cohost-password" type="text" maxlength="5" placeholder="12345" />
+              Producer password
+              <input data-prejoin-input id="prejoin-producer-password" type="text" maxlength="5" placeholder="12345" />
             </label>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
 
             <div class="prejoin-actions">
-              <button class="primary-action" type="submit">Join as Co-host</button>
+              <button class="primary-action" type="submit">Join as Producer</button>
               <button class="secondary-action" data-prejoin-switch="host" type="button">Host Instead</button>
             </div>
           </form>
@@ -9438,12 +9438,12 @@ function renderPrejoinScreen(mode = "landing", error = "") {
 }
 
 // =============================================================================
-// Claim co-host status by sending the password to the host via RPC
+// Claim producer status by sending the password to the host via RPC
 // =============================================================================
-async function claimCohost(password, maxRetries = 15) {
+async function claimProducer(password, maxRetries = 15) {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const result = await RPC.call("claim-cohost", { password }, RPC.Mode.HOST);
+      const result = await RPC.call("claim-producer", { password }, RPC.Mode.HOST);
       if (result?.ok) return true;
     } catch {
       // host may not be ready yet
@@ -9456,7 +9456,7 @@ async function claimCohost(password, maxRetries = 15) {
 // =============================================================================
 // Game launch — insert coin into PlayroomKit, register RPC handlers, start loops
 // =============================================================================
-async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "player", cohostPassword: joinCohostPassword }) {
+async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "player", producerPassword: joinProducerPassword }) {
   if (gameLaunched) {
     return;
   }
@@ -9611,13 +9611,13 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     }
 
     // Otherwise, they're selecting a screwee — only the screwer (or a
-    // co-host) may pick the victim.
+    // producer) may pick the victim.
     if (!round.screw?.active) {
       return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress") };
     }
-    const cohostIds = getSafeState("cohostIds", []);
-    const isSenderCohost = Array.isArray(cohostIds) && cohostIds.includes(senderPlayer?.id);
-    if (senderPlayer?.id !== round.screw?.screwerId && !isSenderCohost) {
+    const producerIds = getSafeState("producerIds", []);
+    const isSenderProducer = Array.isArray(producerIds) && producerIds.includes(senderPlayer?.id);
+    if (senderPlayer?.id !== round.screw?.screwerId && !isSenderProducer) {
       return { ok: false, reason: "Only the screwer can pick a victim." };
     }
     return selectScrewee(screweeId);
@@ -9632,23 +9632,23 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return handleFibbageVote(senderPlayer, payload);
   });
 
-  RPC.register("claim-cohost", async (payload, senderPlayer) => {
+  RPC.register("claim-producer", async (payload, senderPlayer) => {
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
     }
-    const storedPassword = getSafeState("cohostPassword", "");
+    const storedPassword = getSafeState("producerPassword", "");
     if (payload?.password === storedPassword) {
-      const current = getSafeState("cohostIds", []);
+      const current = getSafeState("producerIds", []);
       if (!Array.isArray(current) || !current.includes(senderPlayer.id)) {
-        setState("cohostIds", Array.isArray(current) ? [...current, senderPlayer.id] : [senderPlayer.id], true);
+        setState("producerIds", Array.isArray(current) ? [...current, senderPlayer.id] : [senderPlayer.id], true);
         render();
       }
       return { ok: true };
     }
-    return { ok: false, reason: "Invalid co-host password." };
+    return { ok: false, reason: "Invalid producer password." };
   });
 
-  // Co-host actions RPC — relays co-host UI actions through the host
+  // Producer actions RPC — relays producer UI actions through the host
   const HOST_ACTIONS = {
     openBuzzers, closeBuzzers, resetRound, resetScrews,
     startRoulettePhase, startScrewTimer, closeScrewMode,
@@ -9662,11 +9662,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
     kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
   };
-  RPC.register("cohost-action", async (payload, senderPlayer) => {
+  RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };
-    const cohostIds = getSafeState("cohostIds", []);
-    if (!senderPlayer?.id || !Array.isArray(cohostIds) || !cohostIds.includes(senderPlayer.id)) {
-      return { ok: false, reason: "Not co-host." };
+    const producerIds = getSafeState("producerIds", []);
+    if (!senderPlayer?.id || !Array.isArray(producerIds) || !producerIds.includes(senderPlayer.id)) {
+      return { ok: false, reason: "Not producer." };
     }
     const { fn, args } = payload || {};
     if (HOST_ACTIONS[fn]) {
@@ -9679,10 +9679,10 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 
   ensureHostInit();
 
-  if (joinCohostPassword) {
-    claimCohost(joinCohostPassword).then((ok) => {
+  if (joinProducerPassword) {
+    claimProducer(joinProducerPassword).then((ok) => {
       if (!ok) {
-        setBuzzNotice("Could not verify co-host password.");
+        setBuzzNotice("Could not verify producer password.");
       }
       render();
     });

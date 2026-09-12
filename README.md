@@ -12,7 +12,7 @@ But wait! isnt this just kahoot? I hear you ask! yes and no (see "why?" in the F
 Yes. yes there is, handwritten response too, try it, I dare ya
 
 ### My players are being evil
-Screw em' you as the host (or co-host) have as many as you need.
+Screw em' you as the host (or producer) have as many as you need.
 
 ### Support for jack attack rounds? 
 I don't know how this could work with how I made this so yea, if you want to take a crack at it, open a PR, i'd love to see it. although if you set it to 6/8-choice mode, something like Full Stream would be possible.
@@ -33,6 +33,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Quixort gamemode
+ - Credits roll
  - BINGO/Wendit UI revamp
  - Some love to the main buzzers
  - Better UI 
@@ -59,6 +60,9 @@ I'm planning to re-create the 2011/2015 games for my ui theme here... when I get
 ### Why is there a 40 second option on the disordat, arn't they traditionally 30 seconds
 well yes, but also, the fibbage 3 EAY final round choose soundtrack is 40 seconds sooooo... (but there still is a 30 second option so be quiet)
 
+### And the 60/90 second options?
+In the hypothetical situation where you want to give that kind of time, I gave the option 
+
 ### Sample slideshow?
 IDK possibly
 
@@ -69,9 +73,10 @@ IDK possibly
 - Dis or Dats
 - Bingo
 - Wen dit happ'n
+- Fibbage Mode
 - Audience display
 - Timer display for host companion devices (timer is shown on audience display too)
-- Co-hosting
+- Producers (Co-Hosts)
 - SCREWS
 - F*** You easter egg
 - Team mode (share buzzer across multiple devices)

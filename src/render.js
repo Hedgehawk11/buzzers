@@ -23,7 +23,7 @@ const PRESERVED_INPUT_IDS = [
   "prejoin-name",
   "prejoin-room-code",
   "prejoin-team-mode",
-  "prejoin-cohost-password",
+  "prejoin-producer-password",
   "teamselect-limit",
   "fibbage-lie-time",
   "fibbage-vote-time",

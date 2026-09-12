@@ -697,8 +697,8 @@
         "snark1": "Unaffiliated",
         "snark2": "Divorced"
       },
-      "cohostBadge": {
-        "en": "Co-host",
+      "producerBadge": {
+        "en": "Producer",
         "snark1": "",
         "snark2": ""
       },
