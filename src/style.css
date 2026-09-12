@@ -566,6 +566,14 @@ button:disabled {
   text-align: center;
 }
 
+/* Center the full-screen value — the shared live-timer rule right-aligns
+   text in a fixed-width box ([data-tablet-time-left]), which would pin the
+   digits right-of-center here. */
+.tablet-timer-layout [data-tablet-time-left] {
+  min-width: 0;
+  text-align: center;
+}
+
 .tablet-timer-value {
   font-size: clamp(5rem, 20vw, 16rem);
   font-weight: 900;
