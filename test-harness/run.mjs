@@ -534,6 +534,109 @@ if (COOP) {
   check("coop stays off after disordat", S().settings?.coopertitionEnabled === false, JSON.stringify(S().settings?.coopertitionEnabled));
 }
 
+// --- quixort locked in coop: mode entry blocked, RPCs rejected ---
+if (COOP) {
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "quixort"] }, prod);
+  check("quixort mode blocked in coop", S().settings?.inputMode !== "quixort", S().settings?.inputMode);
+  check("host quixort button disabled in coop", /data-set-mode="quixort"[^>]*disabled/.test(mount.innerHTML), "button not disabled");
+  const qxCoop = await pk._store.rpc["quixort-place"]({ insertIndex: 0 }, dev1);
+  check("quixort place rejected in coop", qxCoop?.ok === false, JSON.stringify(qxCoop));
+}
+
+// --- quixort full flow (non-coop): setup validation, all-play sorting,
+// distance scoring with multiplier, timeout void, shared-team rotation ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "quixort"] }, prod);
+check("quixort mode entered non-coop", S().settings?.inputMode === "quixort", S().settings?.inputMode);
+await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+check("quixort start rejected with <4 items", S().quixort?.active !== true, JSON.stringify(S().quixort?.active));
+for (const [i, v] of ["Alpha", "Bravo", "Charlie", "Delta"].entries()) {
+  await pk._store.rpc["producer-action"]({ fn: "setQuixortItem", args: [i, v] }, prod);
+}
+await pk._store.rpc["producer-action"]({ fn: "setQuixortTrashItem", args: [0, "Zulu"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setQuixortMultiplier", args: [2] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setQuixortBlockSec", args: [15] }, prod);
+check("quixort setup stored", S().quixort?.items?.slice(0, 4).join("|") === "Alpha|Bravo|Charlie|Delta", JSON.stringify(S().quixort?.items));
+check("quixort setup shows time estimate", mount.innerHTML.includes("Estimated time"), "no estimate");
+await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+check("quixort started", S().quixort?.active === true && S().quixort?.phase === "playing", S().quixort?.phase);
+check("quixort deck is items+trash", (S().quixort?.runs?.dev1?.deck || []).length === 5, JSON.stringify(S().quixort?.runs?.dev1?.deck?.length));
+check("quixort roster frozen", (S().quixort?.expectedTracks || []).includes("dev1"), JSON.stringify(S().quixort?.expectedTracks));
+// player view offers trash since host defined trash (true player branch:
+// harness hardcodes isHost, so drop privileges + ungated click to re-render)
+pk._store.isHost = false;
+pk._store.self = dev1;
+clickBtn({}, "[data-f-you-close]");
+await sleep(20);
+check("quixort player sees trash button", mount.innerHTML.includes("data-quixort-trash-block"), "trash button missing");
+pk._store.isHost = true;
+pk._store.self = pk._store.participants.host1;
+// perfect dev1 run: exact inserts + trash the trash -> clean bonus at mult 2
+const qxBefore = S().scores?.dev1 || 0;
+let qxGuard = 0;
+while (S().quixort?.runs?.dev1 && !S().quixort.runs.dev1.finished && qxGuard++ < 12) {
+  const run = S().quixort.runs.dev1;
+  const entry = run.deck[run.deckPos];
+  if (entry.t === "trash") {
+    await pk._store.rpc["quixort-place"]({ trash: true }, dev1);
+  } else {
+    let pos = 0;
+    for (const e of run.row) if (e.t === "item" && e.ref < entry.ref) pos++;
+    const res = await pk._store.rpc["quixort-place"]({ insertIndex: pos }, dev1);
+    if (!res?.ok) break;
+  }
+}
+check("quixort dev1 run finished clean", S().quixort?.runs?.dev1?.finished === true, JSON.stringify(S().quixort?.runs?.dev1?.deckPos));
+// timeout voids the block and passes (dev2 run)
+S().quixort.runs.dev2.blockEndsAt = Date.now() - 1000;
+const qxVoidedBefore = (S().quixort.runs.dev2.voided || []).length;
+const qxLate = await pk._store.rpc["quixort-place"]({ insertIndex: 0 }, dev2);
+check("quixort late place rejected", qxLate?.ok === false, JSON.stringify(qxLate));
+check("quixort timeout voided block", (S().quixort.runs.dev2.voided || []).length === qxVoidedBefore + 1, JSON.stringify(S().quixort.runs.dev2.voided?.length));
+await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
+check("quixort finalized", S().quixort?.phase === "results", S().quixort?.phase);
+check(
+  "quixort clean bonus scored at mult 2",
+  (S().scores?.dev1 || 0) - qxBefore === (4 * 1000 + 1000 + 1500) * 2,
+  `before=${qxBefore} after=${S().scores?.dev1}`,
+);
+check("quixort log entry", S().gameLog.filter((e) => e.type === "quixort").some((e) => e.awardedDelta > 0), "no quixort log");
+// shared-team rotation: teammates rotate per block, off-turn rejected
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);
+for (const [pid, color] of [["dev1", "red"], ["dev2", "red"], ["dev3", "blue"], ["dev4", "blue"], ["plain1", "green"], ["impostor", "green"]]) {
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: [pid, color] }, prod);
+}
+await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+check("quixort shared tracks are teams", (S().quixort?.expectedTracks || []).includes("red"), JSON.stringify(S().quixort?.expectedTracks));
+const redTurn = (() => {
+  const members = ["dev1", "dev2"].sort();
+  return members[(S().quixort?.runs?.red?.turnIndex || 0) % members.length];
+})();
+const offTurn = redTurn === "dev1" ? dev2 : dev1;
+const onTurn = redTurn === "dev1" ? dev1 : dev2;
+const qxOff = await pk._store.rpc["quixort-place"]({ insertIndex: 0 }, offTurn);
+check("quixort off-turn teammate rejected", qxOff?.ok === false, JSON.stringify(qxOff));
+const redRun = S().quixort.runs.red;
+const redEntry = redRun.deck[redRun.deckPos];
+const qxOn = redEntry.t === "trash"
+  ? await pk._store.rpc["quixort-place"]({ trash: true }, onTurn)
+  : await pk._store.rpc["quixort-place"]({ insertIndex: 0 }, onTurn);
+check("quixort on-turn teammate accepted", qxOn?.ok === true, JSON.stringify(qxOn));
+await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
+check("quixort team scored", Number.isFinite(S().scores?.["team:red"]), JSON.stringify(S().scores?.["team:red"]));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", false] }, prod);
+// coop can't enable mid-quixort, then clean exit restores prior mode
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, prod);
+check("coop enable blocked mid-quixort", S().settings?.coopertitionEnabled !== true, JSON.stringify(S().settings?.coopertitionEnabled));
+await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+if (COOP) {
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, prod);
+  check("coop re-enabled after quixort", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+}
+
 // --- all-answered auto-close (no-lock + preset) ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);

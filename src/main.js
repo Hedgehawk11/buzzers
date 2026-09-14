@@ -79,6 +79,17 @@ const FIBBAGE_FOOL_POINTS = 500;
 const FIBBAGE_TRUTH_POINTS = 1000;
 const FIBBAGE_MAX_MULT = 5;
 
+const QUIXORT_MIN_ITEMS = 4;
+const QUIXORT_MAX_ITEMS = 9;
+const QUIXORT_MAX_TRASH = 3;
+const QUIXORT_MAX_TEXT = 120;
+const QUIXORT_POINTS_EXACT = 1000;
+const QUIXORT_POINTS_ADJ1 = 500;
+const QUIXORT_POINTS_ADJ2 = 250;
+const QUIXORT_BONUS_CLEAN = 1500;
+const QUIXORT_MAX_MULT = 5;
+const QUIXORT_BLOCK_SECONDS_OPTIONS = [15, 20, 30, 45, 60];
+
 const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
 const app = document.querySelector("#app") || document.getElementById("app");
@@ -856,6 +867,10 @@ function isFibbageMode() {
   return getSettings().inputMode === "fibbage";
 }
 
+function isQuixortMode() {
+  return getSettings().inputMode === "quixort";
+}
+
 function hasAudienceDisplay() {
   try {
     const parts = Object.values(getParticipants() || {});
@@ -941,6 +956,23 @@ function getDisOrDatTimeLeftCs(dd) {
     return timedSeconds * 100;
   }
   return Math.max(0, Math.ceil((dd.timeEndsAt - now()) / 10));
+}
+
+function freshQuixortState() {
+  return {
+    active: false,
+    phase: "setup",
+    items: [],
+    trash: [],
+    multiplier: 1,
+    blockSec: 30,
+    expectedTracks: [],
+    runs: {},
+  };
+}
+
+function getQuixort() {
+  return getSafeState("quixort", freshQuixortState());
 }
 
 function getBingo() {
@@ -1213,6 +1245,19 @@ function updateTimerDisplays() {
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     }
   }
+  if (isQuixortMode()) {
+    const qx = getQuixort();
+    document.querySelectorAll("[data-quixort-time-left]").forEach((el) => {
+      try {
+        const run = qx.runs?.[el.dataset?.quixortTrack];
+        if (!run || run.finished || typeof run.blockEndsAt !== "number") return;
+        const cs = Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
+        el.textContent = `${formatSeconds(cs)}s`;
+        if (Number.isFinite(cs) && cs <= 500 && cs > 0) el.setAttribute("data-timer-urgent", "true");
+        else el.removeAttribute("data-timer-urgent");
+      } catch {}
+    });
+  }
   // Screw countdown is itself a 5s timer — always urgent while it runs.
   {
     const ms = getScrewTimerMs(round);
@@ -1301,6 +1346,31 @@ showScoresToPlayers: settings.showScoresToPlayers,
     producerIds: getSafeState("producerIds", []),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
+    quixort: (() => {
+      const q = getQuixort();
+      const runs = {};
+      for (const [track, run] of Object.entries(q.runs || {})) {
+        runs[track] = {
+          deck: run.deck,
+          row: run.row,
+          trashed: run.trashed,
+          voidedLen: Array.isArray(run.voided) ? run.voided.length : 0,
+          deckPos: run.deckPos,
+          turnIndex: run.turnIndex,
+          finished: run.finished,
+        };
+      }
+      return {
+        active: q.active,
+        phase: q.phase,
+        items: q.items,
+        trash: q.trash,
+        multiplier: q.multiplier,
+        blockSec: q.blockSec,
+        expectedTracks: q.expectedTracks,
+        runs,
+      };
+    })(),
     bingo: (() => {
       const b = getBingo();
       return {
@@ -3165,6 +3235,415 @@ function handleDisOrDatTick() {
 }
 
 // =============================================================================
+// Quixort — host enters an ordered list (4-9) + optional trash (0-3). Every
+// track plays simultaneously from its own shuffled deck, one block at a time,
+// inserting each block into a growing row (or trashing it). Shared-team tracks
+// rotate members per block. Scored once at the end by position distance:
+// exact 1000 / off-by-one 500 / off-by-two 250 / else 0 (x multiplier), plus a
+// 1500 x mult bonus for a perfect run. Per-block timer voids+passes on expiry.
+// Banned in coopertition mode (no coop model, like fibbage/disordat).
+// =============================================================================
+function normalizeQuixortMultiplier(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isInteger(n) || n < 1) return 1;
+  if (n > QUIXORT_MAX_MULT) return QUIXORT_MAX_MULT;
+  return n;
+}
+function normalizeQuixortBlockSec(v) {
+  const n = Number(v);
+  return QUIXORT_BLOCK_SECONDS_OPTIONS.includes(n) ? n : 30;
+}
+// Non-empty trimmed setup lists.
+function getQuixortItems(qx = getQuixort()) {
+  return (Array.isArray(qx.items) ? qx.items : []).map((s) => String(s || "").trim()).filter(Boolean);
+}
+function getQuixortTrash(qx = getQuixort()) {
+  return (Array.isArray(qx.trash) ? qx.trash : []).map((s) => String(s || "").trim()).filter(Boolean);
+}
+// Setup validation — returns an error string or null when startable.
+function validateQuixortSetup(qx = getQuixort()) {
+  const items = getQuixortItems(qx);
+  const trash = getQuixortTrash(qx);
+  if (items.length < QUIXORT_MIN_ITEMS) return `Enter at least ${QUIXORT_MIN_ITEMS} ordered items.`;
+  if (items.length > QUIXORT_MAX_ITEMS) return `At most ${QUIXORT_MAX_ITEMS} ordered items.`;
+  if (trash.length > QUIXORT_MAX_TRASH) return `At most ${QUIXORT_MAX_TRASH} trash answers.`;
+  const tooLong = [...items, ...trash].some((s) => s.length > QUIXORT_MAX_TEXT);
+  if (tooLong) return "Keep each entry under 120 characters.";
+  const seen = new Set();
+  for (const s of [...items, ...trash]) {
+    const k = normalizeAnswerForCompare(s);
+    if (seen.has(k)) return "Entries must all be different.";
+    seen.add(k);
+  }
+  return null;
+}
+function getEligibleQuixortTracks(settings = getSettings(), assignments = getTeamAssignments(), participants = null) {
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  if (list.length === 0) return [];
+  return [...new Set(list.filter((p) => !settings.teamModeEnabled || getPlayerTeamColor(p.id, assignments)).map((p) => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+}
+function shuffledQuixortDeck(itemCount, trashCount) {
+  const deck = [];
+  for (let i = 0; i < itemCount; i++) deck.push({ t: "item", ref: i });
+  for (let i = 0; i < trashCount; i++) deck.push({ t: "trash", ref: i });
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+}
+// Whose turn is it on a track? Shared-team tracks rotate members (sorted by id
+// for determinism); solo tracks are always the track owner's move.
+function getQuixortTurnPlayerId(track, run, participants = currentParticipants(), assignments = getTeamAssignments()) {
+  if (TEAM_COLORS.includes(track)) {
+    const memberIds = getTeamMembers(track, participants, assignments).map((m) => m.id).sort();
+    if (memberIds.length === 0) return null;
+    return memberIds[(Number(run?.turnIndex) || 0) % memberIds.length];
+  }
+  return track;
+}
+function getQuixortBlockText(qx, entry) {
+  if (!entry) return "";
+  if (entry.t === "trash") return (qx.trash || [])[entry.ref] || "";
+  return (qx.items || [])[entry.ref] || "";
+}
+function getQuixortRunTimeLeftCs(run, qx) {
+  if (!run || run.finished) return 0;
+  if (typeof run.blockEndsAt !== "number") return normalizeQuixortBlockSec(qx?.blockSec) * 100;
+  return Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
+}
+// End scoring for one run. Voided blocks are excluded entirely (neighbors
+// close the gap); placed trash scores 0 and occupies its row slot.
+function scoreQuixortRun(qx, run) {
+  const mult = normalizeQuixortMultiplier(qx.multiplier);
+  const items = getQuixortItems(qx);
+  const trash = getQuixortTrash(qx);
+  const row = Array.isArray(run?.row) ? run.row : [];
+  const trashed = Array.isArray(run?.trashed) ? run.trashed : [];
+  const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
+  const placedReals = row.filter((e) => e && e.t === "item");
+  let base = 0;
+  let exactCount = 0;
+  placedReals.forEach((entry, pos) => {
+    const dist = Math.abs(pos - Number(entry.ref));
+    if (dist === 0) { base += QUIXORT_POINTS_EXACT; exactCount++; }
+    else if (dist === 1) base += QUIXORT_POINTS_ADJ1;
+    else if (dist === 2) base += QUIXORT_POINTS_ADJ2;
+  });
+  const trashCorrect = trashed.filter((e) => e && e.t === "trash").length;
+  base += trashCorrect * QUIXORT_POINTS_EXACT;
+  const placedTrash = row.filter((e) => e && e.t === "trash").length;
+  const clean = voided === 0 && placedTrash === 0
+    && placedReals.length === items.length && exactCount === items.length
+    && trashCorrect === trash.length;
+  const total = (base + (clean ? QUIXORT_BONUS_CLEAN : 0)) * mult;
+  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, clean };
+}
+function formatQuixortEstimate(totalSeconds) {
+  const s = Math.max(0, Math.round(Number(totalSeconds) || 0));
+  if (s < 60) return `about ${s} second${s === 1 ? "" : "s"}`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `about ${m}m ${r}s` : `about ${m} minute${m === 1 ? "" : "s"}`;
+}
+function setQuixortItem(index, value) {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (qx.active) return;
+  const i = Number(index);
+  if (!Number.isInteger(i) || i < 0 || i >= QUIXORT_MAX_ITEMS) return;
+  const items = Array.from({ length: QUIXORT_MAX_ITEMS }, (_, k) => String(qx.items?.[k] ?? ""));
+  items[i] = String(value ?? "").slice(0, QUIXORT_MAX_TEXT);
+  setState("quixort", { ...qx, items }, true);
+  render();
+}
+function setQuixortTrashItem(index, value) {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (qx.active) return;
+  const i = Number(index);
+  if (!Number.isInteger(i) || i < 0 || i >= QUIXORT_MAX_TRASH) return;
+  const trash = Array.from({ length: QUIXORT_MAX_TRASH }, (_, k) => String(qx.trash?.[k] ?? ""));
+  trash[i] = String(value ?? "").slice(0, QUIXORT_MAX_TEXT);
+  setState("quixort", { ...qx, trash }, true);
+  render();
+}
+function setQuixortMultiplier(mult) {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (qx.active) return;
+  setState("quixort", { ...qx, multiplier: normalizeQuixortMultiplier(mult) }, true);
+  render();
+}
+function setQuixortBlockSec(sec) {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (qx.active) return;
+  setState("quixort", { ...qx, blockSec: normalizeQuixortBlockSec(sec) }, true);
+  render();
+}
+function startQuixort() {
+  if (!isHost()) return;
+  if (!isQuixortMode()) return;
+  if (isCoopMode()) {
+    setBuzzNotice("Quixort is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+    render();
+    return;
+  }
+  const qx = getQuixort();
+  const setupError = validateQuixortSetup(qx);
+  if (setupError) {
+    setBuzzNotice(setupError);
+    render();
+    return;
+  }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  if (isTeamSelectActive() || hasUnassignedTeamPlayers(settings, currentParticipants(), assignments)) {
+    setBuzzNotice("Assign all players to teams before starting Quixort.");
+    render();
+    return;
+  }
+  const tracks = getEligibleQuixortTracks(settings, assignments);
+  if (tracks.length === 0) {
+    setBuzzNotice("Need at least 1 player for Quixort.");
+    render();
+    return;
+  }
+  const items = getQuixortItems(qx);
+  const trash = getQuixortTrash(qx);
+  const blockSec = normalizeQuixortBlockSec(qx.blockSec);
+  const deadline = now() + blockSec * 1000;
+  const runs = {};
+  for (const track of tracks) {
+    runs[track] = {
+      deck: shuffledQuixortDeck(items.length, trash.length),
+      row: [], trashed: [], voided: [],
+      deckPos: 0, turnIndex: 0, blockEndsAt: deadline, finished: false,
+    };
+  }
+  setState("quixort", {
+    ...qx, items, trash,
+    multiplier: normalizeQuixortMultiplier(qx.multiplier),
+    blockSec,
+    active: true, phase: "playing",
+    expectedTracks: tracks, runs,
+  }, true);
+  render();
+}
+// Void the current block of one run (timeout): the block scores 0 and leaves
+// play, the turn passes. Voided entries are excluded from distance math.
+function voidQuixortBlock(qx, track) {
+  const run = qx.runs?.[track];
+  if (!run || run.finished) return qx;
+  const deck = Array.isArray(run.deck) ? run.deck : [];
+  const entry = deck[run.deckPos];
+  const voided = [...(Array.isArray(run.voided) ? run.voided : []), ...(entry ? [entry] : [])];
+  const deckPos = (Number(run.deckPos) || 0) + 1;
+  const blockSec = normalizeQuixortBlockSec(qx.blockSec);
+  const finished = deckPos >= deck.length;
+  return {
+    ...qx,
+    runs: {
+      ...qx.runs,
+      [track]: {
+        ...run, voided, deckPos,
+        turnIndex: (Number(run.turnIndex) || 0) + 1,
+        blockEndsAt: finished ? null : now() + blockSec * 1000,
+        finished,
+      },
+    },
+  };
+}
+function handleQuixortPlace(player, payload) {
+  const qx = getQuixort();
+  if (!isQuixortMode() || !qx.active || qx.phase !== "playing") {
+    return { ok: false, reason: getSnark("player.quixort.notActive", "Quixort isn't active.") };
+  }
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.quixort.coopBlocked", "Quixort is off limits in coopertition mode.") };
+  const settings = getSettings();
+  const participants = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, getControllerId());
+  if (player.id === getControllerId()) return { ok: false, reason: getSnark("player.quixort.notPlayer", "Host cannot sort.") };
+  const producerIds = getSafeState("producerIds", []);
+  if (Array.isArray(producerIds) && producerIds.includes(player.id)) return { ok: false, reason: getSnark("player.quixort.notPlayer", "Host cannot sort.") };
+  const trackKey = getTeamTrackKey(player.id, settings, assignments);
+  if (settings.teamModeEnabled && !getPlayerTeamColor(player.id, assignments)) {
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  }
+  if (!Array.isArray(qx.expectedTracks) || !qx.expectedTracks.includes(trackKey)) {
+    return { ok: false, reason: getSnark("player.quixort.sittingOut", "You joined after this round started — sit back and watch!") };
+  }
+  let run = qx.runs?.[trackKey];
+  if (!run || run.finished) {
+    return { ok: false, reason: getSnark("player.quixort.runFinished", "This run is finished.") };
+  }
+  // Expired block voids first; the sender must retry on the next block.
+  let working = qx;
+  if (typeof run.blockEndsAt === "number" && now() >= run.blockEndsAt) {
+    working = voidQuixortBlock(qx, trackKey);
+    setState("quixort", working, true);
+    if (quixortAllFinished(working)) finalizeQuixort();
+    else render();
+    return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
+  }
+  run = working.runs[trackKey];
+  const turnId = getQuixortTurnPlayerId(trackKey, run, participants, assignments);
+  if (turnId && player.id !== turnId) {
+    const turnPlayer = participants.find((p) => p.id === turnId);
+    return { ok: false, reason: getSnark("player.quixort.notYourTurn", `It's ${turnPlayer ? getPlayerName(turnPlayer) : "a teammate"}'s turn to place.`, { player: turnPlayer ? getPlayerName(turnPlayer) : "a teammate" }) };
+  }
+  const deck = Array.isArray(run.deck) ? run.deck : [];
+  const entry = deck[run.deckPos];
+  if (!entry) return { ok: false, reason: getSnark("player.quixort.badBlock", "Bad block.") };
+  const wantTrash = payload?.trash === true;
+  const row = [...(Array.isArray(run.row) ? run.row : [])];
+  const trashed = [...(Array.isArray(run.trashed) ? run.trashed : [])];
+  if (wantTrash) {
+    trashed.push(entry);
+  } else {
+    const insertIndex = Number(payload?.insertIndex);
+    if (!Number.isInteger(insertIndex) || insertIndex < 0 || insertIndex > row.length) {
+      return { ok: false, reason: getSnark("player.quixort.badPosition", "Bad position.") };
+    }
+    row.splice(insertIndex, 0, entry);
+  }
+  const deckPos = (Number(run.deckPos) || 0) + 1;
+  const finished = deckPos >= deck.length;
+  const next = {
+    ...working,
+    runs: {
+      ...working.runs,
+      [trackKey]: {
+        ...run, row, trashed, deckPos,
+        turnIndex: (Number(run.turnIndex) || 0) + 1,
+        blockEndsAt: finished ? null : now() + normalizeQuixortBlockSec(working.blockSec) * 1000,
+        finished,
+      },
+    },
+  };
+  setState("quixort", next, true);
+  if (quixortAllFinished(next)) {
+    finalizeQuixort();
+    return { ok: true, message: getSnark("player.quixort.placed", "Placed.") };
+  }
+  render();
+  return { ok: true, message: getSnark("player.quixort.placed", "Placed.") };
+}
+function quixortAllFinished(qx) {
+  const expected = Array.isArray(qx.expectedTracks) ? qx.expectedTracks : [];
+  if (expected.length === 0) return false;
+  return expected.every((track) => qx.runs?.[track]?.finished === true);
+}
+function quixortLiveMemberCount(track, participants = currentParticipants(), assignments = getTeamAssignments()) {
+  if (!TEAM_COLORS.includes(track)) return participants.some((p) => p.id === track) ? 1 : 0;
+  return getTeamMembers(track, participants, assignments).length;
+}
+function handleQuixortTick() {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (!qx.active || qx.phase !== "playing") return;
+  const participants = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, getControllerId());
+  let working = qx;
+  let changed = false;
+  for (const track of (Array.isArray(qx.expectedTracks) ? qx.expectedTracks : [])) {
+    const run = working.runs?.[track];
+    if (!run || run.finished) continue;
+    // A track with no live members can never advance — void the remainder.
+    if (quixortLiveMemberCount(track, participants, assignments) === 0) {
+      const deck = Array.isArray(run.deck) ? run.deck : [];
+      working = {
+        ...working,
+        runs: { ...working.runs, [track]: { ...run, voided: [...(run.voided || []), ...deck.slice(run.deckPos || 0)], deckPos: deck.length, blockEndsAt: null, finished: true } },
+      };
+      changed = true;
+      continue;
+    }
+    if (typeof run.blockEndsAt === "number" && now() >= run.blockEndsAt) {
+      working = voidQuixortBlock(working, track);
+      changed = true;
+    }
+  }
+  if (changed) setState("quixort", working, true);
+  if (quixortAllFinished(working)) {
+    finalizeQuixort();
+    return;
+  }
+  render();
+}
+function finalizeQuixort() {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (!qx.active || qx.phase === "results") return;
+  const participants = currentParticipants();
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, getControllerId());
+  const expected = Array.isArray(qx.expectedTracks) ? qx.expectedTracks : [];
+  const scores = { ...getScores() };
+  const log = getLog();
+  for (const track of expected) {
+    const run = qx.runs?.[track] || { row: [], trashed: [], voided: [] };
+    const scored = scoreQuixortRun(qx, run);
+    if (!Number.isFinite(scored.total)) continue;
+    const isTeamTrack = TEAM_COLORS.includes(track);
+    const rep = isTeamTrack
+      ? participants.find((p) => getTeamTrackKey(p.id, settings, assignments) === track) || null
+      : participants.find((p) => p.id === track) || null;
+    const scoreKey = rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : (isTeamTrack ? getTeamScoreKey(track) : track);
+    scores[scoreKey] = Number(scores[scoreKey] || 0) + scored.total;
+    const trackDisplayName = isTeamTrack ? `Team ${track}` : (rep ? getPlayerName(rep) : track);
+    log.push({
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "quixort",
+      ts: now(),
+      playerId: rep?.id || track,
+      playerName: trackDisplayName,
+      teamColor: isTeamTrack ? track : (rep ? getPlayerTeamColor(rep.id, assignments) : null),
+      scoreKey,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${isTeamTrack ? track : getPlayerTeamColor(rep?.id, assignments)}` : trackDisplayName,
+      option: null,
+      answerText: `Quixort: ${scored.exactCount} exact, ${scored.placedCount} placed, ${scored.trashCorrect} trash${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = ${scored.total}`,
+      timeLeftCs: 0,
+      scoringMode: "uniform",
+      jackMultiplier: settings.jackMultiplier,
+      uniformPoints: QUIXORT_POINTS_EXACT,
+      basePoints: scored.base,
+      awardedDelta: scored.total,
+      resolved: true,
+    });
+  }
+  setState("scores", scores, true);
+  setState("gameLog", log, true);
+  setState("quixort", { ...qx, phase: "results" }, true);
+  render();
+}
+function endQuixort() {
+  if (!isHost()) return;
+  finalizeQuixort();
+}
+function resetQuixort() {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  setState("quixort", {
+    ...qx,
+    active: false,
+    phase: "setup",
+    expectedTracks: [],
+    runs: {},
+  }, true);
+  render();
+}
+function exitQuixort() {
+  if (!isHost()) return;
+  const qx = getQuixort();
+  if (qx.active && qx.phase === "playing") finalizeQuixort();
+  setHostSetting("inputMode", "buttons");
+}
+
+// =============================================================================
 // Fibbage — host enters truth, players submit lies, vote on shuffled pool
 // 500 per fool, 1000 for truth, multiplier 1..5, duplicates merged
 // =============================================================================
@@ -3871,6 +4350,10 @@ function hostTick() {
     handleDisOrDatTick();
     return;
   }
+  if (isQuixortMode()) {
+    handleQuixortTick();
+    return;
+  }
   const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) {
     // Single-player target left mid-phase: finalize with current selections
@@ -4163,6 +4646,11 @@ function setHostSetting(key, value) {
       render();
       return;
     }
+    if (key === "inputMode" && value === "quixort") {
+      setBuzzNotice("Quixort is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+      render();
+      return;
+    }
   }
   if (key === "optionCount") {
     if (isCoopMode(next) && Number(value) < 4) {
@@ -4185,6 +4673,11 @@ function setHostSetting(key, value) {
     }
     if (value === true && getDisOrDat()?.active) {
       setBuzzNotice("Finish or exit the Dis or Dat round before enabling coopertition.");
+      render();
+      return;
+    }
+    if (value === true && getQuixort()?.active) {
+      setBuzzNotice("Finish or exit the Quixort round before enabling coopertition.");
       render();
       return;
     }
@@ -4285,6 +4778,21 @@ function setHostSetting(key, value) {
       setState("pendingLogId", null, true);
       const fb = getFibbage();
       setState("fibbage", { ...freshFibbageState(), lieTimeSec: fb.lieTimeSec || 30, voteTimeSec: fb.voteTimeSec || 30, multiplier: fb.multiplier || 1 }, true);
+    }
+    if (value === "quixort") {
+      const idleRound = {
+        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
+        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
+        buzzedPlayerIds: [],
+        buzzCounts: {},
+        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
+      };
+      setState("round", idleRound, true);
+      setState("pendingLogId", null, true);
+      const qx = getQuixort();
+      setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: qx.blockSec || 30 }, true);
     }
   }
   if (key === "rouletteTopAmount") {
@@ -5790,6 +6298,207 @@ function renderDisOrDatAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
+// Quixort — host / player / audience panels
+// =============================================================================
+function quixortTrackLabel(track, participants, assignments) {
+  if (TEAM_COLORS.includes(track)) {
+    const rep = participants.find((p) => getTeamTrackKey(p.id, getSettings(), assignments) === track) || null;
+    return `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "");
+  }
+  const p = participants.find((pp) => pp.id === track);
+  return escapeHtml(p ? getPlayerName(p) : track);
+}
+function renderQuixortHostPanel(settings, players) {
+  if (!hasHostPrivileges()) return `<section class="card host-panel"><p>Producers cannot control Quixort. The host must manage it.</p></section>`;
+  const qx = getQuixort();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const multOpts = Array.from({ length: QUIXORT_MAX_MULT }, (_, i) => i + 1).map((m) => `<option value="${m}" ${normalizeQuixortMultiplier(qx.multiplier) === m ? "selected" : ""}>${m}x</option>`).join("");
+  const blockOpts = QUIXORT_BLOCK_SECONDS_OPTIONS.map((s) => `<option value="${s}" ${normalizeQuixortBlockSec(qx.blockSec) === s ? "selected" : ""}>${s}s</option>`).join("");
+  if (!qx.active) {
+    const items = Array.from({ length: QUIXORT_MAX_ITEMS }, (_, i) => String(qx.items?.[i] ?? ""));
+    const trash = Array.from({ length: QUIXORT_MAX_TRASH }, (_, i) => String(qx.trash?.[i] ?? ""));
+    const filledItems = items.map((s) => String(s || "").trim()).filter(Boolean);
+    const filledTrash = trash.map((s) => String(s || "").trim()).filter(Boolean);
+    const setupError = validateQuixortSetup({ ...qx, items, trash });
+    const deckLen = filledItems.length + filledTrash.length;
+    const estimate = formatQuixortEstimate(deckLen * normalizeQuixortBlockSec(qx.blockSec));
+    const itemInputs = items.map((val, i) => `
+      <label class="quixort-entry-label">${i + 1} (correct order)
+        <input type="text" id="quixort-item-${i}" data-quixort-item="${i}" maxlength="${QUIXORT_MAX_TEXT}" value="${escapeHtml(val)}" placeholder="Item ${i + 1}" />
+      </label>`).join("");
+    const trashInputs = trash.map((val, i) => `
+      <label class="quixort-entry-label">Trash ${i + 1} (optional)
+        <input type="text" id="quixort-trash-${i}" data-quixort-trash="${i}" maxlength="${QUIXORT_MAX_TEXT}" value="${escapeHtml(val)}" placeholder="Trash ${i + 1}" />
+      </label>`).join("");
+    const eligible = getEligibleQuixortTracks(settings, assignments, participants);
+    return `
+      <section class="card host-panel bingo-host-panel">
+        <h2>Quixort Setup</h2>
+        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Exact 1000, off-by-one 500, off-by-two 250 (x multiplier), clean-run bonus ${QUIXORT_BONUS_CLEAN} x multiplier.</p>
+        <div class="control-grid">
+          <label>Multiplier
+            <select id="quixort-mult">${multOpts}</select>
+            <p class="setting-helper">Applies to every placement and the bonus.</p>
+          </label>
+          <label>Seconds per block
+            <select id="quixort-block-sec">${blockOpts}</select>
+            <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn.</p>
+          </label>
+        </div>
+        <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Ordered items (${filledItems.length}/${QUIXORT_MAX_ITEMS})</h3>
+        <div class="quixort-setup-list">${itemInputs}</div>
+        <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Trash answers (${filledTrash.length}/${QUIXORT_MAX_TRASH}, optional)</h3>
+        <div class="quixort-setup-list">${trashInputs}</div>
+        <p class="muted">Estimated time to complete: <strong>${estimate}</strong> per team (all play at once, ${normalizeQuixortBlockSec(qx.blockSec)}s x ${deckLen} blocks).</p>
+        <div class="host-actions" style="margin-top:0.9rem">
+          <button type="button" class="primary-action" data-quixort-start ${setupError || eligible.length === 0 ? "disabled" : ""}>Start Quixort (${eligible.length} playing)</button>
+        </div>
+        ${setupError ? `<p class="setting-helper" style="margin-top:0.4rem">${escapeHtml(setupError)}</p>` : ""}
+        ${eligible.length === 0 ? `<p class="setting-helper">Need at least 1 eligible player.</p>` : ""}
+        <div class="host-actions" style="margin-top:0.6rem">
+          <button type="button" data-quixort-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+  const expected = Array.isArray(qx.expectedTracks) ? qx.expectedTracks : [];
+  const trackRows = expected.map((track) => {
+    const run = qx.runs?.[track] || { deck: [], row: [], trashed: [], voided: [], deckPos: 0, turnIndex: 0, finished: false };
+    const deckLen = (run.deck || []).length;
+    const remaining = Math.max(0, deckLen - (Number(run.deckPos) || 0));
+    const turnId = getQuixortTurnPlayerId(track, run, participants, assignments);
+    const turnPlayer = participants.find((p) => p.id === turnId);
+    const turnName = run.finished ? "finished" : (turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "waiting");
+    const scored = qx.phase === "results" ? scoreQuixortRun(qx, run) : null;
+    return { track, run, deckLen, remaining, turnName, scored };
+  }).sort((a, b) => ((b.scored?.total || 0) - (a.scored?.total || 0)) || ((b.run.deckPos || 0) - (a.run.deckPos || 0)));
+  const remainingMax = trackRows.reduce((m, r) => Math.max(m, r.run.finished ? 0 : r.remaining), 0);
+  const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }) => {
+    const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
+    const scoreTxt = scored ? ` — <strong>${scored.total}</strong> pts (${scored.exactCount} exact, ${scored.trashCorrect} trash${scored.bonus ? ` + ${scored.bonus} bonus` : ""})` : "";
+    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span>${scoreTxt}</li>`;
+  }).join("");
+  if (qx.phase === "results") {
+    return `
+      <section class="card host-panel bingo-host-panel">
+        <h2>Quixort — Results</h2>
+        <ul class="bingo-standings">${rowsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
+        <div class="host-actions">
+          <button type="button" data-quixort-reset>Play Again</button>
+          <button type="button" data-quixort-exit>Return to buzzer mode</button>
+        </div>
+      </section>`;
+  }
+  return `
+    <section class="card host-panel bingo-host-panel">
+      <h2>Quixort — Playing</h2>
+      <p class="muted">All tracks sort at once. Estimated remaining: <strong>${formatQuixortEstimate(remainingMax * normalizeQuixortBlockSec(qx.blockSec))}</strong> (slowest track). Multiplier ${normalizeQuixortMultiplier(qx.multiplier)}x, ${normalizeQuixortBlockSec(qx.blockSec)}s per block.</p>
+      <ul class="bingo-standings">${rowsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
+      <div class="host-actions">
+        <button type="button" class="primary-action" data-quixort-end>End &amp; Award</button>
+        <button type="button" data-quixort-exit>Return to buzzer mode</button>
+      </div>
+    </section>`;
+}
+function renderQuixortPlayerPanel(settings, mePlayer) {
+  const qx = getQuixort();
+  if (isCoopMode(settings)) {
+    return `<section class="card player-card"><h2>Quixort</h2><p class="muted">${getSnark("player.quixort.coopBlocked", "Quixort is off limits in coopertition mode.")}</p></section>`;
+  }
+  if (!qx.active) {
+    return `<section class="card player-card"><h2>Quixort</h2><p class="muted">${getSnark("player.quixort.waitingHost", "Waiting for the host to start...")}</p></section>`;
+  }
+  const participants = currentParticipants();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), participants, getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
+  const run = qx.runs?.[trackKey];
+  if (!run || !Array.isArray(qx.expectedTracks) || !qx.expectedTracks.includes(trackKey)) {
+    return `<section class="card player-card"><h2>Quixort ${teamPill}</h2><p class="muted">${getSnark("player.quixort.sittingOut", "You joined after this round started — sit back and watch!")}</p></section>`;
+  }
+  const deck = Array.isArray(run.deck) ? run.deck : [];
+  const row = Array.isArray(run.row) ? run.row : [];
+  const hasTrash = getQuixortTrash(qx).length > 0;
+  if (qx.phase === "results") {
+    const scored = scoreQuixortRun(qx, run);
+    return `
+      <section class="card player-card">
+        <h2>Quixort ${teamPill}</h2>
+        <h3>${getSnark("player.quixort.resultsTitle", "Results")}</h3>
+        <p class="muted">${getSnark("player.quixort.exactCount", `${scored.exactCount} exact placements`, { exact: scored.exactCount })}, ${scored.trashCorrect} trash sorted${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
+        <p class="muted">${getSnark("player.quixort.waitingHostContinue", "Waiting for the host to continue...")}</p>
+      </section>`;
+  }
+  if (run.finished) {
+    return `<section class="card player-card"><h2>Quixort ${teamPill}</h2><p class="muted">${getSnark("player.quixort.runDone", "All sorted! Wait for results.")}</p></section>`;
+  }
+  const entry = deck[Number(run.deckPos) || 0];
+  const blockText = escapeHtml(getQuixortBlockText(qx, entry));
+  const turnId = getQuixortTurnPlayerId(trackKey, run, participants, assignments);
+  const myTurn = !turnId || turnId === mePlayer.id;
+  const turnPlayer = participants.find((p) => p.id === turnId);
+  const turnBanner = isSharedTeam
+    ? (myTurn
+      ? `<p class="muted">${getSnark("player.quixort.yourTurn", "Your turn to place.")}</p>`
+      : `<p class="muted">${getSnark("player.quixort.teammateTurn", `It's ${turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "a teammate"}'s turn to place.`, { player: turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "a teammate" })}</p>`)
+    : "";
+  const rowHtml = row.map((e) => `<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
+  const insertBtns = row.map((_, i) => `<button type="button" class="toggle-chip" data-quixort-place data-insert="${i}" ${myTurn ? "" : "disabled"}>${i === 0 ? "First" : `Before ${i + 1}`}</button>`).join("")
+    + `<button type="button" class="toggle-chip" data-quixort-place data-insert="${row.length}" ${myTurn ? "" : "disabled"}>${row.length === 0 ? "Place" : "Last"}</button>`;
+  return `
+    <section class="card player-card">
+      <h2>Quixort ${teamPill}</h2>
+      ${turnBanner}
+      <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s</strong></div>
+      <div class="quixort-block-card"><span class="muted">Sort this:</span><strong>${blockText}</strong></div>
+      <div class="quixort-row-wrap">${rowHtml || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
+      <p class="muted">${getSnark("player.quixort.placePrompt", `Block ${Number(run.deckPos) + 1} of ${deck.length} — tap where it goes.`, { current: Number(run.deckPos) + 1, total: deck.length })}</p>
+      <div class="host-actions quixort-inserts">${insertBtns}</div>
+      ${hasTrash ? `<div class="host-actions"><button type="button" data-quixort-trash-block ${myTurn ? "" : "disabled"}>${getSnark("player.quixort.trashButton", "Trash it")}</button></div>` : ""}
+    </section>`;
+}
+function renderQuixortAudienceDisplay(settings, players) {
+  const qx = getQuixort();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  if (!qx.active) {
+    return `
+      <main class="layout audience-layout" data-quixort-active="true">
+        <header class="hero audience-hero">
+          <div><p class="prejoin-kicker">Audience display</p><h1>Quixort</h1><p class="muted">${getSnark("audience.quixort.waitingGame", "Waiting for the game to start...")}</p></div>
+        </header>
+      </main>`;
+  }
+  const expected = Array.isArray(qx.expectedTracks) ? qx.expectedTracks : [];
+  const tracks = expected.map((track) => {
+    const run = qx.runs?.[track] || { deck: [], deckPos: 0, finished: false };
+    const scored = qx.phase === "results" ? scoreQuixortRun(qx, run) : null;
+    return { track, run, scored, total: scored ? scored.total : 0 };
+  }).sort((a, b) => b.total - a.total || (b.run.deckPos || 0) - (a.run.deckPos || 0));
+  const standings = tracks.map(({ track, run, scored }) => {
+    const deckLen = (run.deck || []).length;
+    const detail = qx.phase === "results" && scored
+      ? `${scored.exactCount} exact, ${scored.trashCorrect} trash = ${scored.total} pts`
+      : `${Number(run.deckPos) || 0}/${deckLen} blocks`;
+    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${detail}</li>`;
+  }).join("");
+  return `
+    <main class="layout audience-layout" data-quixort-active="true">
+      <header class="hero audience-hero">
+        <div><p class="prejoin-kicker">Audience display</p><h1>Quixort</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+      </header>
+      <section class="card"><h2>${getSnark("audience.quixort.finalStandings", qx.phase === "results" ? "Final Standings" : "Standings")}</h2><ul class="bingo-standings">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+    </main>`;
+}
+
+// =============================================================================
 // Fibbage — host / player / audience panels
 // =============================================================================
 function renderFibbageHostPanel(settings, players) {
@@ -6614,6 +7323,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isBingoMode()) return renderBingoPlayerPanel(settings, mePlayer);
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
+  if (isQuixortMode()) return renderQuixortPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   // Host/producer have the full host panel already — no buzzer card needed.
   if (isControllerPlayer() || isProducer()) {
@@ -7295,6 +8005,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
   if (isDisOrDatMode()) return renderDisOrDatAudienceDisplay(settings, players);
   if (isFibbageMode()) return renderFibbageAudienceDisplay(settings, players);
+  if (isQuixortMode()) return renderQuixortAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
@@ -7556,6 +8267,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   if (isFibbageMode()) {
     if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Fibbage. The host must manage it.</p></section>`;
     return renderFibbageHostPanel(settings, players);
+  }
+
+  if (isQuixortMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Quixort. The host must manage it.</p></section>`;
+    return renderQuixortHostPanel(settings, players);
   }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
@@ -7937,8 +8653,12 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" || isCoopMode(settings) ? "disabled" : ""}>Fibbage</button>
                 <p class="setting-helper">The famous Jackbox fibbing game. Host sets truth (before the players start lying). Players submit lies, shows shuffled lies+truth, players vote, host reveals one-by-one or Show All. 500 per fool, 1000 for truth, (configurable).${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
+              <div>
+                <button type="button" data-set-mode="quixort" ${settingDisabledAttr} ${settings.inputMode === "quixort" || isCoopMode(settings) ? "disabled" : ""}>Quixort</button>
+                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end by position: exact 1000, off-by-one 500, off-by-two 250 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+              </div>
             </div>
-            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage"
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort"
               ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
               : ""}
           </div>
@@ -8522,6 +9242,41 @@ function render() {
     return;
   }
 
+  if (isQuixortMode()) {
+    const qxScoresHost = renderScores(players, scores, "score-card-host");
+    const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."));
+    const qxBody = showAdminData ? `
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      <section class="grid">
+        ${qxScoresHost}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${qxScoresPlayer}
+      </section>` ;
+    const _html_quixort = `
+      <main class="layout" data-quixort-active="true">
+        <header class="hero">
+          <div>
+            <h1>Quixort</h1>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
+          </div>
+          <div class="hero-meta">
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
+          </div>
+        </header>
+        ${qxBody}
+      </main>
+    `;
+    if (!transitionMount(mount, _html_quixort, "quixort")) mount.innerHTML = _html_quixort;
+    lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
+    return;
+  }
+
   const _html_default = `
     <main class="layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
       <header class="hero">
@@ -8934,6 +9689,33 @@ function bindEvents() {
       if (res?.ok === false && res?.reason) setBuzzNotice(res.reason);
       else if (res?.message) setBuzzNotice(res.message);
     } catch { setBuzzNotice("Could not send vote."); }
+    scheduleRender(render);
+  });
+  // Quixort host
+  delegate("input", "[data-quixort-item]", requireHost((e, btn) => setQuixortItem(btn.dataset.quixortItem, e.target.value)));
+  delegate("input", "[data-quixort-trash]", requireHost((e, btn) => setQuixortTrashItem(btn.dataset.quixortTrash, e.target.value)));
+  delegate("change", "#quixort-mult", requireHost((e) => setQuixortMultiplier(e.target.value)));
+  delegate("change", "#quixort-block-sec", requireHost((e) => setQuixortBlockSec(e.target.value)));
+  delegate("click", "[data-quixort-start]", requireHost(() => startQuixort()));
+  delegate("click", "[data-quixort-end]", requireHost(() => endQuixort()));
+  delegate("click", "[data-quixort-reset]", requireHost(() => resetQuixort()));
+  delegate("click", "[data-quixort-exit]", requireHost(() => exitQuixort()));
+  delegate("click", "[data-quixort-place]", async (e, btn) => {
+    if (isControllerPlayer() || isProducer()) return;
+    try {
+      const result = await RPC.call("quixort-place", { insertIndex: Number(btn.dataset.insert) }, RPC.Mode.HOST);
+      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+      else if (result?.message) setBuzzNotice(result.message);
+    } catch { setBuzzNotice(getSnark("player.quixort.placeSendFailed", "Could not send placement.")); }
+    scheduleRender(render);
+  });
+  delegate("click", "[data-quixort-trash-block]", async () => {
+    if (isControllerPlayer() || isProducer()) return;
+    try {
+      const result = await RPC.call("quixort-place", { trash: true }, RPC.Mode.HOST);
+      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+      else if (result?.message) setBuzzNotice(result.message);
+    } catch { setBuzzNotice(getSnark("player.quixort.placeSendFailed", "Could not send placement.")); }
     scheduleRender(render);
   });
   delegate("keydown", "#fibbage-lie-entry", (e) => {
@@ -9636,6 +10418,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return handleFibbageVote(senderPlayer, payload);
   });
 
+  RPC.register("quixort-place", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleQuixortPlace(senderPlayer, payload);
+  });
+
   RPC.register("claim-producer", async (payload, senderPlayer) => {
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
@@ -9665,6 +10452,8 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
     adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
     kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
+    setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
+    startQuixort, endQuixort, resetQuixort, exitQuixort,
   };
   RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };
