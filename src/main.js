@@ -3357,7 +3357,7 @@ function setQuixortItem(index, value) {
   const items = Array.from({ length: QUIXORT_MAX_ITEMS }, (_, k) => String(qx.items?.[k] ?? ""));
   items[i] = String(value ?? "").slice(0, QUIXORT_MAX_TEXT);
   setState("quixort", { ...qx, items }, true);
-  render();
+  scheduleRender(render);
 }
 function setQuixortTrashItem(index, value) {
   if (!isHost()) return;
@@ -3368,21 +3368,21 @@ function setQuixortTrashItem(index, value) {
   const trash = Array.from({ length: QUIXORT_MAX_TRASH }, (_, k) => String(qx.trash?.[k] ?? ""));
   trash[i] = String(value ?? "").slice(0, QUIXORT_MAX_TEXT);
   setState("quixort", { ...qx, trash }, true);
-  render();
+  scheduleRender(render);
 }
 function setQuixortMultiplier(mult) {
   if (!isHost()) return;
   const qx = getQuixort();
   if (qx.active) return;
   setState("quixort", { ...qx, multiplier: normalizeQuixortMultiplier(mult) }, true);
-  render();
+  scheduleRender(render);
 }
 function setQuixortBlockSec(sec) {
   if (!isHost()) return;
   const qx = getQuixort();
   if (qx.active) return;
   setState("quixort", { ...qx, blockSec: normalizeQuixortBlockSec(sec) }, true);
-  render();
+  scheduleRender(render);
 }
 function startQuixort() {
   if (!isHost()) return;
