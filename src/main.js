@@ -9691,9 +9691,10 @@ function bindEvents() {
     } catch { setBuzzNotice("Could not send vote."); }
     scheduleRender(render);
   });
-  // Quixort host
-  delegate("input", "[data-quixort-item]", requireHost((e, btn) => setQuixortItem(btn.dataset.quixortItem, e.target.value)));
-  delegate("input", "[data-quixort-trash]", requireHost((e, btn) => setQuixortTrashItem(btn.dataset.quixortTrash, e.target.value)));
+  // Quixort host (text inputs commit on blur/Enter via change — committing per
+  // keystroke would re-render under the typist and steal focus)
+  delegate("change", "[data-quixort-item]", requireHost((e, btn) => setQuixortItem(btn.dataset.quixortItem, e.target.value)));
+  delegate("change", "[data-quixort-trash]", requireHost((e, btn) => setQuixortTrashItem(btn.dataset.quixortTrash, e.target.value)));
   delegate("change", "#quixort-mult", requireHost((e) => setQuixortMultiplier(e.target.value)));
   delegate("change", "#quixort-block-sec", requireHost((e) => setQuixortBlockSec(e.target.value)));
   delegate("click", "[data-quixort-start]", requireHost(() => startQuixort()));
