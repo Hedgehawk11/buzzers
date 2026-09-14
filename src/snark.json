@@ -87,8 +87,8 @@
         "snark2": "Could not send buzz. Check connection/room. I shot the messenger."
       },
       "buzzSendFailedShort": {
-        "en": "Could not send buzz.",
-        "snark1": "Could not send buzz. Check connection/room.",
+        "en": "Could not send buzz. Check connection/room.",
+        "snark1": "Could not send buzz. Check connection/room. Your internet is probably bad.",
         "snark2": "Could not send buzz. Check connection/room. I shot the messenger."
       },
       "answerEmpty": {
@@ -577,11 +577,118 @@
         "snark2": ""
       }
     },
+    "quixort": {
+      "waitingHost": {
+        "en": "Waiting for the host to start...",
+        "snark1": "Waiting for the host to start Quixort... any day now...",
+        "snark2": "Waiting on the host... they're alphabetizing something."
+      },
+      "coopBlocked": {
+        "en": "Quixort is off limits in coopertition mode.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notActive": {
+        "en": "Quixort isn't active.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notPlayer": {
+        "en": "Host cannot sort.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "sittingOut": {
+        "en": "You joined after this round started — sit back and watch!",
+        "snark1": "Late arrival! This round started without you. Enjoy the show.",
+        "snark2": "You missed the Flight. Spectate and judge everyone's ordering."
+      },
+      "runFinished": {
+        "en": "This run is finished.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badBlock": {
+        "en": "Bad block.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badPosition": {
+        "en": "Bad position.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notYourTurn": {
+        "en": "It's {player}'s turn to place.",
+        "snark1": "Not your block! Let {player} place it.",
+        "snark2": "Hands off — {player} is sorting this one."
+      },
+      "placed": {
+        "en": "Placed.",
+        "snark1": "Placed! Bold ordering.",
+        "snark2": "Placed. I am watching."
+      },
+      "placeSendFailed": {
+        "en": "Could not send placement.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "yourTurn": {
+        "en": "Your turn to place.",
+        "snark1": "Your turn! Don't overthink it. Or do.",
+        "snark2": "You're up! Place it like you mean it."
+      },
+      "teammateTurn": {
+        "en": "It's {player}'s turn to place.",
+        "snark1": "It's {player}'s turn. Backseat sorting is encouraged.",
+        "snark2": "It's {player}'s turn. No pressure, {player}."
+      },
+      "timeLeftLabel": {
+        "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "emptyRow": {
+        "en": "Your row is empty — place the first block.",
+        "snark1": "Empty row. Every great sort starts with a single block.",
+        "snark2": "Nothing sorted yet. The void awaits your first block."
+      },
+      "placePrompt": {
+        "en": "Block {current} of {total} — tap where it goes.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "trashButton": {
+        "en": "Trash it",
+        "snark1": "Trash it",
+        "snark2": "Trash it"
+      },
+      "resultsTitle": {
+        "en": "Results",
+        "snark1": "",
+        "snark2": ""
+      },
+      "exactCount": {
+        "en": "{exact} exact placements",
+        "snark1": "",
+        "snark2": ""
+      },
+      "waitingHostContinue": {
+        "en": "Waiting for the host to continue...",
+        "snark1": "Waiting for the host... any day now...",
+        "snark2": "Waiting on the host... gently."
+      },
+      "runDone": {
+        "en": "All sorted! Wait for results.",
+        "snark1": "Sorted! Waiting for slower players.",
+        "snark2": "Done sorting! The other teams are still fumbling."
+      }
+    },
     "fibbage": {
       "waitingHost": {
         "en": "Waiting for the host to start...",
         "snark1": "Waiting for the host to start Fibbage... any century now...",
-        "snark2": "Waiting on the host to start Fibbage. They're composing the perfect truth."
+        "snark2": "Waiting on the host to start Fibbage. Take a breath."
       },
       "notLying": {
         "en": "Not accepting lies right now.",
@@ -1069,6 +1176,18 @@
       },
       "modeHostPaced": {
         "en": "All Play — Host Paced",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "quixort": {
+      "waitingGame": {
+        "en": "Waiting for the game to start...",
+        "snark1": "",
+        "snark2": ""
+      },
+      "finalStandings": {
+        "en": "Final Standings",
         "snark1": "",
         "snark2": ""
       }
