@@ -864,6 +864,78 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScori
   check("alliance totals above player scores", totalsIdx !== -1 && playerIdx !== -1 && totalsIdx < playerIdx, `totals=${totalsIdx} player=${playerIdx}`);
 }
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);
+// --- roll credits broadcast: host starts, everyone but tablet watches ---
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", false] }, prod);
+await sleep(50);
+check("host sees roll credits button", _mount.innerHTML.includes("data-credits-start"), "cta missing for host");
+S().scores = { dev1: 300, dev2: 900, plain1: 100 };
+clickBtn({}, "[data-credits-start]");
+await sleep(50);
+check("credits started in shared state", S().credits?.active === true && S().credits?.startedAt > 0, JSON.stringify(S().credits));
+{
+  const html = _mount.innerHTML;
+  check("credits overlay renders", html.includes("data-credits-overlay"), `html len=${html.length}`);
+  const order = ["Host", "Producers", "Players", "Special thanks"].map((h) => html.indexOf(`>${h}<`));
+  check("credits section order", order.every((i) => i !== -1) && order[0] < order[1] && order[1] < order[2] && order[2] < order[3], order.join(","));
+  const overlay = html.slice(html.indexOf("data-credits-overlay"));
+  check("credits ranks first to last", overlay.indexOf("GroupB") !== -1 && overlay.indexOf("GroupB") < overlay.indexOf("GroupA") && overlay.indexOf("GroupA") < overlay.indexOf("Solo"), "ranking wrong");
+  check("credits names host", html.includes("<p><strong>Host</strong></p>"), "host name missing");
+  check("credits names producer", html.includes("<p><strong>Producer</strong></p>"), "producer name missing");
+}
+// producer view: overlay plays, but starting is strictly a host power
+pk._store.self = pk._store.participants.prod1;
+pk._store.isHost = false;
+// producer-action short-circuits without rendering when isHost is false,
+// so drive the producer render through a no-op delegated click instead.
+clickBtn({}, "[data-coop-cancel]");
+await sleep(50);
+check("producer sees overlay", _mount.innerHTML.includes("data-credits-overlay"), "no overlay for producer");
+check("producer cannot start credits", !_mount.innerHTML.includes("data-credits-start"), "start button leaked to producer");
+{
+  const startedAt = S().credits?.startedAt;
+  clickBtn({}, "[data-credits-start]");
+  await sleep(50);
+  check("non-host start is a no-op", S().credits?.startedAt === startedAt, JSON.stringify(S().credits));
+}
+pk._store.isHost = true;
+// audience display watches too
+pk._store.self = pk._store.participants.disp1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("display sees overlay", _mount.innerHTML.includes("data-credits-overlay"), "no overlay for display");
+// tablet timer is excluded
+const tab = pk.makePlayer("tab1", "Tab", "tablet_timer");
+pk._store.participants.tab1 = tab;
+pk._store.self = tab;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("tablet skips overlay", !_mount.innerHTML.includes("data-credits-overlay"), "overlay leaked to tablet");
+// host ends it everywhere via the real click path
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+clickBtn({}, "[data-credits-end]");
+await sleep(50);
+check("credits ended in shared state", S().credits?.active === false, JSON.stringify(S().credits));
+check("overlay gone after end", !_mount.innerHTML.includes("data-credits-overlay"), "overlay stuck");
+// restart, then a local dismiss hides one screen while the broadcast lives on
+clickBtn({}, "[data-credits-start]");
+await sleep(50);
+check("credits restarted", S().credits?.active === true, JSON.stringify(S().credits));
+pk._store.self = pk._store.participants.disp1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("overlay back for display", _mount.innerHTML.includes("data-credits-overlay"), "restart did not reach display");
+clickBtn({}, "[data-credits-close]");
+await sleep(50);
+check("local dismiss hides overlay", !_mount.innerHTML.includes("data-credits-overlay"), "dismiss failed");
+check("broadcast still active after dismiss", S().credits?.active === true, JSON.stringify(S().credits));
+pk._store.self = pk._store.participants.host1;
+clickBtn({}, "[data-credits-end]");
+await sleep(50);
+check("credits ended after dismiss", S().credits?.active === false, JSON.stringify(S().credits));
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

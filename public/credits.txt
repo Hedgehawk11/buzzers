@@ -1,0 +1,24 @@
+This buzzer system made by:
+Hedgehawk11 <3
+
+Diamond Buzzer layout concept:
+You Don't Know Jack 2015 (Jackbox party pack 1)
+
+Gamemode Concepts from:
+You Don't Know Jack Vol. 4: The ride - Disordat, Bingo
+You Don't Know Jack: The Re-Ride - Wen Dit Happn (originally from YDKJ: LFF)
+Fibbage - Fibbage
+Quixort - Quixort
+
+Special thanks to:
+Jackbox Games
+Opencode
+Vercel
+
+No thanks to:
+Kahoot
+Blooket
+
+Thanks for playing!
+
+Made with PlayroomKit and OpenCode (Muse Spark 1.3 Free).
