@@ -45,8 +45,7 @@ In no particular order:
 Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a few random qol and bug fixes changes added in as well
 
 ### Tutorial?
-Soon!
-
+[Crappy tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
 #### Video tutorial?
 Possibly.
 
