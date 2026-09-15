@@ -120,6 +120,14 @@ let coopEditing = false;
 // every screen decides for itself whether the popup is open).
 let roomCodeModalOpen = false;
 let roomCodeModalAutoDismissed = false;
+// Roll-credits broadcast: shared `credits` state (host-written) drives the
+// overlay on every screen; everything below is module-local UI state only.
+// creditsText holds the fetched credits.txt body for the current startedAt.
+let creditsText = null;
+let creditsTextFor = 0;
+let creditsFetchFailed = false;
+let creditsFetchInFlight = false;
+let creditsDismissedAt = null;
 const COOP_COUNT_KEY = "buzzer_coop_count";
 const COOP_NAMES_KEY = "buzzer_coop_names";
 
@@ -1344,6 +1352,9 @@ showScoresToPlayers: settings.showScoresToPlayers,
     pendingLogId,
     controllerId: getControllerId(),
     producerIds: getSafeState("producerIds", []),
+    // Credits broadcast state (two scalars) — remote screens only re-render
+    // the overlay when this flips, so it must be part of the signature.
+    credits: getSafeState("credits", null),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     quixort: (() => {
@@ -5441,6 +5452,9 @@ function ensureHostInit() {
       setState("producerIds", cleaned, true);
     }
   }
+  if (getState("credits") === undefined) {
+    setState("credits", { active: false, startedAt: 0 }, true);
+  }
   assignControllerIfNeeded();
   // Prune departed devices from live round + coop bookkeeping so a holder
   // leaving can't orphan Jeopardy control or freeze buzz lists.
@@ -8000,6 +8014,210 @@ function renderRoomCodeModal(roomCode) {
     </div>`;
 }
 
+// =============================================================================
+// Roll credits — host-started broadcast overlay (every screen except tablet).
+// Shared `credits` state ({active, startedAt}) is host-written; ranking and
+// the credits.txt body are resolved per-client at render time.
+// =============================================================================
+function getCreditsState() {
+  const credits = getSafeState("credits", null);
+  if (!credits || typeof credits !== "object" || !credits.active) return null;
+  return credits;
+}
+
+function isTabletTimerClient() {
+  return clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer";
+}
+
+function startCredits() {
+  if (!isHost()) return;
+  creditsDismissedAt = null;
+  setState("credits", { active: true, startedAt: now() }, true);
+  scheduleRender(render);
+}
+
+function endCredits() {
+  if (!isHost()) return;
+  setState("credits", { active: false, startedAt: 0 }, true);
+  scheduleRender(render);
+}
+
+function dismissCreditsLocally() {
+  const credits = getCreditsState();
+  creditsDismissedAt = credits ? credits.startedAt : null;
+  scheduleRender(render);
+}
+
+function getCreditsBaseUrl() {
+  try {
+    const base = import.meta?.env?.BASE_URL;
+    if (typeof base === "string" && base) return base;
+  } catch {}
+  return "/";
+}
+
+// Fetch credits.txt once per broadcast; failures fall back to snark text.
+// Guarded for non-browser runtimes (harness) where fetch has no page base.
+function ensureCreditsText(startedAt) {
+  if (creditsTextFor === startedAt && (creditsText !== null || creditsFetchFailed)) return;
+  if (creditsFetchInFlight && creditsTextFor === startedAt) return;
+  creditsTextFor = startedAt;
+  creditsText = null;
+  creditsFetchFailed = false;
+  creditsFetchInFlight = true;
+  const done = (text) => {
+    creditsFetchInFlight = false;
+    if (typeof text === "string") creditsText = text;
+    else creditsFetchFailed = true;
+    scheduleRender(render);
+  };
+  try {
+    if (typeof fetch !== "function") { done(null); return; }
+    fetch(`${getCreditsBaseUrl()}credits.txt`, { cache: "no-cache" })
+      .then((res) => (res && res.ok ? res.text() : null))
+      .then(done, () => done(null));
+  } catch { done(null); }
+}
+
+// Player/section rows for the crawl, first to last place:
+// - coop: whole groups by group total (never sub-player slots)
+// - shared-team scoring: winning team first, members sorted inside each team
+// - otherwise: individuals by score. Controller/producers/kicked excluded.
+function getCreditsPlayerSections(players, scores, settings, controllerId, producerIds, assignments) {
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const eligible = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id));
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name));
+
+  if (isCoopMode(settings)) {
+    const groups = eligible
+      .map((player) => {
+        const groupName = getCoopGroupName(player.id, getPlayerName(player));
+        const count = getCoopSlotCount(player.id);
+        const members = [];
+        for (let slot = 0; slot < count; slot++) members.push(getCoopSlotName(player.id, slot, groupName));
+        return { name: groupName, total: getCoopGroupTotal(player.id, scores), members };
+      })
+      .sort((a, b) => b.total - a.total || byName(a, b));
+    return { kind: "groups", groups };
+  }
+
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    const teams = TEAM_COLORS
+      .map((teamColor) => {
+        const members = getTeamMembers(teamColor, players, assignments)
+          .filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id))
+          .map((player) => ({ name: getPlayerName(player), total: Number(scores[player.id] || 0) }))
+          .sort((a, b) => b.total - a.total || byName(a, b));
+        if (members.length === 0) return null;
+        return { name: teamColor, total: Number(scores[getTeamScoreKey(teamColor)] || 0), members };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.total - a.total || byName(a, b));
+    return { kind: "teams", teams };
+  }
+
+  const ranked = eligible
+    .map((player) => ({ name: getPlayerName(player), total: Number(scores[player.id] || 0) }))
+    .sort((a, b) => b.total - a.total || byName(a, b));
+  return { kind: "players", ranked };
+}
+
+function renderCreditsOverlay() {
+  const credits = getCreditsState();
+  if (!credits) return "";
+  if (isTabletTimerClient()) return "";
+  if (!me()) return "";
+  if (creditsDismissedAt === credits.startedAt) return "";
+  ensureCreditsText(credits.startedAt);
+
+  const players = currentParticipants();
+  const settings = getSettings();
+  const scores = getScores();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const controller = players.find((p) => p.id === controllerId) || null;
+  const hostName = controller ? getPlayerName(controller) : "-";
+  const producerNames = (Array.isArray(producerIds) ? producerIds : []).map((id) => {
+    const player = players.find((p) => p.id === id);
+    return player ? getPlayerName(player) : "(disconnected)";
+  });
+  const sections = getCreditsPlayerSections(players, scores, settings, controllerId, producerIds, assignments);
+
+  let playerHtml = "";
+  if (sections.kind === "groups") {
+    playerHtml = sections.groups.length === 0
+      ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noPlayersYet", "No players yet."))}</p>`
+      : `<ol class="credits-ranked">${sections.groups.map((group, index) => `<li><span class="credits-rank">${index + 1}.</span> <strong>${escapeHtml(group.name)}</strong> <span class="credits-score">${group.total}</span><br /><small class="muted">${group.members.map(escapeHtml).join(", ")}</small></li>`).join("")}</ol>`;
+  } else if (sections.kind === "teams") {
+    playerHtml = sections.teams.length === 0
+      ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noPlayersYet", "No players yet."))}</p>`
+      : sections.teams.map((team, index) => `<h4 class="credits-team-head"><span class="credits-rank">${index + 1}.</span> <span class="team-pill team-${escapeHtml(team.name)}">${escapeHtml(team.name)}</span> <span class="credits-score">${team.total}</span></h4><ol class="credits-ranked">${team.members.map((member) => `<li><strong>${escapeHtml(member.name)}</strong> <span class="credits-score">${member.total}</span></li>`).join("")}</ol>`).join("");
+  } else {
+    playerHtml = sections.ranked.length === 0
+      ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noPlayersYet", "No players yet."))}</p>`
+      : `<ol class="credits-ranked">${sections.ranked.map((entry, index) => `<li><span class="credits-rank">${index + 1}.</span> <strong>${escapeHtml(entry.name)}</strong> <span class="credits-score">${entry.total}</span></li>`).join("")}</ol>`;
+  }
+
+  const thanksBody = creditsText !== null
+    ? escapeHtml(creditsText)
+    : creditsFetchFailed
+      ? escapeHtml(getSnark("shared.credits.loadFailed", "Thanks for playing!"))
+      : escapeHtml(getSnark("shared.credits.loading", "Loading credits…"));
+  const endButton = isHost()
+    ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
+    : "";
+
+  return `
+    <div class="credits-overlay" data-credits-overlay data-credits-since="${escapeHtml(String(credits.startedAt))}">
+      <div class="credits-dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(getSnark("shared.credits.title", "Credits"))}">
+        <div class="credits-topbar">
+          <strong>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</strong>
+          <div class="credits-topbar-actions">
+            ${endButton}
+            <button type="button" data-credits-close>${escapeHtml(getSnark("shared.credits.closeButton", "Close"))}</button>
+          </div>
+        </div>
+        <div class="credits-viewport">
+          <div class="credits-crawl">
+            <h3>${escapeHtml(getSnark("shared.credits.hostHeading", "Host"))}</h3>
+            <p><strong>${escapeHtml(hostName)}</strong></p>
+            <h3>${escapeHtml(getSnark("shared.credits.producersHeading", "Producers"))}</h3>
+            ${producerNames.length === 0 ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noProducers", "No producers assigned."))}</p>` : producerNames.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join("")}
+            <h3>${escapeHtml(getSnark("shared.credits.playersHeading", "Players"))}</h3>
+            ${playerHtml}
+            <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Special thanks"))}</h3>
+            <p class="credits-thanks">${thanksBody}</p>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// Host-only call-to-action rendered under the host settings panel.
+// Producers never see it: starting credits is strictly a host power.
+function renderCreditsHostCta() {
+  if (!isHost()) return "";
+  const active = Boolean(getCreditsState());
+  const button = active
+    ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
+    : `<button type="button" data-credits-start>${escapeHtml(getSnark("shared.credits.rollButton", "Roll credits"))}</button>`;
+  return `
+    <section class="card credits-cta-card">
+      <h2>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</h2>
+      <p class="muted">${escapeHtml(getSnark("shared.credits.ctaHelper", "Roll the credits on every screen (except the timer tablet)."))}</p>
+      ${button}
+    </section>`;
+}
+
+// Single mount point for the broadcast overlay: appended after the view so
+// every render branch gets it without touching each template. Never used for
+// the tablet_timer view (tablet clients never watch credits).
+function mountView(mount, html, modeKey) {
+  const full = `${html}${renderCreditsOverlay()}`;
+  if (!transitionMount(mount, full, modeKey)) mount.innerHTML = full;
+}
+
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
   if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
   if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
@@ -9098,7 +9316,7 @@ function render() {
     } else {
       const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? "audience-disordat" : isFibbageMode() ? "audience-fibbage" : "audience";
       const html = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
-      if (!transitionMount(mount, html, audienceKey)) mount.innerHTML = html;
+      mountView(mount, html, audienceKey);
     }
     lastUiSignature = getUiSignature();
     // audience never shows delta per spec
@@ -9133,7 +9351,7 @@ function render() {
         ${tsBody}
       </main>
     `;
-    if (!transitionMount(mount, _html_teamselect, "teamselect")) mount.innerHTML = _html_teamselect;
+    mountView(mount, _html_teamselect, "teamselect");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -9143,6 +9361,7 @@ function render() {
     const isWen = isWenDitHapnMode();
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderCreditsHostCta()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9167,7 +9386,7 @@ function render() {
         ${bingoBody}
       </main>
     `;
-    if (!transitionMount(mount, _html_bingo, "bingo")) mount.innerHTML = _html_bingo;
+    mountView(mount, _html_bingo, "bingo");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -9176,6 +9395,7 @@ function render() {
   if (isDisOrDatMode()) {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderCreditsHostCta()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9200,7 +9420,7 @@ function render() {
         ${ddBody}
       </main>
     `;
-    if (!transitionMount(mount, _html_disordat, "disordat")) mount.innerHTML = _html_disordat;
+    mountView(mount, _html_disordat, "disordat");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -9212,6 +9432,7 @@ function render() {
     const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderCreditsHostCta()}
       <section class="grid">
         ${fibScoresHost}
       </section>
@@ -9236,7 +9457,7 @@ function render() {
         ${fibBody}
       </main>
     `;
-    if (!transitionMount(mount, _html_fibbage, "fibbage")) mount.innerHTML = _html_fibbage;
+    mountView(mount, _html_fibbage, "fibbage");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -9247,6 +9468,7 @@ function render() {
     const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."));
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderCreditsHostCta()}
       <section class="grid">
         ${qxScoresHost}
       </section>
@@ -9271,7 +9493,7 @@ function render() {
         ${qxBody}
       </main>
     `;
-    if (!transitionMount(mount, _html_quixort, "quixort")) mount.innerHTML = _html_quixort;
+    mountView(mount, _html_quixort, "quixort");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -9294,6 +9516,7 @@ function render() {
       </header>
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderCreditsHostCta()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
@@ -9306,7 +9529,7 @@ function render() {
     </main>
   `;
 
-  if (!transitionMount(mount, _html_default, "default")) mount.innerHTML = _html_default;
+  mountView(mount, _html_default, "default");
   lastUiSignature = getUiSignature();
   requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
 }
@@ -9380,6 +9603,13 @@ function bindEvents() {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); roomCodeModalOpen = true; scheduleRender(render); }
   });
   delegate("click", "[data-room-code-close]", () => { roomCodeModalOpen = false; roomCodeModalAutoDismissed = true; scheduleRender(render); });
+  delegate("click", "[data-credits-start]", () => { startCredits(); });
+  delegate("click", "[data-credits-end]", () => { endCredits(); });
+  delegate("click", "[data-credits-close]", () => { dismissCreditsLocally(); });
+  delegate("click", "[data-credits-overlay]", (e, el) => {
+    if (e.target !== el) return; // backdrop only — dialog clicks stay open
+    dismissCreditsLocally();
+  });
   delegate("click", "[data-room-code-overlay]", (e, el) => {
     if (e.target !== el) return; // backdrop only — dialog clicks stay open
     roomCodeModalOpen = false;
