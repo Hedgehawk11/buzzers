@@ -7176,7 +7176,7 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
     };
     grid = renderChoiceLayout4(
       normalizeChoiceLayout(settings.choiceLayout),
-      [[4, "pos-y"], [2, "pos-b"], [3, "pos-x"], [1, "pos-a"]],
+      [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]],
       button,
       roundLabel,
     );
@@ -7434,7 +7434,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
           <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
           <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
-          ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [3, "pos-x"], [2, "pos-b"], [1, "pos-a"]], button, roundLabel)}
+          ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [2, "pos-x"], [3, "pos-b"], [1, "pos-a"]], button, roundLabel)}
         </section>
       `;
     }
@@ -7635,7 +7635,7 @@ const screwBtn = settings.allowScrewing
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
-        ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [2, "pos-b"], [3, "pos-x"], [1, "pos-a"]], button, roundLabel)}
+        ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]], button, roundLabel)}
         ${screwBtn}
       </section>
     `;
