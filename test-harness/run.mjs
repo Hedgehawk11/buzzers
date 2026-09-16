@@ -1183,6 +1183,19 @@ await sleep(50);
   check("text analytics groups answers", html.includes("67%") && html.includes("33%"), "grouped shares missing");
   check("log badges label text", html.includes("log-badge-text"), "text badge missing");
 }
+// next round resets analytics: an active mirror clears on open, old
+// percentages don't linger into the new round
+await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, prod);
+check("spotlight on before new round", S().analyticsSpotlight?.active === true, JSON.stringify(S().analyticsSpotlight));
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+check("new round opened", S().round?.status === "open", S().round?.status);
+check("new round clears spotlight", S().analyticsSpotlight?.active !== true, JSON.stringify(S().analyticsSpotlight));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("new round shows waiting analytics", html.includes("data-analytics-card") && html.includes("still open") && !html.includes("67%"), "stale percentages lingered");
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

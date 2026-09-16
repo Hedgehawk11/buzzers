@@ -2626,10 +2626,14 @@ function openBuzzers() {
     true,
   );
   setState("pendingLogId", null, true);
+  // A new round resets analytics: drop the audience mirror so the previous
+  // round's results don't linger into the new round. Host card already follows
+  // the current round (waiting note while open). Only writes when active.
+  try {
+    if (getAnalyticsSpotlight()) setState("analyticsSpotlight", { active: false, startedAt: 0 }, true);
+  } catch {}
   render();
 }
-
-// Pause the open timer mid-round (status -> CLOSED, clock frozen at
 // remainingCs). Only valid from OPEN — LOCKED already freezes the clock for
 // the pending ruling, so pausing there is a no-op with a notice.
 function pauseBuzzers() {
