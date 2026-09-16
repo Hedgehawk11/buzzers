@@ -2636,7 +2636,7 @@ body:not([data-ui-anims="off"]) .room-code-modal {
   -webkit-mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
   mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
 }
-.credits-crawl { padding-bottom: 10vh; }
+.credits-crawl { padding: 62vh 0 10vh; }
 .credits-crawl h3 {
   margin: 2rem 0 0.5rem;
   font-size: 0.8rem;
@@ -2653,7 +2653,7 @@ body:not([data-ui-anims="off"]) .room-code-modal {
 .credits-team-head { margin: 1rem 0 0.25rem; }
 .credits-thanks { white-space: pre-line; }
 @keyframes creditsCrawl {
-  from { transform: translateY(35vh); }
+  from { transform: translateY(0); }
   to { transform: translateY(calc(-100% + 30vh)); }
 }
 /* Single run, then hold on the final frame. Anims-off kills it globally
@@ -2664,6 +2664,10 @@ body:not([data-ui-anims="off"]) .credits-crawl {
 body[data-ui-anims="off"] .credits-viewport {
   overflow-y: auto;
 }
+body[data-ui-anims="off"] .credits-crawl {
+  padding-top: 0;
+}
 @media (prefers-reduced-motion: reduce) {
   .credits-viewport { overflow-y: auto; }
+  .credits-crawl { padding-top: 0; }
 }
