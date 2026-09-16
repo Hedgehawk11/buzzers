@@ -1043,7 +1043,7 @@ async function producerDispatch(fnName, ...args) {
       setPlayerTeam, randomizeTeams,
       openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
       updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
-      adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
+      adjustPlayerScore, resetPlayerScore, resetAllScores, setCustomPlayerName,
       kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
     };
     dispatch[fnName]?.(...args);
@@ -1355,6 +1355,9 @@ showScoresToPlayers: settings.showScoresToPlayers,
     // Credits broadcast state (two scalars) — remote screens only re-render
     // the overlay when this flips, so it must be part of the signature.
     credits: getSafeState("credits", null),
+    // Room-code spotlight broadcast — display screens only re-render the
+    // modal when this flips (their tick otherwise only patches timers).
+    roomCodeSpotlight: getSafeState("roomCodeSpotlight", null),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     quixort: (() => {
@@ -5037,6 +5040,38 @@ function resetPlayerScore(playerId) {
   render();
 }
 
+// Reset every score to 0 — all player/coop keys plus every team total.
+// Writes zeros (never deletes keys) so the shape stays stable, logs one
+// manual-reset entry so the audience display updates via the signature.
+function resetAllScores() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "resetAllScores", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const keys = new Set(Object.keys(getScores()));
+  TEAM_COLORS.forEach((teamColor) => keys.add(getTeamScoreKey(teamColor)));
+  players.forEach((player) => {
+    if (player.id === controllerId) return;
+    getScoreKeysForDevice(player.id, settings, assignments).forEach((key) => keys.add(key));
+  });
+  if (keys.size === 0) return;
+  const scores = { ...getScores() };
+  let totalRemoved = 0;
+  keys.forEach((key) => {
+    const value = Number(scores[key] || 0);
+    if (Number.isFinite(value)) totalRemoved += value;
+    scores[key] = 0;
+  });
+  setState("scores", scores, true);
+  pushManualLogEntry(controllerId, "all", -totalRemoved, "reset");
+  setBuzzNotice("All scores reset to 0.");
+  render();
+}
+
 function setCustomPlayerName(playerId, name) {
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "setCustomPlayerName", args: [playerId, name] }, RPC.Mode.HOST);
@@ -5454,6 +5489,9 @@ function ensureHostInit() {
   }
   if (getState("credits") === undefined) {
     setState("credits", { active: false, startedAt: 0 }, true);
+  }
+  if (getState("roomCodeSpotlight") === undefined) {
+    setState("roomCodeSpotlight", { active: false, startedAt: 0 }, true);
   }
   assignControllerIfNeeded();
   // Prune departed devices from live round + coop bookkeeping so a holder
@@ -8048,6 +8086,30 @@ function dismissCreditsLocally() {
   scheduleRender(render);
 }
 
+// =============================================================================
+// Room-code spotlight — host-started broadcast that forces the large room-code
+// modal onto every audience display (shared `roomCodeSpotlight` state,
+// {active, startedAt}, host-written like `credits`). Display-side badge/close
+// only drive the local/auto modal; the spotlight stays until the host ends it.
+// =============================================================================
+function getRoomCodeSpotlight() {
+  const spotlight = getSafeState("roomCodeSpotlight", null);
+  if (!spotlight || typeof spotlight !== "object" || !spotlight.active) return null;
+  return spotlight;
+}
+
+function startRoomCodeSpotlight() {
+  if (!isHost()) return;
+  setState("roomCodeSpotlight", { active: true, startedAt: now() }, true);
+  scheduleRender(render);
+}
+
+function endRoomCodeSpotlight() {
+  if (!isHost()) return;
+  setState("roomCodeSpotlight", { active: false, startedAt: 0 }, true);
+  scheduleRender(render);
+}
+
 function getCreditsBaseUrl() {
   try {
     const base = import.meta?.env?.BASE_URL;
@@ -8081,7 +8143,9 @@ function ensureCreditsText(startedAt) {
 
 // Player/section rows for the crawl, first to last place:
 // - coop: whole groups by group total (never sub-player slots)
-// - shared-team scoring: winning team first, members sorted inside each team
+// - team mode (shared or individual scoring): winning team first, members
+//   sorted inside each team; shared mode reads the team total key, individual
+//   mode sums member totals. Unassigned players trail as their own section.
 // - otherwise: individuals by score. Controller/producers/kicked excluded.
 function getCreditsPlayerSections(players, scores, settings, controllerId, producerIds, assignments) {
   const kicked = new Set(settings.kickedPlayerIds || []);
@@ -8101,7 +8165,8 @@ function getCreditsPlayerSections(players, scores, settings, controllerId, produ
     return { kind: "groups", groups };
   }
 
-  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+  if (settings.teamModeEnabled) {
+    const isShared = settings.teamScoringMode === "shared";
     const teams = TEAM_COLORS
       .map((teamColor) => {
         const members = getTeamMembers(teamColor, players, assignments)
@@ -8109,11 +8174,25 @@ function getCreditsPlayerSections(players, scores, settings, controllerId, produ
           .map((player) => ({ name: getPlayerName(player), total: Number(scores[player.id] || 0) }))
           .sort((a, b) => b.total - a.total || byName(a, b));
         if (members.length === 0) return null;
-        return { name: teamColor, total: Number(scores[getTeamScoreKey(teamColor)] || 0), members };
+        const total = isShared
+          ? Number(scores[getTeamScoreKey(teamColor)] || 0)
+          : members.reduce((sum, member) => sum + (Number.isFinite(member.total) ? member.total : 0), 0);
+        return { name: teamColor, total, members };
       })
-      .filter(Boolean)
+      .filter(Boolean);
+    const unassigned = eligible
+      .filter((player) => !getPlayerTeamColor(player.id, assignments))
+      .map((player) => ({ name: getPlayerName(player), total: Number(scores[player.id] || 0) }))
       .sort((a, b) => b.total - a.total || byName(a, b));
-    return { kind: "teams", teams };
+    if (unassigned.length > 0) {
+      teams.push({
+        name: getSnark("shared.credits.unassignedTeam", "unassigned"),
+        total: unassigned.reduce((sum, member) => sum + (Number.isFinite(member.total) ? member.total : 0), 0),
+        members: unassigned,
+      });
+    }
+    teams.sort((a, b) => b.total - a.total || byName(a, b));
+    if (teams.length > 0) return { kind: "teams", teams };
   }
 
   const ranked = eligible
@@ -8210,6 +8289,22 @@ function renderCreditsHostCta() {
     </section>`;
 }
 
+// Host-only call-to-action for the room-code spotlight. Producers never see
+// it: forcing the large room code onto displays is strictly a host power.
+function renderRoomCodeSpotlightHostCta() {
+  if (!isHost()) return "";
+  const active = Boolean(getRoomCodeSpotlight());
+  const button = active
+    ? `<button type="button" data-room-code-spotlight-hide>${escapeHtml(getSnark("shared.misc.roomSpotlightHide", "Hide room code"))}</button>`
+    : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`;
+  return `
+    <section class="card room-code-spotlight-cta-card">
+      <h2>${escapeHtml(getSnark("shared.misc.roomSpotlightTitle", "Room code spotlight"))}</h2>
+      <p class="muted">${escapeHtml(getSnark("shared.misc.roomSpotlightHelper", "Show the large room code on every audience display."))}</p>
+      ${button}
+    </section>`;
+}
+
 // Single mount point for the broadcast overlay: appended after the view so
 // every render branch gets it without touching each template. Never used for
 // the tablet_timer view (tablet clients never watch credits).
@@ -8236,9 +8331,11 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   const joinCount = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && !kicked.has(p.id)).length;
   const roomCode = getRoomCode() || getSnark("audience.misc.roomFallback", "....");
   // Auto-popup when the room is empty; re-arms once players join. Explicit
-  // open/close via the badge always wins over the auto behavior.
+  // open/close via the badge always wins over the auto behavior. The host's
+  // room-code spotlight (shared state) forces the modal on regardless.
   if (joinCount > 0) roomCodeModalAutoDismissed = false;
-  const showRoomCodeModal = roomCodeModalOpen || (joinCount === 0 && !roomCodeModalAutoDismissed);
+  const spotlightActive = Boolean(getRoomCodeSpotlight());
+  const showRoomCodeModal = roomCodeModalOpen || spotlightActive || (joinCount === 0 && !roomCodeModalAutoDismissed);
 
   return `
     <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
@@ -8912,6 +9009,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
               : ""}
             <button type="button" data-host-action="reset-screws">Refund Screws</button>
+            <button type="button" class="red" data-host-action="reset-all-scores">${escapeHtml(getSnark("shared.misc.resetAllScores", "Reset scores"))}</button>
           </div>
         </div>
         ${renderScrewNotice(round)}
@@ -9362,6 +9460,7 @@ function render() {
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderCreditsHostCta()}
+      ${renderRoomCodeSpotlightHostCta()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9396,6 +9495,7 @@ function render() {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderCreditsHostCta()}
+      ${renderRoomCodeSpotlightHostCta()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9433,6 +9533,7 @@ function render() {
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderCreditsHostCta()}
+      ${renderRoomCodeSpotlightHostCta()}
       <section class="grid">
         ${fibScoresHost}
       </section>
@@ -9469,6 +9570,7 @@ function render() {
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderCreditsHostCta()}
+      ${renderRoomCodeSpotlightHostCta()}
       <section class="grid">
         ${qxScoresHost}
       </section>
@@ -9517,6 +9619,7 @@ function render() {
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderCreditsHostCta()}
+      ${renderRoomCodeSpotlightHostCta()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
@@ -9605,6 +9708,8 @@ function bindEvents() {
   delegate("click", "[data-room-code-close]", () => { roomCodeModalOpen = false; roomCodeModalAutoDismissed = true; scheduleRender(render); });
   delegate("click", "[data-credits-start]", () => { startCredits(); });
   delegate("click", "[data-credits-end]", () => { endCredits(); });
+  delegate("click", "[data-room-code-spotlight-show]", () => { startRoomCodeSpotlight(); });
+  delegate("click", "[data-room-code-spotlight-hide]", () => { endRoomCodeSpotlight(); });
   delegate("click", "[data-credits-close]", () => { dismissCreditsLocally(); });
   delegate("click", "[data-credits-overlay]", (e, el) => {
     if (e.target !== el) return; // backdrop only — dialog clicks stay open
@@ -9691,6 +9796,10 @@ function bindEvents() {
     } else if (action === "close") closeBuzzers();
     else if (action === "reset") resetRound();
     else if (action === "reset-screws") resetScrews();
+    else if (action === "reset-all-scores") {
+      if (typeof confirm === "function" && !confirm("Reset ALL scores to 0?")) return;
+      resetAllScores();
+    }
   }));
   delegate("click", "[data-host-screw]", requireHost(() => hostInitiateScrew()));
   delegate("click", "[data-teamselect-open]", requireHost(() => openTeamSelect()));
@@ -10681,7 +10790,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     openTeamSelect, closeTeamSelect, setTeamSelectLocked, setTeamSelectTeams, setTeamSelectLimit,
     updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
     setCorrectAnswerValue, clearCorrectAnswerValue, toggleCorrectOption,
-    adjustPlayerScore, resetPlayerScore, setCustomPlayerName,
+    adjustPlayerScore, resetPlayerScore, resetAllScores, setCustomPlayerName,
     kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
     setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
     startQuixort, endQuixort, resetQuixort, exitQuixort,

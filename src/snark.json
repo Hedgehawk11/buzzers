@@ -1393,6 +1393,11 @@
         "snark1": "",
         "snark2": ""
       },
+      "unassignedTeam": {
+        "en": "unassigned",
+        "snark1": "",
+        "snark2": ""
+      },
       "rollButton": {
         "en": "Roll credits",
         "snark1": "",
@@ -1432,6 +1437,31 @@
       },
       "roomCodeLabel": {
         "en": "Room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightTitle": {
+        "en": "Room code spotlight",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightHelper": {
+        "en": "Show the large room code on every audience display.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightShow": {
+        "en": "Show room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightHide": {
+        "en": "Hide room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "resetAllScores": {
+        "en": "Reset scores",
         "snark1": "",
         "snark2": ""
       },

@@ -32,9 +32,10 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 ### What's coming?
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
+ - Update game log
  - Bounce gamemode
- - Credits roll
  - BINGO/Wendit UI revamp
+ - Episode creator
  - Some love to the main buzzers
  - Better UI 
  - YDKJ The Ride RNG preset for pick-a-value
@@ -87,6 +88,7 @@ IDK possibly
 - Organized labeled menu
 - Handwritten snark
 - Coopertition mode
+- Credits roll
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
 - and probably more (soon!)
