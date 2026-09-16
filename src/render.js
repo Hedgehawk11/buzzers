@@ -436,6 +436,15 @@ export function transitionMount(mount, nextHtml, modeKey) {
   }
   if (prevModeKey === key) {
     prevModeKey = key;
+    if (transitionPending) {
+      // A newer same-key render supersedes the pending swap: drop the stale
+      // timeouts or they would overwrite this fresher content 250ms later
+      // with nothing re-rendering afterward (signature already matches).
+      try { clearTimeout(pendingOutId); } catch {}
+      try { clearTimeout(pendingInId); } catch {}
+      transitionPending = false;
+      try { delete mount.dataset.transition; } catch {}
+    }
     return false; // no transition needed, caller should do normal innerHTML
   }
   if (!shouldAnimate()) {

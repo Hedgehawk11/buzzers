@@ -50,6 +50,7 @@ for (const fn of mount._listeners.submit || []) {
 }
 await sleep(50);
 check(`coop ${COOP ? "enabled" : "disabled"} from prejoin`, S().settings?.coopertitionEnabled === COOP, JSON.stringify(S().settings?.coopertitionEnabled));
+check("pause-on-points defaults off", S().settings?.closeBuzzersOnPointsGiven === false, JSON.stringify(S().settings?.closeBuzzersOnPointsGiven));
 
 // --- dedicated producer fixture: drives all producer-action calls below ---
 const prod = pk.makePlayer("prod1", "Producer");
@@ -88,8 +89,19 @@ if (COOP) {
 
 // --- lock-after-buzz on, open ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
+// Pin the pause-on-points toggle off for the reopen-behavior tests below;
+// dedicated LAB-gating tests further down cover the default-on behavior.
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 check("round open", S().round?.status === "open", S().round?.status);
+
+// Dedicated device for the pause-on-points gating probes below, so their
+// rulings never shift dev1/dev2/dev3's exact-score expectations downstream.
+const gate = pk.makePlayer("gate1", "Gate");
+pk._store.participants.gate1 = gate;
+if (COOP) {
+  await pk._store.rpc["coop-roster"]({ group: "Gate", count: 1, names: [] }, gate);
+}
 
 if (COOP) {
   // --- buzz-in then answer ---
@@ -124,6 +136,17 @@ if (COOP) {
   const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
   pk._store.nextSender = null;
   check("other group can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+
+  // --- pause-on-points is LAB-gated: toggle ON pauses after a positive ruling ---
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
+  await pk._store.rpc.buzz({ option: 4 }, gate);
+  const gateEntryId = S().pendingLogId;
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [gateEntryId, 1000] }, prod);
+  check("positive ruling pauses with toggle on", S().round?.status === "closed", S().round?.status);
+  // restore reopen behavior for downstream tests
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 } else {
   // --- plain equivalents: option buzz locks, ruling deducts/awards on pid ---
   const r = await pk._store.rpc.buzz({ option: 3 }, dev1);
@@ -148,6 +171,16 @@ if (COOP) {
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
   check("other player can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+
+  // --- pause-on-points is LAB-gated: toggle ON pauses after a positive ruling ---
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ option: 4 }, gate);
+  const gateEntryId = S().pendingLogId;
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [gateEntryId, 1000] }, prod);
+  check("positive ruling pauses with toggle on", S().round?.status === "closed", S().round?.status);
+  // restore reopen behavior for downstream tests
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 }
 
 // --- bingo quick-ruling NaN path (slot key in coop, pid off-coop) ---
@@ -214,6 +247,32 @@ await pk._store.rpc["producer-action"](
   prod,
 );
 check("re-edit back to minus", S().scores?.dev3 === -1000, JSON.stringify(S().scores?.dev3));
+// --- toggle has no effect off-LAB: scoring waits for the close, round stays open ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+if (COOP) {
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
+}
+await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1: held until close
+const labOffEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+check("off-LAB correct held while open", labOffEntry?.resolved !== true && Number(labOffEntry?.awardedDelta || 0) === 0, JSON.stringify(labOffEntry?.awardedDelta));
+check("toggle has no effect off-LAB", S().round?.status === "open", S().round?.status);
+await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+const labOffEntryClosed = S().gameLog.find((e) => e.id === labOffEntry.id);
+check("off-LAB correct auto-awards on close", Number(labOffEntryClosed?.awardedDelta) > 0, JSON.stringify(labOffEntryClosed?.awardedDelta));
+check("pause closes round", S().round?.status === "closed", S().round?.status);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
+// Retire the gating probe: later team-mode tests (e.g. quixort shared-team
+// start) require every participant to hold a team assignment.
+delete pk._store.participants.gate1;
+try {
+  const rosters = { ...(S().coopRosters || {}) };
+  delete rosters.gate1;
+  pk._store.state.coopRosters = rosters;
+  for (const k of Object.keys(S().scores || {})) {
+    if (k === "gate1" || String(k).startsWith("coop:gate1:")) delete S().scores[k];
+  }
+} catch {}
 
 // --- text mode deduction ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);
@@ -657,13 +716,26 @@ if (COOP) {
   }
 }
 check("all answered auto-closes", S().round?.status === "closed", S().round?.status);
-// preset button state: no preset + no lock => open disabled (coop-only gate)
-await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+// terminal close (all answers in) locks open + resume + preset until reset (rebuzz off)
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("open disabled on terminal close", mount.innerHTML.includes('data-host-action="open" disabled'), "open enabled after all-in");
+check("resume disabled on terminal close", mount.innerHTML.includes('data-host-action="resume" disabled'), "resume enabled after all-in");
+{
+  const preToggle = JSON.stringify(S().round?.correctOptions);
+  await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+  check("preset locked on terminal close", JSON.stringify(S().round?.correctOptions) === preToggle, `was=${preToggle} now=${JSON.stringify(S().round?.correctOptions)}`);
+}
+await pk._store.rpc["producer-action"]({ fn: "resumeBuzzers", args: [] }, prod);
+check("resume denied on terminal close", S().round?.status === "closed", S().round?.status);
+// specified continuation: reset re-arms a fresh round (and clears the preset)
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
 if (COOP) {
   check("open disabled without preset", mount.innerHTML.includes('data-host-action="open" disabled'), "open button enabled");
 } else {
-  check("open allowed without preset off-coop", !mount.innerHTML.includes('data-host-action="open" disabled'), "open button disabled");
+  check("open allowed after reset off-coop", !mount.innerHTML.includes('data-host-action="open" disabled'), "open button disabled");
 }
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
 
@@ -698,6 +770,7 @@ if (COOP) {
 // --- regression: producer forced delta allowlisted, NaN rejected, jack clamped ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 await pk._store.rpc.buzz({ option: 1 }, plain);
 const fEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
@@ -922,7 +995,7 @@ check("credits started in shared state", S().credits?.active === true && S().cre
 {
   const html = _mount.innerHTML;
   check("credits overlay renders", html.includes("data-credits-overlay"), `html len=${html.length}`);
-  const order = ["Host", "Producers", "Players", "Special thanks"].map((h) => html.indexOf(`>${h}<`));
+  const order = ["Host", "Producers", "Players", "Credits"].map((h) => html.indexOf(`<h3>${h}</h3>`));
   check("credits section order", order.every((i) => i !== -1) && order[0] < order[1] && order[1] < order[2] && order[2] < order[3], order.join(","));
   const overlay = html.slice(html.indexOf("data-credits-overlay"));
   check("credits ranks first to last", overlay.indexOf("GroupB") !== -1 && overlay.indexOf("GroupB") < overlay.indexOf("GroupA") && overlay.indexOf("GroupA") < overlay.indexOf("Solo"), "ranking wrong");
@@ -1000,6 +1073,129 @@ clickBtn({}, "[data-credits-end]");
 await sleep(50);
 check("credits ended after team check", S().credits?.active === false, JSON.stringify(S().credits));
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", false] }, prod);
+// --- analytics card: current-round percentages, log badges, audience mirror ---
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+// Preset option 1 so the correct-answer marker has something to mark
+// (also satisfies the coop no-lock preset gate).
+{
+  const curOpts = (S().round?.correctOptions || []).map(Number);
+  if (!curOpts.includes(1)) await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+}
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+check("analytics round open", S().round?.status === "open", S().round?.status);
+const aDev1 = pk._store.participants.dev1, aDev2 = pk._store.participants.dev2, aDev3 = pk._store.participants.dev3;
+const scoresBeforeClose = JSON.stringify(S().scores);
+const ab1 = await pk._store.rpc.buzz(COOP ? { option: 1, coopSlot: 0 } : { option: 1 }, aDev1);
+const ab2 = await pk._store.rpc.buzz(COOP ? { option: 2, coopSlot: 0 } : { option: 2 }, aDev2);
+const ab3 = await pk._store.rpc.buzz(COOP ? { option: 2, coopSlot: 0 } : { option: 2 }, aDev3);
+check("analytics picks recorded", ab1?.ok === true && ab2?.ok === true && ab3?.ok === true, JSON.stringify([ab1?.ok, ab2?.ok, ab3?.ok]));
+{
+  const roundNow = S().round?.roundNumber;
+  const openEntries = S().gameLog.filter((e) => e?.type === "buzz" && Number(e.roundId) === Number(roundNow));
+  check("scores held while open", JSON.stringify(S().scores) === scoresBeforeClose, "auto-scoring leaked while open");
+  check("entries unresolved while open", openEntries.length === 3 && openEntries.every((e) => !e.resolved && Number(e.awardedDelta || 0) === 0), `n=${openEntries.length}`);
+}
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("analytics waits while open", html.includes("data-analytics-card") && html.includes("still open") && !html.includes("3 picks"), "live percentages leaked while open");
+}
+// Closing lands scores + percentages together.
+await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+check("analytics round closed", S().round?.status === "closed", S().round?.status);
+{
+  const roundNow = S().round?.roundNumber;
+  const closedEntries = S().gameLog.filter((e) => e?.type === "buzz" && Number(e.roundId) === Number(roundNow));
+  check("close resolves preset entries", closedEntries.length === 3 && closedEntries.every((e) => e.resolved === true), `resolved=${closedEntries.map((e) => e.awardedDelta).join(",")}`);
+  check("close moves scores", JSON.stringify(S().scores) !== scoresBeforeClose, "no score movement on close");
+}
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+// Re-render after an input-mode switch animates (250ms transitionMount), so
+// poll for the fresh card instead of single-shot reading a stale frame.
+let aHtml = "";
+for (let i = 0; i < 20 && !aHtml.includes(`Round ${S().round?.roundNumber} · 3 picks`); i++) {
+  await sleep(50);
+  aHtml = _mount.innerHTML;
+}
+{
+  const html = aHtml;
+  check("analytics card renders for host", html.includes("data-analytics-card"), `len=${html.length}`);
+  check("analytics shows majority pct", html.includes("67%"), "2/3 share missing");
+  check("analytics shows minority pct", html.includes("33%"), "1/3 share missing");
+  check("analytics counts picks", html.includes("3 picks"), "pick total missing");
+  check("analytics marks preset", html.includes("analytics-correct"), "correct marker missing");
+  check("log badges label buttons", html.includes("log-badge-buttons"), "button badge missing");
+}
+// spotlight auth: impostors rejected, producers allowed (host executes)
+const anaImpostor = await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, impostor);
+check("analytics spotlight rejects non-producer", anaImpostor?.ok === false, JSON.stringify(anaImpostor));
+check("analytics spotlight cta for host", _mount.innerHTML.includes("data-analytics-show"), "show toggle missing");
+{
+  const html = _mount.innerHTML;
+  const broadcastCount = html.split("data-broadcast-card").length - 1;
+  check("broadcast controls merged into one card", broadcastCount === 1, `cards=${broadcastCount}`);
+  check("old cta cards gone", !html.includes("credits-cta-card") && !html.includes("room-code-spotlight-cta-card") && !html.includes("analytics-cta-card"), "legacy card class leaked");
+  check("broadcast card holds all toggles", html.includes("data-credits-start") && html.includes("data-room-code-spotlight-show") && html.includes("data-analytics-show"), "toggle missing from merged card");
+}
+clickBtn({}, "[data-analytics-show]");
+await sleep(50);
+check("host starts analytics spotlight", S().analyticsSpotlight?.active === true, JSON.stringify(S().analyticsSpotlight));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("analytics spotlight cta flips", _mount.innerHTML.includes("data-analytics-hide"), "hide toggle missing");
+pk._store.self = pk._store.participants.disp1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+let dHtml = "";
+for (let i = 0; i < 20 && !dHtml.includes("audience-layout"); i++) {
+  await sleep(50);
+  dHtml = _mount.innerHTML;
+}
+check("display mirrors analytics", dHtml.includes("audience-layout") && dHtml.includes("data-analytics-card"), "no analytics on display");
+pk._store.self = pk._store.participants.host1;
+clickBtn({}, "[data-analytics-hide]");
+await sleep(50);
+check("analytics spotlight ended", S().analyticsSpotlight?.active === false, JSON.stringify(S().analyticsSpotlight));
+const anaProd = await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, prod);
+check("producer starts analytics spotlight", anaProd?.ok === true && S().analyticsSpotlight?.active === true, JSON.stringify(anaProd));
+await pk._store.rpc["producer-action"]({ fn: "endAnalyticsSpotlight", args: [] }, prod);
+check("producer ends analytics spotlight", S().analyticsSpotlight?.active === false, JSON.stringify(S().analyticsSpotlight));
+// text mode groups identical answers (case-insensitive, picks counted)
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);
+if (COOP) await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: ["zzz-no-match"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.buzz(COOP ? { answerText: "Alpha", coopSlot: 0 } : { answerText: "Alpha" }, aDev1);
+await pk._store.rpc.buzz(COOP ? { answerText: "  ALPHA ", coopSlot: 0 } : { answerText: "  ALPHA " }, aDev2);
+await pk._store.rpc.buzz(COOP ? { answerText: "Beta", coopSlot: 0 } : { answerText: "Beta" }, aDev3);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("text analytics waits while open", html.includes("still open") && !html.includes("67%"), "live grouping leaked while open");
+}
+await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("text analytics groups answers", html.includes("67%") && html.includes("33%"), "grouped shares missing");
+  check("log badges label text", html.includes("log-badge-text"), "text badge missing");
+}
+// next round resets analytics: an active mirror clears on open, old
+// percentages don't linger into the new round
+await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, prod);
+check("spotlight on before new round", S().analyticsSpotlight?.active === true, JSON.stringify(S().analyticsSpotlight));
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+check("new round opened", S().round?.status === "open", S().round?.status);
+check("new round clears spotlight", S().analyticsSpotlight?.active !== true, JSON.stringify(S().analyticsSpotlight));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("new round shows waiting analytics", html.includes("data-analytics-card") && html.includes("still open") && !html.includes("67%"), "stale percentages lingered");
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -679,6 +679,13 @@ function getRound() {
     opensAt: null,
     closesAt: null,
     remainingCs: null,
+    // Monotonic round counter: incremented every time buzzers open. Game-log
+    // entries stamp this value (`roundId`) so renderLog can group by round.
+    // Preserved (never reset) by resetRound / mode-switch idle rounds.
+    roundNumber: 0,
+    // Tracks what a CLOSED round was paused from ("open"/"locked"/null) so
+    // resume can restore OPEN vs LOCKED. Null when not paused.
+    pausedFrom: null,
     winnerId: null,
     winnerTeam: null,
     winnerOption: null,
@@ -1004,6 +1011,17 @@ function getLog() {
   return getSafeState("gameLog", []);
 }
 
+// Current round id for stamping new game-log entries. Falls back to 0 for
+// rooms whose round state predates the counter.
+function currentRoundId() {
+  try {
+    const n = Number(getRound()?.roundNumber);
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function getControllerId() {
   return getSafeState("controllerId", null);
 }
@@ -1035,7 +1053,7 @@ function hasHostPrivileges() {
 async function producerDispatch(fnName, ...args) {
   if (isHost()) {
     const     dispatch = {
-      openBuzzers, closeBuzzers, resetRound, resetScrews,
+      openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
       startRoulettePhase, startScrewTimer, closeScrewMode,
       initiateScrew, selectScrewee,
       startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
@@ -1045,6 +1063,7 @@ async function producerDispatch(fnName, ...args) {
       updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
       adjustPlayerScore, resetPlayerScore, resetAllScores, setCustomPlayerName,
       kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
+      startAnalyticsSpotlight, endAnalyticsSpotlight,
     };
     dispatch[fnName]?.(...args);
     return;
@@ -1284,6 +1303,8 @@ function getUiSignature() {
       opensAt: round.opensAt,
       closesAt: round.closesAt,
       remainingCs: round.remainingCs,
+      roundNumber: round.roundNumber,
+      pausedFrom: round.pausedFrom,
       winnerId: round.winnerId,
       winnerCoopKey: round.winnerCoopKey,
       winnerTeam: round.winnerTeam,
@@ -1345,7 +1366,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     scores: getScores(),
     gameLogDigest: (() => {
       const log = getLog();
-      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}:${Number(e.basePoints || 0)}:${e.result || ""}:${e.scoreKey || ""}`).join(",")}`;
+      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}:${Number(e.basePoints || 0)}:${e.result || ""}:${e.scoreKey || ""}:${e.roundId ?? ""}:${e.type || ""}:${e.option ?? ""}:${e.answerText ?? ""}:${e.playerId || ""}:${e.coopKey || ""}`).join(",")}`;
     })(),
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
@@ -1358,6 +1379,9 @@ showScoresToPlayers: settings.showScoresToPlayers,
     // Room-code spotlight broadcast — display screens only re-render the
     // modal when this flips (their tick otherwise only patches timers).
     roomCodeSpotlight: getSafeState("roomCodeSpotlight", null),
+    // Analytics mirror broadcast — audience screens only re-render the card
+    // when this flips (their tick otherwise only patches timers).
+    analyticsSpotlight: getSafeState("analyticsSpotlight", null),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     quixort: (() => {
@@ -1934,6 +1958,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
     if (round.status === ROUND_STATUSES.LOCKED) {
+      // LAB-only: pausing on a positive ruling requires lockAfterBuzz — the
+      // toggle alone never pauses (it is only rendered in LAB mode).
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       // Coop: a correct solution locks the solving device's siblings out of
@@ -1955,6 +1981,11 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           },
           true,
         );
+        // This ruling closed the round: batch-judge any other unresolved
+        // preset entries of the round (the ruled entry is already resolved).
+        try {
+          finalizeRoundScoring(currentRoundId());
+        } catch {}
         // Close screw mode after ruling
         closeScrewMode();
         render();
@@ -2056,6 +2087,8 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
     if (round.status === ROUND_STATUSES.LOCKED) {
+      // LAB-only: pausing on a positive ruling requires lockAfterBuzz — the
+      // toggle alone never pauses (it is only rendered in LAB mode).
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
@@ -2075,6 +2108,11 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
           },
           true,
         );
+        // This ruling closed the round: batch-judge any other unresolved
+        // preset entries of the round (the ruled entry is already resolved).
+        try {
+          finalizeRoundScoring(currentRoundId());
+        } catch {}
         closeScrewMode();
         render();
         return;
@@ -2126,6 +2164,7 @@ function pushBuzzLogEntry(player, { option = null, answerText = null, coopSlot =
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: "buzz",
     ts: now(),
+    roundId: currentRoundId(),
     playerId: player.id,
     playerName: displayName,
     teamColor,
@@ -2168,6 +2207,40 @@ function autoEvaluatePresetAnswer(logEntry, answerText, validOption) {
       const isCorrect = normalizeAnswerForCompare(answerText) === normalizeAnswerForCompare(currentRound.correctAnswer);
       updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints);
     }
+  }
+}
+
+// Batch-judge a closed round: auto-evaluate every still-unresolved buzz entry
+// of roundId against the host preset (correct → +base, wrong → −base).
+// Runs on OPEN → CLOSED transitions so neither scores nor analytics move while
+// buzzers are open. Entries already resolved (manual rulings, F-You penalties)
+// are skipped; rounds without a preset are left for manual ruling.
+// Manual rulings still apply immediately, and LOCKED auto-eval is unchanged.
+function finalizeRoundScoring(roundId) {
+  if (!isHost()) return;
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.CLOSED) return;
+  const rid = Number(roundId);
+  if (!Number.isFinite(rid)) return;
+  const settings = getSettings();
+  const hasPreset = settings.inputMode === "text"
+    ? Boolean(String(round.correctAnswer || "").trim())
+    : Array.isArray(round.correctOptions) && round.correctOptions.length > 0;
+  if (!hasPreset) return;
+  const pending = (getLog() || []).filter(
+    (e) => e && e.type === "buzz" && Number(e.roundId) === rid && !e.resolved,
+  );
+  for (const entry of pending) {
+    try {
+      if (settings.inputMode === "text") {
+        if (!entry.answerText) continue;
+        const isCorrect = normalizeAnswerForCompare(entry.answerText) === normalizeAnswerForCompare(round.correctAnswer);
+        updateScoresForLogEntry(entry.id, isCorrect ? entry.basePoints : -entry.basePoints);
+      } else if (entry.option !== null && entry.option !== undefined) {
+        const isCorrect = (round.correctOptions || []).map(Number).includes(Number(entry.option));
+        updateScoresForLogEntry(entry.id, isCorrect ? entry.basePoints : -entry.basePoints);
+      }
+    } catch {}
   }
 }
 
@@ -2392,11 +2465,14 @@ function hostHandleBuzz(player, payload) {
       },
       true,
     );
-    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    // Scores wait for the close: batch-judge presets only if this buzz just
+    // closed the round (all-eligible); otherwise the entry stays unresolved
+    // for manual ruling or a later close. finalizeRoundScoring no-ops unless
+    // the round is CLOSED.
     try {
-      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+      finalizeRoundScoring(currentRoundId());
     } catch (e) {
-      // ignore auto-eval errors
+      // ignore finalize errors
     }
   }
 
@@ -2446,7 +2522,21 @@ async function submitResponse(payload) {
 // =============================================================================
 // Host actions — open, close, reset round, start bingo, etc.
 // =============================================================================
+// A CLOSED round is terminal — all answers in, timer elapsed, or ruled shut —
+// unless it was only paused mid-round (pausedFrom "open"). Terminal rounds
+// can't be paused, resumed, reopened, or re-preset: reset the round or enable
+// re-buzz to continue. pausedFrom is only ever null/"open" (see pauseBuzzers,
+// resumeBuzzers, openBuzzers), so anything else-but-"open" is terminal.
+function isTerminallyClosedRound(round) {
+  return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== "open";
+}
+
 function openBuzzers() {
+  if (isTerminallyClosedRound(getRound()) && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
     return;
@@ -2487,6 +2577,10 @@ function openBuzzers() {
   const rawTimeOpen = Number(settings.timeOpen);
   const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
   const closesAt = openedAt + safeTimeOpen * 1000;
+  const nextRoundNumber = (() => {
+    const n = Number(round.roundNumber);
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) + 1 : 1;
+  })();
   setState(
     "round",
     {
@@ -2495,6 +2589,8 @@ function openBuzzers() {
       opensAt: openedAt,
       closesAt,
       remainingCs: safeTimeOpen * 100,
+      roundNumber: nextRoundNumber,
+      pausedFrom: null,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -2530,15 +2626,35 @@ function openBuzzers() {
     true,
   );
   setState("pendingLogId", null, true);
+  // A new round resets analytics: drop the audience mirror so the previous
+  // round's results don't linger into the new round. Host card already follows
+  // the current round (waiting note while open). Only writes when active.
+  try {
+    if (getAnalyticsSpotlight()) setState("analyticsSpotlight", { active: false, startedAt: 0 }, true);
+  } catch {}
   render();
 }
-
-// Immediately close buzzers mid-round
-function closeBuzzers() {
-  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "closeBuzzers", args: [] }, RPC.Mode.HOST); return; }
-  console.log("closeBuzzers: host triggered");
+// remainingCs). Only valid from OPEN — LOCKED already freezes the clock for
+// the pending ruling, so pausing there is a no-op with a notice.
+function pauseBuzzers() {
+  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "pauseBuzzers", args: [] }, RPC.Mode.HOST); return; }
+  console.log("pauseBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
+  if (round.status === ROUND_STATUSES.LOCKED) {
+    setBuzzNotice("Timer is already paused for the ruling.");
+    render();
+    return;
+  }
+  if (round.status === ROUND_STATUSES.CLOSED) {
+    setBuzzNotice(getSnark("shared.round.alreadyClosed", "Round is already closed."));
+    render();
+    return;
+  }
+  if (round.status !== ROUND_STATUSES.OPEN) {
+    render();
+    return;
+  }
   const rawRemaining = Number(getTimeLeftCs(round, settings));
   const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
   setState(
@@ -2547,6 +2663,7 @@ function closeBuzzers() {
       ...round,
       status: ROUND_STATUSES.CLOSED,
       remainingCs: safeRemaining,
+      pausedFrom: "open",
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -2570,7 +2687,60 @@ function closeBuzzers() {
     true,
   );
   setState("pendingLogId", null, true);
+  // Pausing closes the round: batch-judge any still-unresolved preset
+  // entries so scores/analytics land now that buzzers are closed.
+  try {
+    finalizeRoundScoring(currentRoundId());
+  } catch {}
   render();
+}
+
+// Resume a paused timer: CLOSED with remaining time left goes back to OPEN
+// (or LOCKED if it was paused mid-ruling via the RPC race path), preserving
+// buzzed players — unlike openBuzzers which starts a fresh round.
+function resumeBuzzers() {
+  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "resumeBuzzers", args: [] }, RPC.Mode.HOST); return; }
+  console.log("resumeBuzzers: host triggered");
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.CLOSED) {
+    render();
+    return;
+  }
+  const rawRemaining = Number(round.remainingCs);
+  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
+  if (safeRemaining <= 0) {
+    setBuzzNotice("No time left — open a new round.");
+    render();
+    return;
+  }
+  // Terminal closes (all answers in, timer elapsed, ruled shut) are final:
+  // only a mid-round pause may resume — unless re-buzz is on, in which case
+  // players can answer the reopened round again.
+  if (round.pausedFrom !== "open" && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
+  const resumeToLocked = round.pausedFrom === "locked" && getSafeState("pendingLogId", null);
+  const resumedAt = now();
+  setState(
+    "round",
+    {
+      ...round,
+      status: resumeToLocked ? ROUND_STATUSES.LOCKED : ROUND_STATUSES.OPEN,
+      opensAt: round.opensAt,
+      closesAt: resumedAt + safeRemaining * 10,
+      remainingCs: safeRemaining,
+      pausedFrom: null,
+    },
+    true,
+  );
+  render();
+}
+
+// Back-compat alias: old producer clients / tests calling "closeBuzzers".
+function closeBuzzers() {
+  return pauseBuzzers();
 }
 
 // =============================================================================
@@ -2784,7 +2954,7 @@ function handleBingoBuzz(player, payload) {
     const log = getLog();
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: "bingo", ts: now(), playerId: player.id,
+      type: "bingo", ts: now(), roundId: currentRoundId(), playerId: player.id,
       playerName: coopActive ? buzzName : getPlayerName(player), teamColor,
       scoreKey,
       coopSlot: coopActive ? coopSlot : null,
@@ -2816,7 +2986,7 @@ function handleBingoBuzz(player, payload) {
     const log = getLog();
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: "bingo", ts: now(), playerId: player.id,
+      type: "bingo", ts: now(), roundId: currentRoundId(), playerId: player.id,
       playerName: coopActive ? buzzName : getPlayerName(player), teamColor,
       scoreKey,
       coopSlot: coopActive ? coopSlot : null,
@@ -3177,6 +3347,7 @@ function finalizeDisOrDat() {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "disordat",
       ts: now(),
+      roundId: currentRoundId(),
       playerId: rep?.id || track,
       playerName: trackDisplayName,
       teamColor,
@@ -3613,6 +3784,7 @@ function finalizeQuixort() {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "quixort",
       ts: now(),
+      roundId: currentRoundId(),
       playerId: rep?.id || track,
       playerName: trackDisplayName,
       teamColor: isTeamTrack ? track : (rep ? getPlayerTeamColor(rep.id, assignments) : null),
@@ -3887,6 +4059,7 @@ function finalizeFibbageScores() {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "fibbage",
       ts: now(),
+      roundId: currentRoundId(),
       playerId: rep?.id || trackKey,
       playerName: rep ? getPlayerName(rep) : trackKey,
       teamColor,
@@ -4024,6 +4197,8 @@ function resetRound() {
       opensAt: null,
       closesAt: null,
       remainingCs: safeTimeOpen * 100,
+      roundNumber: Number.isFinite(Number(currentRound.roundNumber)) ? Math.trunc(Number(currentRound.roundNumber)) : 0,
+      pausedFrom: null,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -4429,6 +4604,7 @@ function hostTick() {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
             type: "buzz",
             ts: now(),
+            roundId: currentRoundId(),
             playerId: round.screw?.screweeId,
             playerName: round.screw.screeeName,
             teamColor: screweeTeamColor,
@@ -4495,6 +4671,10 @@ function hostTick() {
       true,
     );
     setState("pendingLogId", null, true);
+    // Timeout closes the round: batch-judge unresolved preset entries.
+    try {
+      finalizeRoundScoring(currentRoundId());
+    } catch {}
     render();
   }
 }
@@ -4739,7 +4919,8 @@ function setHostSetting(key, value) {
     if (value === "bingo" || value === "wendithapn") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4752,7 +4933,8 @@ function setHostSetting(key, value) {
     if (value === "disordat") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4781,7 +4963,8 @@ function setHostSetting(key, value) {
     if (value === "fibbage") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4796,7 +4979,8 @@ function setHostSetting(key, value) {
     if (value === "quixort") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4869,6 +5053,11 @@ function setCorrectAnswerValue(val) {
     return;
   }
   const round = getRound();
+  if (isTerminallyClosedRound(round) && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   const clean = typeof val === "string" ? val.trim().slice(0, 120) : "";
   setState("round", { ...round, correctAnswer: clean || null, correctOptions: null }, true);
   render();
@@ -4880,6 +5069,11 @@ function clearCorrectAnswerValue() {
     return;
   }
   const round = getRound();
+  if (isTerminallyClosedRound(round) && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   setState("round", { ...round, correctAnswer: null, correctOptions: null }, true);
   render();
 }
@@ -4891,6 +5085,11 @@ function toggleCorrectOption(opt) {
   }
   const round = getRound();
   const settings = getSettings();
+  if (isTerminallyClosedRound(round) && !settings.rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   const maxOption = Number(settings.optionCount) || 6;
   const num = Number(opt);
   if (!Number.isInteger(num) || num < 1 || num > maxOption) return;
@@ -4970,6 +5169,7 @@ function pushManualLogEntry(playerId, scoreKey, delta, kind) {
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: kind === "reset" ? "manual-reset" : "manual-adjust",
     ts: now(),
+    roundId: currentRoundId(),
     playerId,
     playerName: displayName,
     teamColor: getPlayerTeamColor(playerId, assignments),
@@ -5390,6 +5590,18 @@ function ensureHostInit() {
   } catch {}
   if (!getState("round")) {
     resetRound();
+  } else {
+    // Backfill the round counter / pause marker for rooms created before them.
+    try {
+      const r = getState("round") || {};
+      if (r.roundNumber === undefined || r.pausedFrom === undefined) {
+        setState("round", {
+          ...r,
+          roundNumber: Number.isFinite(Number(r.roundNumber)) ? Math.trunc(Number(r.roundNumber)) : 0,
+          pausedFrom: r.pausedFrom ?? null,
+        }, true);
+      }
+    } catch {}
   }
   if (!getState("scores")) {
     setState("scores", {}, true);
@@ -7786,7 +7998,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     [ROUND_STATUSES.OPEN]: getSnark("audience.buzzer.statusOpen", "Buzzers open"),
     [ROUND_STATUSES.ROULETTE]: getSnark("audience.buzzer.statusRoulette", "Pick-a-value in progress"),
     [ROUND_STATUSES.LOCKED]: getSnark("audience.buzzer.statusLocked", "Buzz locked"),
-    [ROUND_STATUSES.CLOSED]: getSnark("audience.buzzer.statusClosed", "Round closed"),
+    [ROUND_STATUSES.CLOSED]: getSnark("audience.buzzer.statusClosed", "Paused"),
   }[round.status];
 
   const pointsUpForGrabs = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED
@@ -8110,6 +8322,208 @@ function endRoomCodeSpotlight() {
   scheduleRender(render);
 }
 
+// =============================================================================
+// Analytics — current-round answer distribution (Buttons + Text only).
+// Data is derived from gameLog buzz entries for the current roundId (each
+// buzz = one vote, so rebuzz rounds count picks not players). Broadcasting
+// reuses the credits/spotlight pattern: shared `analyticsSpotlight`
+// ({active, startedAt}) written via host (or producer via producer-action),
+// rendered on audience displays while active.
+// =============================================================================
+function getAnalyticsSpotlight() {
+  const spotlight = getSafeState("analyticsSpotlight", null);
+  if (!spotlight || typeof spotlight !== "object" || !spotlight.active) return null;
+  return spotlight;
+}
+
+function startAnalyticsSpotlight() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "startAnalyticsSpotlight", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  setState("analyticsSpotlight", { active: true, startedAt: now() }, true);
+  scheduleRender(render);
+}
+
+function endAnalyticsSpotlight() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "endAnalyticsSpotlight", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  setState("analyticsSpotlight", { active: false, startedAt: 0 }, true);
+  scheduleRender(render);
+}
+
+// Aggregate current-round buzz entries. Returns { kind, roundId, total, rows }.
+// kind: "buttons" | "text" | "minigame" | "idle". Rows sorted desc by count.
+function getCurrentRoundAnalytics() {
+  const settings = getSettings();
+  const roundId = currentRoundId();
+  if (isBingoMode() || isDisOrDatMode() || isFibbageMode() || isQuixortMode()) {
+    return { kind: "minigame", roundId, total: 0, rows: [] };
+  }
+  const entries = (getLog() || []).filter((e) => e && e.type === "buzz" && Number(e.roundId) === Number(roundId));
+  const total = entries.length;
+  if (settings.inputMode === "text") {
+    const groups = new Map();
+    for (const e of entries) {
+      const raw = String(e.answerText ?? "").trim().slice(0, 120) || "(blank)";
+      const norm = normalizeAnswerForCompare(e.answerText);
+      if (!groups.has(norm)) groups.set(norm, { label: raw, count: 0, voters: [] });
+      const g = groups.get(norm);
+      g.count += 1;
+      if (e.playerName) g.voters.push(e.playerName);
+    }
+    const correctNorm = getRound()?.correctAnswer ? normalizeAnswerForCompare(getRound().correctAnswer) : null;
+    const rows = [...groups.entries()].map(([norm, g]) => ({
+      key: norm,
+      label: g.label,
+      count: g.count,
+      pct: total ? Math.round((g.count / total) * 100) : 0,
+      voters: g.voters,
+      correct: correctNorm !== null && norm === correctNorm,
+    })).sort((a, b) => b.count - a.count || String(a.label).localeCompare(String(b.label)));
+    return { kind: "text", roundId, total, rows };
+  }
+  // Buttons mode (option picks).
+  const optionCount = Number(settings.optionCount) || 4;
+  const correctSet = new Set((getRound()?.correctOptions || []).map(Number));
+  const rows = [];
+  for (let opt = 1; opt <= optionCount; opt++) {
+    const picked = entries.filter((e) => Number(e.option) === opt);
+    rows.push({
+      key: String(opt),
+      label: settings.optionCount === 4 ? `Option ${optionButtonLabel(opt)} (${opt})` : `Option ${opt}`,
+      count: picked.length,
+      pct: total ? Math.round((picked.length / total) * 100) : 0,
+      voters: picked.map((e) => e.playerName).filter(Boolean),
+      correct: correctSet.has(Number(opt)),
+    });
+  }
+  if (!total) return { kind: "idle", roundId, total: 0, rows };
+  return { kind: "buttons", roundId, total, rows };
+}
+
+// Short mode badge for a gameLog entry. Used by renderLog and analytics.
+function getLogEntryBadge(entry) {
+  if (!entry || typeof entry !== "object") return { slug: "buzz", label: getSnark("shared.analytics.badgeBuzz", "Buzz") };
+  if (entry.type === "manual-reset" || entry.type === "manual-adjust") return { slug: "manual", label: getSnark("shared.analytics.badgeManual", "Manual") };
+  if (entry.type === "bingo") return { slug: "bingo", label: getSnark("shared.analytics.badgeBingo", "Bingo") };
+  if (entry.type === "disordat") return { slug: "disordat", label: getSnark("shared.analytics.badgeDisOrDat", "DisOrDat") };
+  if (entry.type === "quixort") return { slug: "quixort", label: getSnark("shared.analytics.badgeQuixort", "Quixort") };
+  if (entry.type === "fibbage") return { slug: "fibbage", label: getSnark("shared.analytics.badgeFibbage", "Fibbage") };
+  if (entry.answerText !== null && entry.answerText !== undefined && String(entry.answerText) !== "") return { slug: "text", label: getSnark("shared.analytics.badgeText", "Text") };
+  if (entry.option !== null && entry.option !== undefined) return { slug: "buttons", label: getSnark("shared.analytics.badgeButtons", "Buttons") };
+  return { slug: "buzz", label: getSnark("shared.analytics.badgeBuzz", "Buzz") };
+}
+
+function renderAnalyticsCard(audience = false) {
+  const data = getCurrentRoundAnalytics();
+  const modeBadge = data.kind === "buttons"
+    ? getSnark("shared.analytics.badgeButtons", "Buttons")
+    : data.kind === "text"
+      ? getSnark("shared.analytics.badgeText", "Text")
+      : data.kind === "minigame"
+        ? getSnark("shared.analytics.badgeMinigame", "Minigame")
+        : getSnark("shared.analytics.badgeBuzz", "Buzz");
+  const title = audience
+    ? getSnark("shared.analytics.audienceTitle", "Round results")
+    : getSnark("shared.analytics.title", "Analytics");
+  const roundLabel = Number(data.roundId) > 0 ? `Round ${data.roundId}` : "Pre-game";
+  if (getRound().status === ROUND_STATUSES.OPEN) {
+    // Scores/analytics land on close: while buzzers are open show a waiting
+    // note instead of live percentages (which would spoil correctness).
+    return `
+    <section class="card analytics-card" data-analytics-card>
+      <h2>${escapeHtml(title)} <span class="log-badge log-badge-${data.kind === "text" ? "text" : "buttons"}">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)}</span></h2>
+      <p class="muted">${escapeHtml(getSnark("shared.analytics.waiting", "Buzzers are still open — results appear when the round closes."))}</p>
+    </section>`;
+  }
+  if (data.kind === "minigame" || data.kind === "idle" || data.total === 0) {
+    const emptyMsg = data.kind === "minigame"
+      ? getSnark("shared.analytics.minigameNote", "Analytics covers Buttons/Text rounds only.")
+      : getSnark("shared.analytics.empty", "No answers yet this round — percentages appear after the first buzz.");
+    return `
+    <section class="card analytics-card" data-analytics-card>
+      <h2>${escapeHtml(title)} <span class="log-badge log-badge-buzz">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)}</span></h2>
+      <p class="muted">${escapeHtml(emptyMsg)}</p>
+    </section>`;
+  }
+  const rows = data.rows.map((row) => {
+    const voters = row.voters.length
+      ? `<span class="analytics-voters">${row.voters.map((v) => escapeHtml(v)).join(", ")}</span>`
+      : `<span class="analytics-voters muted">—</span>`;
+    const correct = row.correct ? ` <span class="analytics-correct" title="Correct">✓</span>` : "";
+    return `
+      <div class="analytics-row">
+        <div class="analytics-row-head"><span><strong>${escapeHtml(row.label)}</strong>${correct}</span><span>${row.pct}% · ${row.count}/${data.total}</span></div>
+        <div class="analytics-bar-track"><div class="analytics-bar-fill" style="width:${row.pct}%"></div></div>
+        ${voters}
+      </div>`;
+  }).join("");
+  return `
+    <section class="card analytics-card" data-analytics-card>
+      <h2>${escapeHtml(title)} <span class="log-badge log-badge-${data.kind === "text" ? "text" : "buttons"}">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)} · ${data.total} pick${data.total === 1 ? "" : "s"}</span></h2>
+      <div class="analytics-rows">${rows}</div>
+    </section>`;
+}
+
+// Merged show-controls card: credits + room-code spotlight + analytics mirror
+// in one place (data attrs unchanged, so delegates keep working).
+// Credits/spotlight rows stay strictly host-only; the analytics row is
+// producer-accessible (relays through producer-action when clicked by a
+// producer) and hides in minigame views (analytics covers Buttons/Text only).
+// Returns "" when no row is visible (e.g. producers in minigame views).
+function renderBroadcastHostCard() {
+  const rows = [];
+  if (isHost()) {
+    const creditsActive = Boolean(getCreditsState());
+    rows.push(`
+      <div class="broadcast-row">
+        <div class="broadcast-row-text">
+          <strong>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</strong>
+          <p class="muted">${escapeHtml(getSnark("shared.credits.ctaHelper", "Roll the credits on every screen (except the timer tablet)."))}</p>
+        </div>
+        ${creditsActive
+          ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
+          : `<button type="button" data-credits-start>${escapeHtml(getSnark("shared.credits.rollButton", "Roll credits"))}</button>`}
+      </div>`);
+    const spotlightActive = Boolean(getRoomCodeSpotlight());
+    rows.push(`
+      <div class="broadcast-row">
+        <div class="broadcast-row-text">
+          <strong>${escapeHtml(getSnark("shared.misc.roomSpotlightTitle", "Room code spotlight"))}</strong>
+          <p class="muted">${escapeHtml(getSnark("shared.misc.roomSpotlightHelper", "Show the large room code on every audience display."))}</p>
+        </div>
+        ${spotlightActive
+          ? `<button type="button" data-room-code-spotlight-hide>${escapeHtml(getSnark("shared.misc.roomSpotlightHide", "Hide room code"))}</button>`
+          : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`}
+      </div>`);
+  }
+  if (hasHostPrivileges() && !isBingoMode() && !isDisOrDatMode() && !isFibbageMode() && !isQuixortMode()) {
+    const analyticsActive = Boolean(getAnalyticsSpotlight());
+    const audienceHint = hasAudienceDisplay()
+      ? getSnark("shared.analytics.audienceConnected", "An audience display is connected.")
+      : getSnark("shared.analytics.audienceMissing", "No audience display connected — the toggle still works and applies when one joins.");
+    rows.push(`
+      <div class="broadcast-row">
+        <div class="broadcast-row-text">
+          <strong>${escapeHtml(getSnark("shared.analytics.title", "Analytics"))}</strong>
+          <p class="muted">${escapeHtml(getSnark("shared.analytics.ctaHelper", "Current-round answer percentages. Mirror them onto the audience display."))} ${escapeHtml(audienceHint)}</p>
+        </div>
+        ${analyticsActive
+          ? `<button type="button" data-analytics-hide>${escapeHtml(getSnark("shared.analytics.hideButton", "Hide from audience"))}</button>`
+          : `<button type="button" data-analytics-show>${escapeHtml(getSnark("shared.analytics.showButton", "Show on audience"))}</button>`}
+      </div>`);
+  }
+  if (!rows.length) return "";
+  return `
+    <section class="card broadcast-card" data-broadcast-card>
+      <h2>${escapeHtml(getSnark("shared.broadcast.title", "Audience display"))}</h2>
+      ${rows.join("")}
+    </section>`;
+}
+
 function getCreditsBaseUrl() {
   try {
     const base = import.meta?.env?.BASE_URL;
@@ -8265,44 +8679,12 @@ function renderCreditsOverlay() {
             ${producerNames.length === 0 ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noProducers", "No producers assigned."))}</p>` : producerNames.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join("")}
             <h3>${escapeHtml(getSnark("shared.credits.playersHeading", "Players"))}</h3>
             ${playerHtml}
-            <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Special thanks"))}</h3>
+            <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Credits"))}</h3>
             <p class="credits-thanks">${thanksBody}</p>
           </div>
         </div>
       </div>
     </div>`;
-}
-
-// Host-only call-to-action rendered under the host settings panel.
-// Producers never see it: starting credits is strictly a host power.
-function renderCreditsHostCta() {
-  if (!isHost()) return "";
-  const active = Boolean(getCreditsState());
-  const button = active
-    ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
-    : `<button type="button" data-credits-start>${escapeHtml(getSnark("shared.credits.rollButton", "Roll credits"))}</button>`;
-  return `
-    <section class="card credits-cta-card">
-      <h2>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</h2>
-      <p class="muted">${escapeHtml(getSnark("shared.credits.ctaHelper", "Roll the credits on every screen (except the timer tablet)."))}</p>
-      ${button}
-    </section>`;
-}
-
-// Host-only call-to-action for the room-code spotlight. Producers never see
-// it: forcing the large room code onto displays is strictly a host power.
-function renderRoomCodeSpotlightHostCta() {
-  if (!isHost()) return "";
-  const active = Boolean(getRoomCodeSpotlight());
-  const button = active
-    ? `<button type="button" data-room-code-spotlight-hide>${escapeHtml(getSnark("shared.misc.roomSpotlightHide", "Hide room code"))}</button>`
-    : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`;
-  return `
-    <section class="card room-code-spotlight-cta-card">
-      <h2>${escapeHtml(getSnark("shared.misc.roomSpotlightTitle", "Room code spotlight"))}</h2>
-      <p class="muted">${escapeHtml(getSnark("shared.misc.roomSpotlightHelper", "Show the large room code on every audience display."))}</p>
-      ${button}
-    </section>`;
 }
 
 // Single mount point for the broadcast overlay: appended after the view so
@@ -8336,6 +8718,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (joinCount > 0) roomCodeModalAutoDismissed = false;
   const spotlightActive = Boolean(getRoomCodeSpotlight());
   const showRoomCodeModal = roomCodeModalOpen || spotlightActive || (joinCount === 0 && !roomCodeModalAutoDismissed);
+  const showAnalytics = Boolean(getAnalyticsSpotlight());
 
   return `
     <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
@@ -8358,6 +8741,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         ${showScores ? renderScores(players, scores) : ""}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
+      ${showAnalytics ? renderAnalyticsCard(true) : ""}
       ${showRoomCodeModal ? renderRoomCodeModal(roomCode) : ""}
     </main>
   `;
@@ -8591,6 +8975,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
+  // Presets also lock on terminally closed rounds (all answers in, timer
+  // elapsed, ruled shut) unless re-buzz is on — scores already finalized.
+  const presetDisabledAttr = (settingsLocked || (isTerminallyClosedRound(round) && !settings.rebuzzAllowed)) ? "disabled" : "";
   const producerIds = getSafeState("producerIds", []);
   const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
@@ -8604,13 +8991,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
   // Pre-set correct answer lives next to the Open button so hosts set it
-  // right before opening (auto-rules when present, manual ruling otherwise).
+  // right before opening (scores finalize at close when present, manual
+  // ruling otherwise).
   const presetCorrectAnswerHtml = settings.inputMode === "text"
     ? `<label class="preset-field">Correct answer text
-         <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
+         <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${presetDisabledAttr} />
          <div class="preset-actions">
-           <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
-           <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
+           <button type="button" data-set-correct-text ${presetDisabledAttr}>Set</button>
+           <button type="button" data-clear-correct ${presetDisabledAttr}>Clear</button>
          </div>
        </label>`
     : `<div class="preset-field">
@@ -8620,11 +9008,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
              .map((opt) => {
                const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
                const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
-               return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+               return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${presetDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
              })
              .join("")}
          </div>
-         <div class="preset-actions"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
+         <div class="preset-actions"><button type="button" data-clear-correct ${presetDisabledAttr}>Clear</button></div>
        </div>`;
 
   const statusText = {
@@ -8632,7 +9020,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     [ROUND_STATUSES.OPEN]: "Open",
     [ROUND_STATUSES.ROULETTE]: "Pick-a-Value",
     [ROUND_STATUSES.LOCKED]: "Locked",
-    [ROUND_STATUSES.CLOSED]: "Closed",
+    [ROUND_STATUSES.CLOSED]: "Paused",
   }[round.status];
 
   const toggleSwitch = (setting, value, labelOn = "On", labelOff = "Off") => {
@@ -8668,9 +9056,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               ${
                 settings.lockAfterBuzz
                   ? `<label>
-                      Close on positive ruling
+                      Pause on positive ruling
                       ${toggleSwitch("closeBuzzersOnPointsGiven", settings.closeBuzzersOnPointsGiven)}
-                      <p class="setting-helper">Instead of re-opening, close buzzers after awarding points.</p>
+                      <p class="setting-helper">Instead of re-opening, pause the timer after awarding points.</p>
                     </label>`
                   : ""
               }
@@ -9002,9 +9390,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             ${settings.scoringMode === "roulette"
               ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
               : ""}
-            <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
-            <button type="button" data-host-action="close">Close Buzzers</button>
-            <button type="button" data-host-action="reset">Reset Round</button>
+            <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset || (isTerminallyClosedRound(round) && !settings.rebuzzAllowed) ? "disabled" : ""}>Open Buzzers</button>
+            <button type="button" data-host-action="pause" ${round.status !== ROUND_STATUSES.OPEN ? "disabled" : ""} ${round.status === ROUND_STATUSES.LOCKED ? `title="Timer is already paused for the ruling"` : ""}>Pause Timer</button>
+            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === "open" || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
+            <button type="button" data-host-action="reset">Next Round</button>
             ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
               : ""}
@@ -9031,7 +9420,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           ? `<span>Final value: <strong>${round.roulette.finalValue}</strong></span>`
           : ""}
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
-        ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
+        ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Timer pauses after a positive ruling.</span>" : ""}
         ${settings.allowScrewing && settings.reopenBuzzersAfterScrew ? "<span>Buzzers reopen with the remaining time after a screw.</span>" : ""}
         ${round.status === ROUND_STATUSES.ROULETTE && round.roulette?.active
           ? `<span>Pick-a-value: <strong>${getRouletteFrame(round.roulette).value}</strong> · ${Array.isArray(round.roulette.completedPlayerIds) ? round.roulette.completedPlayerIds.length : 0}/${getRouletteExpectedCount(round.roulette)} locked</span>`
@@ -9289,54 +9678,97 @@ function renderScores(players, scores, extraClass = "") {
 // Game log — reverse-chronological list of every buzz, editable by host
 // =============================================================================
 function renderLog(log, settings) {
-  const rows = [...log]
-    .reverse()
-    .map((entry) => {
-      const controls = hasHostPrivileges()
-        ? `
-          <div class="log-controls">
-            <input type="number" value="${Number(entry.awardedDelta || 0)}" data-log-input="${entry.id}" />
-            <button type="button" data-log-apply="${entry.id}">Apply</button>
-            <button type="button" class="green" data-log-quick="plus" data-log-id="${entry.id}">+${entry.basePoints}</button>
-            <button type="button" class="red" data-log-quick="minus" data-log-id="${entry.id}">-${entry.basePoints}</button>
-          </div>
-        `
-        : "";
+  const renderEntry = (entry) => {
+    const controls = hasHostPrivileges()
+      ? `
+        <div class="log-controls">
+          <input type="number" value="${Number(entry.awardedDelta || 0)}" data-log-input="${entry.id}" />
+          <button type="button" data-log-apply="${entry.id}">Apply</button>
+          <button type="button" class="green" data-log-quick="plus" data-log-id="${entry.id}">+${entry.basePoints}</button>
+          <button type="button" class="red" data-log-quick="minus" data-log-id="${entry.id}">-${entry.basePoints}</button>
+        </div>
+      `
+      : "";
+    const badge = getLogEntryBadge(entry);
 
-      return `
-        <li>
-          <div class="log-main">
-            <span class="log-player">${escapeHtml(entry.playerName)}</span>
-            <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
-            <span>
-              ${
-                entry.answerText
-                  ? `Answer \"${escapeHtml(entry.answerText)}\"`
-                  : entry.option === null || entry.option === undefined
-                    ? `Buzzed in`
-                    : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
-              }
-            </span>
-            <span>${formatSeconds(entry.timeLeftCs)}s</span>
-            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Pick-a-Value`}</span>
-            <span>Base ${entry.basePoints}</span>
-            <span>Score ${Number(entry.awardedDelta || 0)}</span>
-          </div>
-          ${controls}
-        </li>
-      `;
-    })
-    .join("");
+    return `
+      <li>
+        <div class="log-main">
+          <span class="log-badge log-badge-${badge.slug}">${escapeHtml(badge.label)}</span>
+          <span class="log-player">${escapeHtml(entry.playerName)}</span>
+          <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
+          <span>
+            ${
+              entry.answerText
+                ? `Answer \"${escapeHtml(entry.answerText)}\"`
+                : entry.option === null || entry.option === undefined
+                  ? `Buzzed in`
+                  : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
+            }
+          </span>
+          <span>${formatSeconds(entry.timeLeftCs)}s</span>
+          <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Pick-a-Value`}</span>
+          <span>Base ${entry.basePoints}</span>
+          <span>Score ${Number(entry.awardedDelta || 0)}</span>
+        </div>
+        ${controls}
+      </li>
+    `;
+  };
+
+  // Group entries by stamped roundId (newest round first). Entries from rooms
+  // created before round tagging carry no roundId and trail as one group.
+  const groups = new Map();
+  const legacy = [];
+  for (const entry of log || []) {
+    const n = Number(entry?.roundId);
+    if (entry && Number.isFinite(n)) {
+      const rid = Math.trunc(n);
+      if (!groups.has(rid)) groups.set(rid, []);
+      groups.get(rid).push(entry);
+    } else {
+      legacy.push(entry);
+    }
+  }
+  const sortedIds = [...groups.keys()].sort((a, b) => b - a);
+  let currentId = null;
+  try { currentId = currentRoundId(); } catch { currentId = null; }
+
+  const groupHtml = sortedIds.map((rid) => {
+    const entries = [...groups.get(rid)].reverse();
+    const isCurrent = currentId !== null && rid === currentId;
+    const title = rid > 0 ? `Round ${rid}` : `Pre-game`;
+    const badge = isCurrent ? ` <span class="log-round-badge">Current</span>` : "";
+    const count = entries.length === 1 ? "1 entry" : `${entries.length} entries`;
+    return `
+      <div class="log-round">
+        <h3 class="log-round-header">${escapeHtml(title)}${badge} <span class="muted">· ${escapeHtml(count)}</span></h3>
+        <ul class="log-list">${entries.map(renderEntry).join("")}</ul>
+      </div>
+    `;
+  }).join("");
+
+  const legacyHtml = legacy.length
+    ? `
+      <div class="log-round">
+        <h3 class="log-round-header">Earlier rounds <span class="muted">· ${legacy.length === 1 ? "1 entry" : `${legacy.length} entries`}</span></h3>
+        <ul class="log-list">${[...legacy].reverse().map(renderEntry).join("")}</ul>
+      </div>
+    `
+    : "";
 
   const helper = settings.lockAfterBuzz
     ? "All rulings are editable here after they are made."
     : "Buzzers stay open. Use this log to apply and edit rulings.";
 
+  const body = groupHtml + legacyHtml || "<li>No rulings yet.</li>";
+  const listWrap = groupHtml || legacyHtml ? body : `<ul class="log-list">${body}</ul>`;
+
   return `
     <section class="card log-card">
       <h2>Game Log</h2>
       <p class="muted">${helper}</p>
-      <ul class="log-list">${rows || "<li>No rulings yet.</li>"}</ul>
+      ${listWrap}
     </section>
   `;
 }
@@ -9424,9 +9856,11 @@ function render() {
   if (isTeamSelectActive()) {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
+      ${renderAnalyticsCard(false)}
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
         ${renderTeamSelectPlayerPanel(settings, players, mePlayer)}
@@ -9459,8 +9893,7 @@ function render() {
     const isWen = isWenDitHapnMode();
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9494,8 +9927,7 @@ function render() {
   if (isDisOrDatMode()) {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9532,8 +9964,7 @@ function render() {
     const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${fibScoresHost}
       </section>
@@ -9569,8 +10000,7 @@ function render() {
     const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."));
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${qxScoresHost}
       </section>
@@ -9618,8 +10048,7 @@ function render() {
       </header>
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
@@ -9627,6 +10056,7 @@ function render() {
           : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable."))}
       </section>
 
+      ${showAdminData ? renderAnalyticsCard(false) : ""}
       ${renderLockedRuling(settings, pendingEntry)}
       ${showAdminData ? renderLog(gameLog, settings) : ""}
     </main>
@@ -9710,6 +10140,8 @@ function bindEvents() {
   delegate("click", "[data-credits-end]", () => { endCredits(); });
   delegate("click", "[data-room-code-spotlight-show]", () => { startRoomCodeSpotlight(); });
   delegate("click", "[data-room-code-spotlight-hide]", () => { endRoomCodeSpotlight(); });
+  delegate("click", "[data-analytics-show]", () => { startAnalyticsSpotlight(); });
+  delegate("click", "[data-analytics-hide]", () => { endAnalyticsSpotlight(); });
   delegate("click", "[data-credits-close]", () => { dismissCreditsLocally(); });
   delegate("click", "[data-credits-overlay]", (e, el) => {
     if (e.target !== el) return; // backdrop only — dialog clicks stay open
@@ -9793,7 +10225,9 @@ function bindEvents() {
       if (result?.ok === false) setBuzzNotice(result.reason || "Could not start pick-a-value.");
       else if (result?.message) setBuzzNotice(result.message);
       scheduleRender(render);
-    } else if (action === "close") closeBuzzers();
+    } else if (action === "close") pauseBuzzers();
+    else if (action === "pause") pauseBuzzers();
+    else if (action === "resume") resumeBuzzers();
     else if (action === "reset") resetRound();
     else if (action === "reset-screws") resetScrews();
     else if (action === "reset-all-scores") {
@@ -10781,7 +11215,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 
   // Producer actions RPC — relays producer UI actions through the host
   const HOST_ACTIONS = {
-    openBuzzers, closeBuzzers, resetRound, resetScrews,
+    openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
     startRoulettePhase, startScrewTimer, closeScrewMode,
     initiateScrew, selectScrewee,
     startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
@@ -10794,6 +11228,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
     setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
     startQuixort, endQuixort, resetQuixort, exitQuixort,
+    startAnalyticsSpotlight, endAnalyticsSpotlight,
   };
   RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };
