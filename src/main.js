@@ -8357,23 +8357,59 @@ function renderAnalyticsCard(audience = false) {
     </section>`;
 }
 
-// Host/producer call-to-action for mirroring analytics onto audience displays.
-// Unlike credits/spotlight this is producer-accessible by decision: the toggle
-// relays through producer-action when clicked by a producer.
-function renderAnalyticsHostCta() {
-  if (!hasHostPrivileges()) return "";
-  const active = Boolean(getAnalyticsSpotlight());
-  const button = active
-    ? `<button type="button" data-analytics-hide>${escapeHtml(getSnark("shared.analytics.hideButton", "Hide from audience"))}</button>`
-    : `<button type="button" data-analytics-show>${escapeHtml(getSnark("shared.analytics.showButton", "Show on audience"))}</button>`;
-  const audienceHint = hasAudienceDisplay()
-    ? getSnark("shared.analytics.audienceConnected", "An audience display is connected.")
-    : getSnark("shared.analytics.audienceMissing", "No audience display connected — the toggle still works and applies when one joins.");
+// Merged show-controls card: credits + room-code spotlight + analytics mirror
+// in one place (data attrs unchanged, so delegates keep working).
+// Credits/spotlight rows stay strictly host-only; the analytics row is
+// producer-accessible (relays through producer-action when clicked by a
+// producer) and hides in minigame views (analytics covers Buttons/Text only).
+// Returns "" when no row is visible (e.g. producers in minigame views).
+function renderBroadcastHostCard() {
+  const rows = [];
+  if (isHost()) {
+    const creditsActive = Boolean(getCreditsState());
+    rows.push(`
+      <div class="broadcast-row">
+        <div class="broadcast-row-text">
+          <strong>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</strong>
+          <p class="muted">${escapeHtml(getSnark("shared.credits.ctaHelper", "Roll the credits on every screen (except the timer tablet)."))}</p>
+        </div>
+        ${creditsActive
+          ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
+          : `<button type="button" data-credits-start>${escapeHtml(getSnark("shared.credits.rollButton", "Roll credits"))}</button>`}
+      </div>`);
+    const spotlightActive = Boolean(getRoomCodeSpotlight());
+    rows.push(`
+      <div class="broadcast-row">
+        <div class="broadcast-row-text">
+          <strong>${escapeHtml(getSnark("shared.misc.roomSpotlightTitle", "Room code spotlight"))}</strong>
+          <p class="muted">${escapeHtml(getSnark("shared.misc.roomSpotlightHelper", "Show the large room code on every audience display."))}</p>
+        </div>
+        ${spotlightActive
+          ? `<button type="button" data-room-code-spotlight-hide>${escapeHtml(getSnark("shared.misc.roomSpotlightHide", "Hide room code"))}</button>`
+          : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`}
+      </div>`);
+  }
+  if (hasHostPrivileges() && !isBingoMode() && !isDisOrDatMode() && !isFibbageMode() && !isQuixortMode()) {
+    const analyticsActive = Boolean(getAnalyticsSpotlight());
+    const audienceHint = hasAudienceDisplay()
+      ? getSnark("shared.analytics.audienceConnected", "An audience display is connected.")
+      : getSnark("shared.analytics.audienceMissing", "No audience display connected — the toggle still works and applies when one joins.");
+    rows.push(`
+      <div class="broadcast-row">
+        <div class="broadcast-row-text">
+          <strong>${escapeHtml(getSnark("shared.analytics.title", "Analytics"))}</strong>
+          <p class="muted">${escapeHtml(getSnark("shared.analytics.ctaHelper", "Current-round answer percentages. Mirror them onto the audience display."))} ${escapeHtml(audienceHint)}</p>
+        </div>
+        ${analyticsActive
+          ? `<button type="button" data-analytics-hide>${escapeHtml(getSnark("shared.analytics.hideButton", "Hide from audience"))}</button>`
+          : `<button type="button" data-analytics-show>${escapeHtml(getSnark("shared.analytics.showButton", "Show on audience"))}</button>`}
+      </div>`);
+  }
+  if (!rows.length) return "";
   return `
-    <section class="card analytics-cta-card">
-      <h2>${escapeHtml(getSnark("shared.analytics.title", "Analytics"))}</h2>
-      <p class="muted">${escapeHtml(getSnark("shared.analytics.ctaHelper", "Current-round answer percentages. Mirror them onto the audience display."))} ${escapeHtml(audienceHint)}</p>
-      ${button}
+    <section class="card broadcast-card" data-broadcast-card>
+      <h2>${escapeHtml(getSnark("shared.broadcast.title", "Audience display"))}</h2>
+      ${rows.join("")}
     </section>`;
 }
 
@@ -8532,44 +8568,12 @@ function renderCreditsOverlay() {
             ${producerNames.length === 0 ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noProducers", "No producers assigned."))}</p>` : producerNames.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join("")}
             <h3>${escapeHtml(getSnark("shared.credits.playersHeading", "Players"))}</h3>
             ${playerHtml}
-            <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Special thanks"))}</h3>
+            <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Credits"))}</h3>
             <p class="credits-thanks">${thanksBody}</p>
           </div>
         </div>
       </div>
     </div>`;
-}
-
-// Host-only call-to-action rendered under the host settings panel.
-// Producers never see it: starting credits is strictly a host power.
-function renderCreditsHostCta() {
-  if (!isHost()) return "";
-  const active = Boolean(getCreditsState());
-  const button = active
-    ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
-    : `<button type="button" data-credits-start>${escapeHtml(getSnark("shared.credits.rollButton", "Roll credits"))}</button>`;
-  return `
-    <section class="card credits-cta-card">
-      <h2>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</h2>
-      <p class="muted">${escapeHtml(getSnark("shared.credits.ctaHelper", "Roll the credits on every screen (except the timer tablet)."))}</p>
-      ${button}
-    </section>`;
-}
-
-// Host-only call-to-action for the room-code spotlight. Producers never see
-// it: forcing the large room code onto displays is strictly a host power.
-function renderRoomCodeSpotlightHostCta() {
-  if (!isHost()) return "";
-  const active = Boolean(getRoomCodeSpotlight());
-  const button = active
-    ? `<button type="button" data-room-code-spotlight-hide>${escapeHtml(getSnark("shared.misc.roomSpotlightHide", "Hide room code"))}</button>`
-    : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`;
-  return `
-    <section class="card room-code-spotlight-cta-card">
-      <h2>${escapeHtml(getSnark("shared.misc.roomSpotlightTitle", "Room code spotlight"))}</h2>
-      <p class="muted">${escapeHtml(getSnark("shared.misc.roomSpotlightHelper", "Show the large room code on every audience display."))}</p>
-      ${button}
-    </section>`;
 }
 
 // Single mount point for the broadcast overlay: appended after the view so
@@ -9737,7 +9741,7 @@ function render() {
   if (isTeamSelectActive()) {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
-      ${renderAnalyticsHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9774,8 +9778,7 @@ function render() {
     const isWen = isWenDitHapnMode();
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9809,8 +9812,7 @@ function render() {
   if (isDisOrDatMode()) {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -9847,8 +9849,7 @@ function render() {
     const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${fibScoresHost}
       </section>
@@ -9884,8 +9885,7 @@ function render() {
     const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."));
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
+      ${renderBroadcastHostCard()}
       <section class="grid">
         ${qxScoresHost}
       </section>
@@ -9933,9 +9933,7 @@ function render() {
       </header>
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
-      ${renderCreditsHostCta()}
-      ${renderRoomCodeSpotlightHostCta()}
-      ${showAdminData ? renderAnalyticsHostCta() : ""}
+      ${renderBroadcastHostCard()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)

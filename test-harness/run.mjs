@@ -1093,6 +1093,13 @@ for (let i = 0; i < 20 && !aHtml.includes(`Round ${S().round?.roundNumber} · 3 
 const anaImpostor = await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, impostor);
 check("analytics spotlight rejects non-producer", anaImpostor?.ok === false, JSON.stringify(anaImpostor));
 check("analytics spotlight cta for host", _mount.innerHTML.includes("data-analytics-show"), "show toggle missing");
+{
+  const html = _mount.innerHTML;
+  const broadcastCount = html.split("data-broadcast-card").length - 1;
+  check("broadcast controls merged into one card", broadcastCount === 1, `cards=${broadcastCount}`);
+  check("old cta cards gone", !html.includes("credits-cta-card") && !html.includes("room-code-spotlight-cta-card") && !html.includes("analytics-cta-card"), "legacy card class leaked");
+  check("broadcast card holds all toggles", html.includes("data-credits-start") && html.includes("data-room-code-spotlight-show") && html.includes("data-analytics-show"), "toggle missing from merged card");
+}
 clickBtn({}, "[data-analytics-show]");
 await sleep(50);
 check("host starts analytics spotlight", S().analyticsSpotlight?.active === true, JSON.stringify(S().analyticsSpotlight));
