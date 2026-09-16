@@ -99,7 +99,7 @@ Because jackbox doesn't have a large player count, easily moddable version of JA
 ### How can I ask for stuff?
 Just create an issue
 
-### How make work?
+## How make work?
 Just run the thing as you would a node app, as thats what it is or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
 
 USE NODE 20+
