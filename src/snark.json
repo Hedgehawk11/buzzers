@@ -1357,6 +1357,78 @@
         "snark2": ""
       }
     },
+    "credits": {
+      "title": {
+        "en": "Credits",
+        "snark1": "",
+        "snark2": ""
+      },
+      "hostHeading": {
+        "en": "Host",
+        "snark1": "",
+        "snark2": ""
+      },
+      "producersHeading": {
+        "en": "Producers",
+        "snark1": "",
+        "snark2": ""
+      },
+      "playersHeading": {
+        "en": "Players",
+        "snark1": "",
+        "snark2": ""
+      },
+      "thanksHeading": {
+        "en": "Special thanks",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noProducers": {
+        "en": "No producers assigned.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noPlayersYet": {
+        "en": "No players yet.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "unassignedTeam": {
+        "en": "unassigned",
+        "snark1": "",
+        "snark2": ""
+      },
+      "rollButton": {
+        "en": "Roll credits",
+        "snark1": "",
+        "snark2": ""
+      },
+      "endButton": {
+        "en": "End credits",
+        "snark1": "",
+        "snark2": ""
+      },
+      "closeButton": {
+        "en": "Close",
+        "snark1": "",
+        "snark2": ""
+      },
+      "loading": {
+        "en": "Loading credits…",
+        "snark1": "",
+        "snark2": ""
+      },
+      "loadFailed": {
+        "en": "Thanks for playing!",
+        "snark1": "",
+        "snark2": ""
+      },
+      "ctaHelper": {
+        "en": "Roll the credits on every screen (except the timer tablet).",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "misc": {
       "appTitle": {
         "en": "Instant Buzzers",
@@ -1365,6 +1437,31 @@
       },
       "roomCodeLabel": {
         "en": "Room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightTitle": {
+        "en": "Room code spotlight",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightHelper": {
+        "en": "Show the large room code on every audience display.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightShow": {
+        "en": "Show room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roomSpotlightHide": {
+        "en": "Hide room code",
+        "snark1": "",
+        "snark2": ""
+      },
+      "resetAllScores": {
+        "en": "Reset scores",
         "snark1": "",
         "snark2": ""
       },

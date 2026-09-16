@@ -2515,6 +2515,7 @@ body:has([data-screw-active]) {
   .player-card,
   [data-timer-urgent],
   .room-code-modal,
+  .credits-crawl,
   .score-card li.is-delta,
   #app[data-transition="in"] .layout .card,
   #app[data-transition="in"] .grid .card { animation: none !important; }
@@ -2596,3 +2597,77 @@ body:not([data-ui-anims="off"]) .room-code-modal {
 .preset-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
 .preset-options { margin-top: 0.25rem; }
 .open-actions { width: 100%; align-content: flex-start; }
+
+/* Roll credits — host-started broadcast overlay (all screens but tablet). */
+.credits-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(3, 8, 14, 0.85);
+  backdrop-filter: blur(6px);
+}
+.credits-dialog {
+  width: min(560px, 100%);
+  max-width: 100%;
+  overflow: hidden;
+  text-align: center;
+  padding: 1.25rem 1.5rem 0;
+  border-radius: 22px;
+  border: 1px solid var(--panel-border);
+  background:
+    radial-gradient(120% 120% at 50% 0%, rgba(255, 139, 36, 0.16), transparent 60%),
+    var(--panel);
+  box-shadow: var(--shadow);
+}
+.credits-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.credits-topbar-actions { display: flex; gap: 0.4rem; }
+.credits-viewport {
+  height: min(62vh, 520px);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, black 12%, black 88%, transparent);
+}
+.credits-crawl { padding: 62vh 0 10vh; }
+.credits-crawl h3 {
+  margin: 2rem 0 0.5rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.credits-crawl h3:first-child { margin-top: 0; }
+.credits-crawl p { margin: 0.25rem 0; }
+.credits-ranked { list-style: none; margin: 0; padding: 0; }
+.credits-ranked li { margin: 0.35rem 0; }
+.credits-rank { color: var(--muted); margin-right: 0.3rem; }
+.credits-score { color: var(--muted); margin-left: 0.3rem; }
+.credits-team-head { margin: 1rem 0 0.25rem; }
+.credits-thanks { white-space: pre-line; }
+@keyframes creditsCrawl {
+  from { transform: translateY(0); }
+  to { transform: translateY(calc(-100% + 30vh)); }
+}
+/* Single run, then hold on the final frame. Anims-off kills it globally
+   (body[data-ui-anims="off"] *), leaving a static list. */
+body:not([data-ui-anims="off"]) .credits-crawl {
+  animation: creditsCrawl 25s linear forwards;
+}
+body[data-ui-anims="off"] .credits-viewport {
+  overflow-y: auto;
+}
+body[data-ui-anims="off"] .credits-crawl {
+  padding-top: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .credits-viewport { overflow-y: auto; }
+  .credits-crawl { padding-top: 0; }
+}
