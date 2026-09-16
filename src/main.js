@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   lockAfterBuzz: false,
   rebuzzAllowed: false,
   maxBuzzesPerOption: 1,
-  closeBuzzersOnPointsGiven: true,
+  closeBuzzersOnPointsGiven: false,
   showScoresToPlayers: false,
   showScoresToAudience: true,
   uiAnimationsEnabled: true,
