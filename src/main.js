@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   lockAfterBuzz: false,
   rebuzzAllowed: false,
   maxBuzzesPerOption: 1,
-  closeBuzzersOnPointsGiven: false,
+  closeBuzzersOnPointsGiven: true,
   showScoresToPlayers: false,
   showScoresToAudience: true,
   uiAnimationsEnabled: true,
@@ -679,6 +679,13 @@ function getRound() {
     opensAt: null,
     closesAt: null,
     remainingCs: null,
+    // Monotonic round counter: incremented every time buzzers open. Game-log
+    // entries stamp this value (`roundId`) so renderLog can group by round.
+    // Preserved (never reset) by resetRound / mode-switch idle rounds.
+    roundNumber: 0,
+    // Tracks what a CLOSED round was paused from ("open"/"locked"/null) so
+    // resume can restore OPEN vs LOCKED. Null when not paused.
+    pausedFrom: null,
     winnerId: null,
     winnerTeam: null,
     winnerOption: null,
@@ -1004,6 +1011,17 @@ function getLog() {
   return getSafeState("gameLog", []);
 }
 
+// Current round id for stamping new game-log entries. Falls back to 0 for
+// rooms whose round state predates the counter.
+function currentRoundId() {
+  try {
+    const n = Number(getRound()?.roundNumber);
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function getControllerId() {
   return getSafeState("controllerId", null);
 }
@@ -1035,7 +1053,7 @@ function hasHostPrivileges() {
 async function producerDispatch(fnName, ...args) {
   if (isHost()) {
     const     dispatch = {
-      openBuzzers, closeBuzzers, resetRound, resetScrews,
+      openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
       startRoulettePhase, startScrewTimer, closeScrewMode,
       initiateScrew, selectScrewee,
       startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
@@ -1284,6 +1302,8 @@ function getUiSignature() {
       opensAt: round.opensAt,
       closesAt: round.closesAt,
       remainingCs: round.remainingCs,
+      roundNumber: round.roundNumber,
+      pausedFrom: round.pausedFrom,
       winnerId: round.winnerId,
       winnerCoopKey: round.winnerCoopKey,
       winnerTeam: round.winnerTeam,
@@ -1345,7 +1365,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     scores: getScores(),
     gameLogDigest: (() => {
       const log = getLog();
-      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}:${Number(e.basePoints || 0)}:${e.result || ""}:${e.scoreKey || ""}`).join(",")}`;
+      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}:${Number(e.basePoints || 0)}:${e.result || ""}:${e.scoreKey || ""}:${e.roundId ?? ""}`).join(",")}`;
     })(),
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
@@ -1934,6 +1954,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
     if (round.status === ROUND_STATUSES.LOCKED) {
+      // LAB-only: pausing on a positive ruling requires lockAfterBuzz — the
+      // toggle alone never pauses (it is only rendered in LAB mode).
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       // Coop: a correct solution locks the solving device's siblings out of
@@ -2056,6 +2078,8 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
   if (pendingId === logId) {
     setState("pendingLogId", null, true);
     if (round.status === ROUND_STATUSES.LOCKED) {
+      // LAB-only: pausing on a positive ruling requires lockAfterBuzz — the
+      // toggle alone never pauses (it is only rendered in LAB mode).
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
@@ -2126,6 +2150,7 @@ function pushBuzzLogEntry(player, { option = null, answerText = null, coopSlot =
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: "buzz",
     ts: now(),
+    roundId: currentRoundId(),
     playerId: player.id,
     playerName: displayName,
     teamColor,
@@ -2487,6 +2512,10 @@ function openBuzzers() {
   const rawTimeOpen = Number(settings.timeOpen);
   const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
   const closesAt = openedAt + safeTimeOpen * 1000;
+  const nextRoundNumber = (() => {
+    const n = Number(round.roundNumber);
+    return Number.isFinite(n) && n >= 0 ? Math.trunc(n) + 1 : 1;
+  })();
   setState(
     "round",
     {
@@ -2495,6 +2524,8 @@ function openBuzzers() {
       opensAt: openedAt,
       closesAt,
       remainingCs: safeTimeOpen * 100,
+      roundNumber: nextRoundNumber,
+      pausedFrom: null,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -2533,12 +2564,23 @@ function openBuzzers() {
   render();
 }
 
-// Immediately close buzzers mid-round
-function closeBuzzers() {
-  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "closeBuzzers", args: [] }, RPC.Mode.HOST); return; }
-  console.log("closeBuzzers: host triggered");
+// Pause the open timer mid-round (status -> CLOSED, clock frozen at
+// remainingCs). Only valid from OPEN — LOCKED already freezes the clock for
+// the pending ruling, so pausing there is a no-op with a notice.
+function pauseBuzzers() {
+  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "pauseBuzzers", args: [] }, RPC.Mode.HOST); return; }
+  console.log("pauseBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
+  if (round.status === ROUND_STATUSES.LOCKED) {
+    setBuzzNotice("Timer is already paused for the ruling.");
+    render();
+    return;
+  }
+  if (round.status !== ROUND_STATUSES.OPEN) {
+    render();
+    return;
+  }
   const rawRemaining = Number(getTimeLeftCs(round, settings));
   const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
   setState(
@@ -2547,6 +2589,7 @@ function closeBuzzers() {
       ...round,
       status: ROUND_STATUSES.CLOSED,
       remainingCs: safeRemaining,
+      pausedFrom: "open",
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -2571,6 +2614,46 @@ function closeBuzzers() {
   );
   setState("pendingLogId", null, true);
   render();
+}
+
+// Resume a paused timer: CLOSED with remaining time left goes back to OPEN
+// (or LOCKED if it was paused mid-ruling via the RPC race path), preserving
+// buzzed players — unlike openBuzzers which starts a fresh round.
+function resumeBuzzers() {
+  if (!isHost()) { if (isProducer()) RPC.call("producer-action", { fn: "resumeBuzzers", args: [] }, RPC.Mode.HOST); return; }
+  console.log("resumeBuzzers: host triggered");
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.CLOSED) {
+    render();
+    return;
+  }
+  const rawRemaining = Number(round.remainingCs);
+  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
+  if (safeRemaining <= 0) {
+    setBuzzNotice("No time left — open a new round.");
+    render();
+    return;
+  }
+  const resumeToLocked = round.pausedFrom === "locked" && getSafeState("pendingLogId", null);
+  const resumedAt = now();
+  setState(
+    "round",
+    {
+      ...round,
+      status: resumeToLocked ? ROUND_STATUSES.LOCKED : ROUND_STATUSES.OPEN,
+      opensAt: round.opensAt,
+      closesAt: resumedAt + safeRemaining * 10,
+      remainingCs: safeRemaining,
+      pausedFrom: null,
+    },
+    true,
+  );
+  render();
+}
+
+// Back-compat alias: old producer clients / tests calling "closeBuzzers".
+function closeBuzzers() {
+  return pauseBuzzers();
 }
 
 // =============================================================================
@@ -2784,7 +2867,7 @@ function handleBingoBuzz(player, payload) {
     const log = getLog();
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: "bingo", ts: now(), playerId: player.id,
+      type: "bingo", ts: now(), roundId: currentRoundId(), playerId: player.id,
       playerName: coopActive ? buzzName : getPlayerName(player), teamColor,
       scoreKey,
       coopSlot: coopActive ? coopSlot : null,
@@ -2816,7 +2899,7 @@ function handleBingoBuzz(player, payload) {
     const log = getLog();
     setState("gameLog", [...log, {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: "bingo", ts: now(), playerId: player.id,
+      type: "bingo", ts: now(), roundId: currentRoundId(), playerId: player.id,
       playerName: coopActive ? buzzName : getPlayerName(player), teamColor,
       scoreKey,
       coopSlot: coopActive ? coopSlot : null,
@@ -3177,6 +3260,7 @@ function finalizeDisOrDat() {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "disordat",
       ts: now(),
+      roundId: currentRoundId(),
       playerId: rep?.id || track,
       playerName: trackDisplayName,
       teamColor,
@@ -3613,6 +3697,7 @@ function finalizeQuixort() {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "quixort",
       ts: now(),
+      roundId: currentRoundId(),
       playerId: rep?.id || track,
       playerName: trackDisplayName,
       teamColor: isTeamTrack ? track : (rep ? getPlayerTeamColor(rep.id, assignments) : null),
@@ -3887,6 +3972,7 @@ function finalizeFibbageScores() {
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "fibbage",
       ts: now(),
+      roundId: currentRoundId(),
       playerId: rep?.id || trackKey,
       playerName: rep ? getPlayerName(rep) : trackKey,
       teamColor,
@@ -4024,6 +4110,8 @@ function resetRound() {
       opensAt: null,
       closesAt: null,
       remainingCs: safeTimeOpen * 100,
+      roundNumber: Number.isFinite(Number(currentRound.roundNumber)) ? Math.trunc(Number(currentRound.roundNumber)) : 0,
+      pausedFrom: null,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -4429,6 +4517,7 @@ function hostTick() {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
             type: "buzz",
             ts: now(),
+            roundId: currentRoundId(),
             playerId: round.screw?.screweeId,
             playerName: round.screw.screeeName,
             teamColor: screweeTeamColor,
@@ -4739,7 +4828,8 @@ function setHostSetting(key, value) {
     if (value === "bingo" || value === "wendithapn") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4752,7 +4842,8 @@ function setHostSetting(key, value) {
     if (value === "disordat") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4781,7 +4872,8 @@ function setHostSetting(key, value) {
     if (value === "fibbage") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4796,7 +4888,8 @@ function setHostSetting(key, value) {
     if (value === "quixort") {
       const idleRound = {
         status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, winnerId: null, winnerTeam: null,
+        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+        winnerId: null, winnerTeam: null,
         winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
         buzzedPlayerIds: [],
         buzzCounts: {},
@@ -4970,6 +5063,7 @@ function pushManualLogEntry(playerId, scoreKey, delta, kind) {
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: kind === "reset" ? "manual-reset" : "manual-adjust",
     ts: now(),
+    roundId: currentRoundId(),
     playerId,
     playerName: displayName,
     teamColor: getPlayerTeamColor(playerId, assignments),
@@ -5390,6 +5484,18 @@ function ensureHostInit() {
   } catch {}
   if (!getState("round")) {
     resetRound();
+  } else {
+    // Backfill the round counter / pause marker for rooms created before them.
+    try {
+      const r = getState("round") || {};
+      if (r.roundNumber === undefined || r.pausedFrom === undefined) {
+        setState("round", {
+          ...r,
+          roundNumber: Number.isFinite(Number(r.roundNumber)) ? Math.trunc(Number(r.roundNumber)) : 0,
+          pausedFrom: r.pausedFrom ?? null,
+        }, true);
+      }
+    } catch {}
   }
   if (!getState("scores")) {
     setState("scores", {}, true);
@@ -7786,7 +7892,7 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     [ROUND_STATUSES.OPEN]: getSnark("audience.buzzer.statusOpen", "Buzzers open"),
     [ROUND_STATUSES.ROULETTE]: getSnark("audience.buzzer.statusRoulette", "Pick-a-value in progress"),
     [ROUND_STATUSES.LOCKED]: getSnark("audience.buzzer.statusLocked", "Buzz locked"),
-    [ROUND_STATUSES.CLOSED]: getSnark("audience.buzzer.statusClosed", "Round closed"),
+    [ROUND_STATUSES.CLOSED]: getSnark("audience.buzzer.statusClosed", "Paused"),
   }[round.status];
 
   const pointsUpForGrabs = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED
@@ -8632,7 +8738,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     [ROUND_STATUSES.OPEN]: "Open",
     [ROUND_STATUSES.ROULETTE]: "Pick-a-Value",
     [ROUND_STATUSES.LOCKED]: "Locked",
-    [ROUND_STATUSES.CLOSED]: "Closed",
+    [ROUND_STATUSES.CLOSED]: "Paused",
   }[round.status];
 
   const toggleSwitch = (setting, value, labelOn = "On", labelOff = "Off") => {
@@ -8668,9 +8774,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               ${
                 settings.lockAfterBuzz
                   ? `<label>
-                      Close on positive ruling
+                      Pause on positive ruling
                       ${toggleSwitch("closeBuzzersOnPointsGiven", settings.closeBuzzersOnPointsGiven)}
-                      <p class="setting-helper">Instead of re-opening, close buzzers after awarding points.</p>
+                      <p class="setting-helper">Instead of re-opening, pause the timer after awarding points.</p>
                     </label>`
                   : ""
               }
@@ -9003,7 +9109,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
               : ""}
             <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
-            <button type="button" data-host-action="close">Close Buzzers</button>
+            <button type="button" data-host-action="pause" ${round.status !== ROUND_STATUSES.OPEN ? "disabled" : ""} ${round.status === ROUND_STATUSES.LOCKED ? `title="Timer is already paused for the ruling"` : ""}>Pause Timer</button>
+            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0) ? "disabled" : ""}>Resume Timer</button>
             <button type="button" data-host-action="reset">Reset Round</button>
             ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
@@ -9031,7 +9138,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
           ? `<span>Final value: <strong>${round.roulette.finalValue}</strong></span>`
           : ""}
         ${settings.rebuzzAllowed && settings.lockAfterBuzz ? "<span>Re-Buzz is on, so lock-after-buzz is ignored.</span>" : ""}
-        ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Buzzers close after a positive ruling.</span>" : ""}
+        ${settings.lockAfterBuzz && settings.closeBuzzersOnPointsGiven ? "<span>Timer pauses after a positive ruling.</span>" : ""}
         ${settings.allowScrewing && settings.reopenBuzzersAfterScrew ? "<span>Buzzers reopen with the remaining time after a screw.</span>" : ""}
         ${round.status === ROUND_STATUSES.ROULETTE && round.roulette?.active
           ? `<span>Pick-a-value: <strong>${getRouletteFrame(round.roulette).value}</strong> · ${Array.isArray(round.roulette.completedPlayerIds) ? round.roulette.completedPlayerIds.length : 0}/${getRouletteExpectedCount(round.roulette)} locked</span>`
@@ -9289,54 +9396,95 @@ function renderScores(players, scores, extraClass = "") {
 // Game log — reverse-chronological list of every buzz, editable by host
 // =============================================================================
 function renderLog(log, settings) {
-  const rows = [...log]
-    .reverse()
-    .map((entry) => {
-      const controls = hasHostPrivileges()
-        ? `
-          <div class="log-controls">
-            <input type="number" value="${Number(entry.awardedDelta || 0)}" data-log-input="${entry.id}" />
-            <button type="button" data-log-apply="${entry.id}">Apply</button>
-            <button type="button" class="green" data-log-quick="plus" data-log-id="${entry.id}">+${entry.basePoints}</button>
-            <button type="button" class="red" data-log-quick="minus" data-log-id="${entry.id}">-${entry.basePoints}</button>
-          </div>
-        `
-        : "";
+  const renderEntry = (entry) => {
+    const controls = hasHostPrivileges()
+      ? `
+        <div class="log-controls">
+          <input type="number" value="${Number(entry.awardedDelta || 0)}" data-log-input="${entry.id}" />
+          <button type="button" data-log-apply="${entry.id}">Apply</button>
+          <button type="button" class="green" data-log-quick="plus" data-log-id="${entry.id}">+${entry.basePoints}</button>
+          <button type="button" class="red" data-log-quick="minus" data-log-id="${entry.id}">-${entry.basePoints}</button>
+        </div>
+      `
+      : "";
 
-      return `
-        <li>
-          <div class="log-main">
-            <span class="log-player">${escapeHtml(entry.playerName)}</span>
-            <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
-            <span>
-              ${
-                entry.answerText
-                  ? `Answer \"${escapeHtml(entry.answerText)}\"`
-                  : entry.option === null || entry.option === undefined
-                    ? `Buzzed in`
-                    : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
-              }
-            </span>
-            <span>${formatSeconds(entry.timeLeftCs)}s</span>
-            <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Pick-a-Value`}</span>
-            <span>Base ${entry.basePoints}</span>
-            <span>Score ${Number(entry.awardedDelta || 0)}</span>
-          </div>
-          ${controls}
-        </li>
-      `;
-    })
-    .join("");
+    return `
+      <li>
+        <div class="log-main">
+          <span class="log-player">${escapeHtml(entry.playerName)}</span>
+          <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
+          <span>
+            ${
+              entry.answerText
+                ? `Answer \"${escapeHtml(entry.answerText)}\"`
+                : entry.option === null || entry.option === undefined
+                  ? `Buzzed in`
+                  : `Option ${settings.optionCount === 4 ? optionButtonLabel(entry.option) : entry.option}`
+            }
+          </span>
+          <span>${formatSeconds(entry.timeLeftCs)}s</span>
+          <span>${entry.scoringMode === "uniform" ? `U:${entry.uniformPoints}` : entry.scoringMode === "jack" ? `Jx${entry.jackMultiplier}` : `Pick-a-Value`}</span>
+          <span>Base ${entry.basePoints}</span>
+          <span>Score ${Number(entry.awardedDelta || 0)}</span>
+        </div>
+        ${controls}
+      </li>
+    `;
+  };
+
+  // Group entries by stamped roundId (newest round first). Entries from rooms
+  // created before round tagging carry no roundId and trail as one group.
+  const groups = new Map();
+  const legacy = [];
+  for (const entry of log || []) {
+    const n = Number(entry?.roundId);
+    if (entry && Number.isFinite(n)) {
+      const rid = Math.trunc(n);
+      if (!groups.has(rid)) groups.set(rid, []);
+      groups.get(rid).push(entry);
+    } else {
+      legacy.push(entry);
+    }
+  }
+  const sortedIds = [...groups.keys()].sort((a, b) => b - a);
+  let currentId = null;
+  try { currentId = currentRoundId(); } catch { currentId = null; }
+
+  const groupHtml = sortedIds.map((rid) => {
+    const entries = [...groups.get(rid)].reverse();
+    const isCurrent = currentId !== null && rid === currentId;
+    const title = rid > 0 ? `Round ${rid}` : `Pre-game`;
+    const badge = isCurrent ? ` <span class="log-round-badge">Current</span>` : "";
+    const count = entries.length === 1 ? "1 entry" : `${entries.length} entries`;
+    return `
+      <div class="log-round">
+        <h3 class="log-round-header">${escapeHtml(title)}${badge} <span class="muted">· ${escapeHtml(count)}</span></h3>
+        <ul class="log-list">${entries.map(renderEntry).join("")}</ul>
+      </div>
+    `;
+  }).join("");
+
+  const legacyHtml = legacy.length
+    ? `
+      <div class="log-round">
+        <h3 class="log-round-header">Earlier rounds <span class="muted">· ${legacy.length === 1 ? "1 entry" : `${legacy.length} entries`}</span></h3>
+        <ul class="log-list">${[...legacy].reverse().map(renderEntry).join("")}</ul>
+      </div>
+    `
+    : "";
 
   const helper = settings.lockAfterBuzz
     ? "All rulings are editable here after they are made."
     : "Buzzers stay open. Use this log to apply and edit rulings.";
 
+  const body = groupHtml + legacyHtml || "<li>No rulings yet.</li>";
+  const listWrap = groupHtml || legacyHtml ? body : `<ul class="log-list">${body}</ul>`;
+
   return `
     <section class="card log-card">
       <h2>Game Log</h2>
       <p class="muted">${helper}</p>
-      <ul class="log-list">${rows || "<li>No rulings yet.</li>"}</ul>
+      ${listWrap}
     </section>
   `;
 }
@@ -9793,7 +9941,9 @@ function bindEvents() {
       if (result?.ok === false) setBuzzNotice(result.reason || "Could not start pick-a-value.");
       else if (result?.message) setBuzzNotice(result.message);
       scheduleRender(render);
-    } else if (action === "close") closeBuzzers();
+    } else if (action === "close") pauseBuzzers();
+    else if (action === "pause") pauseBuzzers();
+    else if (action === "resume") resumeBuzzers();
     else if (action === "reset") resetRound();
     else if (action === "reset-screws") resetScrews();
     else if (action === "reset-all-scores") {
@@ -10781,7 +10931,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 
   // Producer actions RPC — relays producer UI actions through the host
   const HOST_ACTIONS = {
-    openBuzzers, closeBuzzers, resetRound, resetScrews,
+    openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
     startRoulettePhase, startScrewTimer, closeScrewMode,
     initiateScrew, selectScrewee,
     startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,

@@ -9,8 +9,8 @@ npm run dev          # vite dev server
 npm run dev-server   # vite --host (LAN multi-device)
 npm run build        # vite build → dist/ (verify after every change)
 npm run preview      # vite preview built output
-npm run test:harness     # node stub harness, coop-on run, 195 checks
-npm run test:harness:all  # both runs: HARNESS_COOP=on (195) + off (161)
+npm run test:harness     # node stub harness, coop-on run, 199 checks
+npm run test:harness:all  # both runs: HARNESS_COOP=on (199) + off (165)
 ```
 No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports. CI (`.github/workflows/node.js.yml`, node 20/22/24) runs only `npm run build` — the harness never runs in CI, so run it locally.
 

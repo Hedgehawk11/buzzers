@@ -1086,6 +1086,41 @@ body:not([data-ui-anims="off"]) .log-list li:first-child {
   animation: logSlideIn 220ms ease-out;
 }
 
+.log-round {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.8rem;
+}
+
+.log-round:first-of-type {
+  margin-top: 0.8rem;
+}
+
+.log-round-header {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.log-card .log-round .log-list {
+  margin-top: 0;
+}
+
+.log-round-badge {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* Subtle rank-1 glow (no motion, just presence) */
 .score-card li:first-child .rank-badge {
   filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.45));

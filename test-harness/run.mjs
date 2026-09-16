@@ -50,6 +50,7 @@ for (const fn of mount._listeners.submit || []) {
 }
 await sleep(50);
 check(`coop ${COOP ? "enabled" : "disabled"} from prejoin`, S().settings?.coopertitionEnabled === COOP, JSON.stringify(S().settings?.coopertitionEnabled));
+check("pause-on-points defaults on", S().settings?.closeBuzzersOnPointsGiven === true, JSON.stringify(S().settings?.closeBuzzersOnPointsGiven));
 
 // --- dedicated producer fixture: drives all producer-action calls below ---
 const prod = pk.makePlayer("prod1", "Producer");
@@ -88,8 +89,19 @@ if (COOP) {
 
 // --- lock-after-buzz on, open ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
+// Pin the pause-on-points toggle off for the reopen-behavior tests below;
+// dedicated LAB-gating tests further down cover the default-on behavior.
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 check("round open", S().round?.status === "open", S().round?.status);
+
+// Dedicated device for the pause-on-points gating probes below, so their
+// rulings never shift dev1/dev2/dev3's exact-score expectations downstream.
+const gate = pk.makePlayer("gate1", "Gate");
+pk._store.participants.gate1 = gate;
+if (COOP) {
+  await pk._store.rpc["coop-roster"]({ group: "Gate", count: 1, names: [] }, gate);
+}
 
 if (COOP) {
   // --- buzz-in then answer ---
@@ -124,6 +136,17 @@ if (COOP) {
   const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
   pk._store.nextSender = null;
   check("other group can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+
+  // --- pause-on-points is LAB-gated: toggle ON pauses after a positive ruling ---
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
+  await pk._store.rpc.buzz({ option: 4 }, gate);
+  const gateEntryId = S().pendingLogId;
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [gateEntryId, 1000] }, prod);
+  check("positive ruling pauses with toggle on", S().round?.status === "closed", S().round?.status);
+  // restore reopen behavior for downstream tests
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 } else {
   // --- plain equivalents: option buzz locks, ruling deducts/awards on pid ---
   const r = await pk._store.rpc.buzz({ option: 3 }, dev1);
@@ -148,6 +171,16 @@ if (COOP) {
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   const rOther = await pk._store.rpc.buzz({ option: 1 }, dev2);
   check("other player can still buzz", rOther?.ok === true, JSON.stringify(rOther));
+
+  // --- pause-on-points is LAB-gated: toggle ON pauses after a positive ruling ---
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ option: 4 }, gate);
+  const gateEntryId = S().pendingLogId;
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [gateEntryId, 1000] }, prod);
+  check("positive ruling pauses with toggle on", S().round?.status === "closed", S().round?.status);
+  // restore reopen behavior for downstream tests
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 }
 
 // --- bingo quick-ruling NaN path (slot key in coop, pid off-coop) ---
@@ -214,6 +247,28 @@ await pk._store.rpc["producer-action"](
   prod,
 );
 check("re-edit back to minus", S().scores?.dev3 === -1000, JSON.stringify(S().scores?.dev3));
+// --- toggle has no effect off-LAB: a correct auto-ruled buzz stays open ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+if (COOP) {
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
+}
+await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1: auto-awards
+const labOffEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+check("off-LAB correct auto-awards", Number(labOffEntry?.awardedDelta) > 0, JSON.stringify(labOffEntry?.awardedDelta));
+check("toggle has no effect off-LAB", S().round?.status === "open", S().round?.status);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
+// Retire the gating probe: later team-mode tests (e.g. quixort shared-team
+// start) require every participant to hold a team assignment.
+delete pk._store.participants.gate1;
+try {
+  const rosters = { ...(S().coopRosters || {}) };
+  delete rosters.gate1;
+  pk._store.state.coopRosters = rosters;
+  for (const k of Object.keys(S().scores || {})) {
+    if (k === "gate1" || String(k).startsWith("coop:gate1:")) delete S().scores[k];
+  }
+} catch {}
 
 // --- text mode deduction ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);

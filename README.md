@@ -32,7 +32,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 ### What's coming?
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
- - Update game log
+ - Per-round Analytics
  - Bounce gamemode
  - BINGO/Wendit UI revamp
  - Episode creator
