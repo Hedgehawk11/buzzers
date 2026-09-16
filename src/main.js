@@ -2522,7 +2522,21 @@ async function submitResponse(payload) {
 // =============================================================================
 // Host actions — open, close, reset round, start bingo, etc.
 // =============================================================================
+// A CLOSED round is terminal — all answers in, timer elapsed, or ruled shut —
+// unless it was only paused mid-round (pausedFrom "open"). Terminal rounds
+// can't be paused, resumed, reopened, or re-preset: reset the round or enable
+// re-buzz to continue. pausedFrom is only ever null/"open" (see pauseBuzzers,
+// resumeBuzzers, openBuzzers), so anything else-but-"open" is terminal.
+function isTerminallyClosedRound(round) {
+  return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== "open";
+}
+
 function openBuzzers() {
+  if (isTerminallyClosedRound(getRound()) && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
     return;
@@ -2628,6 +2642,11 @@ function pauseBuzzers() {
     render();
     return;
   }
+  if (round.status === ROUND_STATUSES.CLOSED) {
+    setBuzzNotice(getSnark("shared.round.alreadyClosed", "Round is already closed."));
+    render();
+    return;
+  }
   if (round.status !== ROUND_STATUSES.OPEN) {
     render();
     return;
@@ -2687,6 +2706,14 @@ function resumeBuzzers() {
   const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
   if (safeRemaining <= 0) {
     setBuzzNotice("No time left — open a new round.");
+    render();
+    return;
+  }
+  // Terminal closes (all answers in, timer elapsed, ruled shut) are final:
+  // only a mid-round pause may resume — unless re-buzz is on, in which case
+  // players can answer the reopened round again.
+  if (round.pausedFrom !== "open" && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
     render();
     return;
   }
@@ -5022,6 +5049,11 @@ function setCorrectAnswerValue(val) {
     return;
   }
   const round = getRound();
+  if (isTerminallyClosedRound(round) && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   const clean = typeof val === "string" ? val.trim().slice(0, 120) : "";
   setState("round", { ...round, correctAnswer: clean || null, correctOptions: null }, true);
   render();
@@ -5033,6 +5065,11 @@ function clearCorrectAnswerValue() {
     return;
   }
   const round = getRound();
+  if (isTerminallyClosedRound(round) && !getSettings().rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   setState("round", { ...round, correctAnswer: null, correctOptions: null }, true);
   render();
 }
@@ -5044,6 +5081,11 @@ function toggleCorrectOption(opt) {
   }
   const round = getRound();
   const settings = getSettings();
+  if (isTerminallyClosedRound(round) && !settings.rebuzzAllowed) {
+    setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
+    render();
+    return;
+  }
   const maxOption = Number(settings.optionCount) || 6;
   const num = Number(opt);
   if (!Number.isInteger(num) || num < 1 || num > maxOption) return;
@@ -8929,6 +8971,9 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
   const settingDisabledAttr = settingsLocked ? "disabled" : "";
+  // Presets also lock on terminally closed rounds (all answers in, timer
+  // elapsed, ruled shut) unless re-buzz is on — scores already finalized.
+  const presetDisabledAttr = (settingsLocked || (isTerminallyClosedRound(round) && !settings.rebuzzAllowed)) ? "disabled" : "";
   const producerIds = getSafeState("producerIds", []);
   const nonControllerPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)));
   const teamAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
@@ -8942,13 +8987,14 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   const roulettePlayerCount = Math.max(1, nonControllerPlayers.length);
   const rouletteCeiling = Math.max(1, Math.floor(normalizeRouletteTopAmount(settings.rouletteTopAmount) / roulettePlayerCount));
   // Pre-set correct answer lives next to the Open button so hosts set it
-  // right before opening (auto-rules when present, manual ruling otherwise).
+  // right before opening (scores finalize at close when present, manual
+  // ruling otherwise).
   const presetCorrectAnswerHtml = settings.inputMode === "text"
     ? `<label class="preset-field">Correct answer text
-         <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${settingDisabledAttr} />
+         <input id="correct-answer-entry" type="text" maxlength="120" value="${escapeHtml(round.correctAnswer || "")}" ${presetDisabledAttr} />
          <div class="preset-actions">
-           <button type="button" data-set-correct-text ${settingDisabledAttr}>Set</button>
-           <button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button>
+           <button type="button" data-set-correct-text ${presetDisabledAttr}>Set</button>
+           <button type="button" data-clear-correct ${presetDisabledAttr}>Clear</button>
          </div>
        </label>`
     : `<div class="preset-field">
@@ -8958,11 +9004,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
              .map((opt) => {
                const enabled = Array.isArray(round.correctOptions) && round.correctOptions.map(Number).includes(opt);
                const label = settings.optionCount <= 4 ? optionButtonLabel(opt) : String(opt);
-               return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${settingDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
+               return `<button type="button" class="toggle-chip ${enabled ? "is-on" : "is-off"}" data-correct-option="${opt}" ${presetDisabledAttr}>${label} ${enabled ? "On" : "Off"}</button>`;
              })
              .join("")}
          </div>
-         <div class="preset-actions"><button type="button" data-clear-correct ${settingDisabledAttr}>Clear</button></div>
+         <div class="preset-actions"><button type="button" data-clear-correct ${presetDisabledAttr}>Clear</button></div>
        </div>`;
 
   const statusText = {
@@ -9340,10 +9386,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             ${settings.scoringMode === "roulette"
               ? `<button type="button" data-host-action="start-roulette" ${round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE ? "disabled" : ""}>Start Pick-a-Value</button>`
               : ""}
-            <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset ? "disabled" : ""}>Open Buzzers</button>
+            <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset || (isTerminallyClosedRound(round) && !settings.rebuzzAllowed) ? "disabled" : ""}>Open Buzzers</button>
             <button type="button" data-host-action="pause" ${round.status !== ROUND_STATUSES.OPEN ? "disabled" : ""} ${round.status === ROUND_STATUSES.LOCKED ? `title="Timer is already paused for the ruling"` : ""}>Pause Timer</button>
-            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0) ? "disabled" : ""}>Resume Timer</button>
-            <button type="button" data-host-action="reset">Reset Round</button>
+            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === "open" || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
+            <button type="button" data-host-action="reset">Next Round</button>
             ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
               : ""}

@@ -716,13 +716,26 @@ if (COOP) {
   }
 }
 check("all answered auto-closes", S().round?.status === "closed", S().round?.status);
-// preset button state: no preset + no lock => open disabled (coop-only gate)
-await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+// terminal close (all answers in) locks open + resume + preset until reset (rebuzz off)
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("open disabled on terminal close", mount.innerHTML.includes('data-host-action="open" disabled'), "open enabled after all-in");
+check("resume disabled on terminal close", mount.innerHTML.includes('data-host-action="resume" disabled'), "resume enabled after all-in");
+{
+  const preToggle = JSON.stringify(S().round?.correctOptions);
+  await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+  check("preset locked on terminal close", JSON.stringify(S().round?.correctOptions) === preToggle, `was=${preToggle} now=${JSON.stringify(S().round?.correctOptions)}`);
+}
+await pk._store.rpc["producer-action"]({ fn: "resumeBuzzers", args: [] }, prod);
+check("resume denied on terminal close", S().round?.status === "closed", S().round?.status);
+// specified continuation: reset re-arms a fresh round (and clears the preset)
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
 if (COOP) {
   check("open disabled without preset", mount.innerHTML.includes('data-host-action="open" disabled'), "open button enabled");
 } else {
-  check("open allowed without preset off-coop", !mount.innerHTML.includes('data-host-action="open" disabled'), "open button disabled");
+  check("open allowed after reset off-coop", !mount.innerHTML.includes('data-host-action="open" disabled'), "open button disabled");
 }
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
 
@@ -757,6 +770,7 @@ if (COOP) {
 // --- regression: producer forced delta allowlisted, NaN rejected, jack clamped ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 await pk._store.rpc.buzz({ option: 1 }, plain);
 const fEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
