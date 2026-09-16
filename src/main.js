@@ -1981,6 +1981,11 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
           },
           true,
         );
+        // This ruling closed the round: batch-judge any other unresolved
+        // preset entries of the round (the ruled entry is already resolved).
+        try {
+          finalizeRoundScoring(currentRoundId());
+        } catch {}
         // Close screw mode after ruling
         closeScrewMode();
         render();
@@ -2103,6 +2108,11 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
           },
           true,
         );
+        // This ruling closed the round: batch-judge any other unresolved
+        // preset entries of the round (the ruled entry is already resolved).
+        try {
+          finalizeRoundScoring(currentRoundId());
+        } catch {}
         closeScrewMode();
         render();
         return;
@@ -2197,6 +2207,40 @@ function autoEvaluatePresetAnswer(logEntry, answerText, validOption) {
       const isCorrect = normalizeAnswerForCompare(answerText) === normalizeAnswerForCompare(currentRound.correctAnswer);
       updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints);
     }
+  }
+}
+
+// Batch-judge a closed round: auto-evaluate every still-unresolved buzz entry
+// of roundId against the host preset (correct → +base, wrong → −base).
+// Runs on OPEN → CLOSED transitions so neither scores nor analytics move while
+// buzzers are open. Entries already resolved (manual rulings, F-You penalties)
+// are skipped; rounds without a preset are left for manual ruling.
+// Manual rulings still apply immediately, and LOCKED auto-eval is unchanged.
+function finalizeRoundScoring(roundId) {
+  if (!isHost()) return;
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.CLOSED) return;
+  const rid = Number(roundId);
+  if (!Number.isFinite(rid)) return;
+  const settings = getSettings();
+  const hasPreset = settings.inputMode === "text"
+    ? Boolean(String(round.correctAnswer || "").trim())
+    : Array.isArray(round.correctOptions) && round.correctOptions.length > 0;
+  if (!hasPreset) return;
+  const pending = (getLog() || []).filter(
+    (e) => e && e.type === "buzz" && Number(e.roundId) === rid && !e.resolved,
+  );
+  for (const entry of pending) {
+    try {
+      if (settings.inputMode === "text") {
+        if (!entry.answerText) continue;
+        const isCorrect = normalizeAnswerForCompare(entry.answerText) === normalizeAnswerForCompare(round.correctAnswer);
+        updateScoresForLogEntry(entry.id, isCorrect ? entry.basePoints : -entry.basePoints);
+      } else if (entry.option !== null && entry.option !== undefined) {
+        const isCorrect = (round.correctOptions || []).map(Number).includes(Number(entry.option));
+        updateScoresForLogEntry(entry.id, isCorrect ? entry.basePoints : -entry.basePoints);
+      }
+    } catch {}
   }
 }
 
@@ -2421,11 +2465,14 @@ function hostHandleBuzz(player, payload) {
       },
       true,
     );
-    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    // Scores wait for the close: batch-judge presets only if this buzz just
+    // closed the round (all-eligible); otherwise the entry stays unresolved
+    // for manual ruling or a later close. finalizeRoundScoring no-ops unless
+    // the round is CLOSED.
     try {
-      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+      finalizeRoundScoring(currentRoundId());
     } catch (e) {
-      // ignore auto-eval errors
+      // ignore finalize errors
     }
   }
 
@@ -2617,6 +2664,11 @@ function pauseBuzzers() {
     true,
   );
   setState("pendingLogId", null, true);
+  // Pausing closes the round: batch-judge any still-unresolved preset
+  // entries so scores/analytics land now that buzzers are closed.
+  try {
+    finalizeRoundScoring(currentRoundId());
+  } catch {}
   render();
 }
 
@@ -4588,6 +4640,10 @@ function hostTick() {
       true,
     );
     setState("pendingLogId", null, true);
+    // Timeout closes the round: batch-judge unresolved preset entries.
+    try {
+      finalizeRoundScoring(currentRoundId());
+    } catch {}
     render();
   }
 }
@@ -8328,6 +8384,15 @@ function renderAnalyticsCard(audience = false) {
     ? getSnark("shared.analytics.audienceTitle", "Round results")
     : getSnark("shared.analytics.title", "Analytics");
   const roundLabel = Number(data.roundId) > 0 ? `Round ${data.roundId}` : "Pre-game";
+  if (getRound().status === ROUND_STATUSES.OPEN) {
+    // Scores/analytics land on close: while buzzers are open show a waiting
+    // note instead of live percentages (which would spoil correctness).
+    return `
+    <section class="card analytics-card" data-analytics-card>
+      <h2>${escapeHtml(title)} <span class="log-badge log-badge-${data.kind === "text" ? "text" : "buttons"}">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)}</span></h2>
+      <p class="muted">${escapeHtml(getSnark("shared.analytics.waiting", "Buzzers are still open — results appear when the round closes."))}</p>
+    </section>`;
+  }
   if (data.kind === "minigame" || data.kind === "idle" || data.total === 0) {
     const emptyMsg = data.kind === "minigame"
       ? getSnark("shared.analytics.minigameNote", "Analytics covers Buttons/Text rounds only.")

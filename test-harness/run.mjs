@@ -50,7 +50,7 @@ for (const fn of mount._listeners.submit || []) {
 }
 await sleep(50);
 check(`coop ${COOP ? "enabled" : "disabled"} from prejoin`, S().settings?.coopertitionEnabled === COOP, JSON.stringify(S().settings?.coopertitionEnabled));
-check("pause-on-points defaults on", S().settings?.closeBuzzersOnPointsGiven === true, JSON.stringify(S().settings?.closeBuzzersOnPointsGiven));
+check("pause-on-points defaults off", S().settings?.closeBuzzersOnPointsGiven === false, JSON.stringify(S().settings?.closeBuzzersOnPointsGiven));
 
 // --- dedicated producer fixture: drives all producer-action calls below ---
 const prod = pk.makePlayer("prod1", "Producer");
@@ -247,16 +247,20 @@ await pk._store.rpc["producer-action"](
   prod,
 );
 check("re-edit back to minus", S().scores?.dev3 === -1000, JSON.stringify(S().scores?.dev3));
-// --- toggle has no effect off-LAB: a correct auto-ruled buzz stays open ---
+// --- toggle has no effect off-LAB: scoring waits for the close, round stays open ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 if (COOP) {
   await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
 }
-await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1: auto-awards
+await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1: held until close
 const labOffEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
-check("off-LAB correct auto-awards", Number(labOffEntry?.awardedDelta) > 0, JSON.stringify(labOffEntry?.awardedDelta));
+check("off-LAB correct held while open", labOffEntry?.resolved !== true && Number(labOffEntry?.awardedDelta || 0) === 0, JSON.stringify(labOffEntry?.awardedDelta));
 check("toggle has no effect off-LAB", S().round?.status === "open", S().round?.status);
+await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+const labOffEntryClosed = S().gameLog.find((e) => e.id === labOffEntry.id);
+check("off-LAB correct auto-awards on close", Number(labOffEntryClosed?.awardedDelta) > 0, JSON.stringify(labOffEntryClosed?.awardedDelta));
+check("pause closes round", S().round?.status === "closed", S().round?.status);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", false] }, prod);
 // Retire the gating probe: later team-mode tests (e.g. quixort shared-team
 // start) require every participant to hold a team assignment.
@@ -977,7 +981,7 @@ check("credits started in shared state", S().credits?.active === true && S().cre
 {
   const html = _mount.innerHTML;
   check("credits overlay renders", html.includes("data-credits-overlay"), `html len=${html.length}`);
-  const order = ["Host", "Producers", "Players", "Special thanks"].map((h) => html.indexOf(`>${h}<`));
+  const order = ["Host", "Producers", "Players", "Credits"].map((h) => html.indexOf(`<h3>${h}</h3>`));
   check("credits section order", order.every((i) => i !== -1) && order[0] < order[1] && order[1] < order[2] && order[2] < order[3], order.join(","));
   const overlay = html.slice(html.indexOf("data-credits-overlay"));
   check("credits ranks first to last", overlay.indexOf("GroupB") !== -1 && overlay.indexOf("GroupB") < overlay.indexOf("GroupA") && overlay.indexOf("GroupA") < overlay.indexOf("Solo"), "ranking wrong");
@@ -1068,10 +1072,32 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfter
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 check("analytics round open", S().round?.status === "open", S().round?.status);
 const aDev1 = pk._store.participants.dev1, aDev2 = pk._store.participants.dev2, aDev3 = pk._store.participants.dev3;
+const scoresBeforeClose = JSON.stringify(S().scores);
 const ab1 = await pk._store.rpc.buzz(COOP ? { option: 1, coopSlot: 0 } : { option: 1 }, aDev1);
 const ab2 = await pk._store.rpc.buzz(COOP ? { option: 2, coopSlot: 0 } : { option: 2 }, aDev2);
 const ab3 = await pk._store.rpc.buzz(COOP ? { option: 2, coopSlot: 0 } : { option: 2 }, aDev3);
 check("analytics picks recorded", ab1?.ok === true && ab2?.ok === true && ab3?.ok === true, JSON.stringify([ab1?.ok, ab2?.ok, ab3?.ok]));
+{
+  const roundNow = S().round?.roundNumber;
+  const openEntries = S().gameLog.filter((e) => e?.type === "buzz" && Number(e.roundId) === Number(roundNow));
+  check("scores held while open", JSON.stringify(S().scores) === scoresBeforeClose, "auto-scoring leaked while open");
+  check("entries unresolved while open", openEntries.length === 3 && openEntries.every((e) => !e.resolved && Number(e.awardedDelta || 0) === 0), `n=${openEntries.length}`);
+}
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("analytics waits while open", html.includes("data-analytics-card") && html.includes("still open") && !html.includes("3 picks"), "live percentages leaked while open");
+}
+// Closing lands scores + percentages together.
+await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+check("analytics round closed", S().round?.status === "closed", S().round?.status);
+{
+  const roundNow = S().round?.roundNumber;
+  const closedEntries = S().gameLog.filter((e) => e?.type === "buzz" && Number(e.roundId) === Number(roundNow));
+  check("close resolves preset entries", closedEntries.length === 3 && closedEntries.every((e) => e.resolved === true), `resolved=${closedEntries.map((e) => e.awardedDelta).join(",")}`);
+  check("close moves scores", JSON.stringify(S().scores) !== scoresBeforeClose, "no score movement on close");
+}
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
 // Re-render after an input-mode switch animates (250ms transitionMount), so
 // poll for the fresh card instead of single-shot reading a stale frame.
@@ -1129,6 +1155,13 @@ await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 await pk._store.rpc.buzz(COOP ? { answerText: "Alpha", coopSlot: 0 } : { answerText: "Alpha" }, aDev1);
 await pk._store.rpc.buzz(COOP ? { answerText: "  ALPHA ", coopSlot: 0 } : { answerText: "  ALPHA " }, aDev2);
 await pk._store.rpc.buzz(COOP ? { answerText: "Beta", coopSlot: 0 } : { answerText: "Beta" }, aDev3);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("text analytics waits while open", html.includes("still open") && !html.includes("67%"), "live grouping leaked while open");
+}
+await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
 await sleep(50);
 {
