@@ -1121,6 +1121,99 @@ body:not([data-ui-anims="off"]) .log-list li:first-child {
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Per-entry gamemode badge (Buzz/Buttons/Text/Bingo/DisOrDat/Quixort/Fibbage/Manual). */
+.log-badge {
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+
+.log-badge-buttons { background: color-mix(in srgb, var(--green) 30%, transparent); }
+.log-badge-text { background: color-mix(in srgb, #4da3ff 30%, transparent); }
+.log-badge-bingo { background: color-mix(in srgb, #b48cff 30%, transparent); }
+.log-badge-disordat { background: color-mix(in srgb, var(--orange, #ff8b24) 30%, transparent); }
+.log-badge-quixort { background: color-mix(in srgb, #ffd166 30%, transparent); }
+.log-badge-fibbage { background: color-mix(in srgb, #ff6b9d 30%, transparent); }
+.log-badge-manual { background: transparent; border-style: dashed; }
+
+/* Analytics card — current-round answer distribution. */
+.analytics-card {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.analytics-cta-card {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.analytics-rows {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.4rem;
+}
+
+.analytics-row {
+  display: grid;
+  gap: 0.3rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.6rem;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.analytics-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.analytics-row-head strong {
+  color: var(--text);
+}
+
+.analytics-correct {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.analytics-bar-track {
+  height: 0.65rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.analytics-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--green), #4da3ff);
+}
+
+body:not([data-ui-anims="off"]) .analytics-bar-fill {
+  animation: analyticsBarGrow 220ms ease-out;
+  transform-origin: left center;
+}
+
+@keyframes analyticsBarGrow {
+  from { transform: scaleX(0.2); opacity: 0.4; }
+  to { transform: scaleX(1); opacity: 1; }
+}
+
+.analytics-voters {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 /* Subtle rank-1 glow (no motion, just presence) */
 .score-card li:first-child .rank-badge {
   filter: drop-shadow(0 0 6px rgba(255, 215, 0, 0.45));
@@ -2551,6 +2644,7 @@ body:has([data-screw-active]) {
   [data-timer-urgent],
   .room-code-modal,
   .credits-crawl,
+  .analytics-bar-fill,
   .score-card li.is-delta,
   #app[data-transition="in"] .layout .card,
   #app[data-transition="in"] .grid .card { animation: none !important; }

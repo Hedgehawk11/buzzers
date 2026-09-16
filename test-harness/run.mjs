@@ -1055,6 +1055,80 @@ clickBtn({}, "[data-credits-end]");
 await sleep(50);
 check("credits ended after team check", S().credits?.active === false, JSON.stringify(S().credits));
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", false] }, prod);
+// --- analytics card: current-round percentages, log badges, audience mirror ---
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+// Preset option 1 so the correct-answer marker has something to mark
+// (also satisfies the coop no-lock preset gate).
+{
+  const curOpts = (S().round?.correctOptions || []).map(Number);
+  if (!curOpts.includes(1)) await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+}
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+check("analytics round open", S().round?.status === "open", S().round?.status);
+const aDev1 = pk._store.participants.dev1, aDev2 = pk._store.participants.dev2, aDev3 = pk._store.participants.dev3;
+const ab1 = await pk._store.rpc.buzz(COOP ? { option: 1, coopSlot: 0 } : { option: 1 }, aDev1);
+const ab2 = await pk._store.rpc.buzz(COOP ? { option: 2, coopSlot: 0 } : { option: 2 }, aDev2);
+const ab3 = await pk._store.rpc.buzz(COOP ? { option: 2, coopSlot: 0 } : { option: 2 }, aDev3);
+check("analytics picks recorded", ab1?.ok === true && ab2?.ok === true && ab3?.ok === true, JSON.stringify([ab1?.ok, ab2?.ok, ab3?.ok]));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+// Re-render after an input-mode switch animates (250ms transitionMount), so
+// poll for the fresh card instead of single-shot reading a stale frame.
+let aHtml = "";
+for (let i = 0; i < 20 && !aHtml.includes(`Round ${S().round?.roundNumber} · 3 picks`); i++) {
+  await sleep(50);
+  aHtml = _mount.innerHTML;
+}
+{
+  const html = aHtml;
+  check("analytics card renders for host", html.includes("data-analytics-card"), `len=${html.length}`);
+  check("analytics shows majority pct", html.includes("67%"), "2/3 share missing");
+  check("analytics shows minority pct", html.includes("33%"), "1/3 share missing");
+  check("analytics counts picks", html.includes("3 picks"), "pick total missing");
+  check("analytics marks preset", html.includes("analytics-correct"), "correct marker missing");
+  check("log badges label buttons", html.includes("log-badge-buttons"), "button badge missing");
+}
+// spotlight auth: impostors rejected, producers allowed (host executes)
+const anaImpostor = await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, impostor);
+check("analytics spotlight rejects non-producer", anaImpostor?.ok === false, JSON.stringify(anaImpostor));
+check("analytics spotlight cta for host", _mount.innerHTML.includes("data-analytics-show"), "show toggle missing");
+clickBtn({}, "[data-analytics-show]");
+await sleep(50);
+check("host starts analytics spotlight", S().analyticsSpotlight?.active === true, JSON.stringify(S().analyticsSpotlight));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+check("analytics spotlight cta flips", _mount.innerHTML.includes("data-analytics-hide"), "hide toggle missing");
+pk._store.self = pk._store.participants.disp1;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+let dHtml = "";
+for (let i = 0; i < 20 && !dHtml.includes("audience-layout"); i++) {
+  await sleep(50);
+  dHtml = _mount.innerHTML;
+}
+check("display mirrors analytics", dHtml.includes("audience-layout") && dHtml.includes("data-analytics-card"), "no analytics on display");
+pk._store.self = pk._store.participants.host1;
+clickBtn({}, "[data-analytics-hide]");
+await sleep(50);
+check("analytics spotlight ended", S().analyticsSpotlight?.active === false, JSON.stringify(S().analyticsSpotlight));
+const anaProd = await pk._store.rpc["producer-action"]({ fn: "startAnalyticsSpotlight", args: [] }, prod);
+check("producer starts analytics spotlight", anaProd?.ok === true && S().analyticsSpotlight?.active === true, JSON.stringify(anaProd));
+await pk._store.rpc["producer-action"]({ fn: "endAnalyticsSpotlight", args: [] }, prod);
+check("producer ends analytics spotlight", S().analyticsSpotlight?.active === false, JSON.stringify(S().analyticsSpotlight));
+// text mode groups identical answers (case-insensitive, picks counted)
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);
+if (COOP) await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: ["zzz-no-match"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.buzz(COOP ? { answerText: "Alpha", coopSlot: 0 } : { answerText: "Alpha" }, aDev1);
+await pk._store.rpc.buzz(COOP ? { answerText: "  ALPHA ", coopSlot: 0 } : { answerText: "  ALPHA " }, aDev2);
+await pk._store.rpc.buzz(COOP ? { answerText: "Beta", coopSlot: 0 } : { answerText: "Beta" }, aDev3);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("text analytics groups answers", html.includes("67%") && html.includes("33%"), "grouped shares missing");
+  check("log badges label text", html.includes("log-badge-text"), "text badge missing");
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

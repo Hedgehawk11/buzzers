@@ -1063,6 +1063,7 @@ async function producerDispatch(fnName, ...args) {
       updateScoresForLogEntry, resolveLogEntryWithForcedDelta,
       adjustPlayerScore, resetPlayerScore, resetAllScores, setCustomPlayerName,
       kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
+      startAnalyticsSpotlight, endAnalyticsSpotlight,
     };
     dispatch[fnName]?.(...args);
     return;
@@ -1365,7 +1366,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     scores: getScores(),
     gameLogDigest: (() => {
       const log = getLog();
-      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}:${Number(e.basePoints || 0)}:${e.result || ""}:${e.scoreKey || ""}:${e.roundId ?? ""}`).join(",")}`;
+      return `${log.length}|${log.map((e) => `${e.id}:${Number(e.awardedDelta || 0)}:${e.resolved ? 1 : 0}:${Number(e.basePoints || 0)}:${e.result || ""}:${e.scoreKey || ""}:${e.roundId ?? ""}:${e.type || ""}:${e.option ?? ""}:${e.answerText ?? ""}:${e.playerId || ""}:${e.coopKey || ""}`).join(",")}`;
     })(),
     teamAssignments: normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId()),
     teamSelect: getTeamSelect(),
@@ -1378,6 +1379,9 @@ showScoresToPlayers: settings.showScoresToPlayers,
     // Room-code spotlight broadcast — display screens only re-render the
     // modal when this flips (their tick otherwise only patches timers).
     roomCodeSpotlight: getSafeState("roomCodeSpotlight", null),
+    // Analytics mirror broadcast — audience screens only re-render the card
+    // when this flips (their tick otherwise only patches timers).
+    analyticsSpotlight: getSafeState("analyticsSpotlight", null),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     quixort: (() => {
@@ -8216,6 +8220,163 @@ function endRoomCodeSpotlight() {
   scheduleRender(render);
 }
 
+// =============================================================================
+// Analytics — current-round answer distribution (Buttons + Text only).
+// Data is derived from gameLog buzz entries for the current roundId (each
+// buzz = one vote, so rebuzz rounds count picks not players). Broadcasting
+// reuses the credits/spotlight pattern: shared `analyticsSpotlight`
+// ({active, startedAt}) written via host (or producer via producer-action),
+// rendered on audience displays while active.
+// =============================================================================
+function getAnalyticsSpotlight() {
+  const spotlight = getSafeState("analyticsSpotlight", null);
+  if (!spotlight || typeof spotlight !== "object" || !spotlight.active) return null;
+  return spotlight;
+}
+
+function startAnalyticsSpotlight() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "startAnalyticsSpotlight", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  setState("analyticsSpotlight", { active: true, startedAt: now() }, true);
+  scheduleRender(render);
+}
+
+function endAnalyticsSpotlight() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "endAnalyticsSpotlight", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  setState("analyticsSpotlight", { active: false, startedAt: 0 }, true);
+  scheduleRender(render);
+}
+
+// Aggregate current-round buzz entries. Returns { kind, roundId, total, rows }.
+// kind: "buttons" | "text" | "minigame" | "idle". Rows sorted desc by count.
+function getCurrentRoundAnalytics() {
+  const settings = getSettings();
+  const roundId = currentRoundId();
+  if (isBingoMode() || isDisOrDatMode() || isFibbageMode() || isQuixortMode()) {
+    return { kind: "minigame", roundId, total: 0, rows: [] };
+  }
+  const entries = (getLog() || []).filter((e) => e && e.type === "buzz" && Number(e.roundId) === Number(roundId));
+  const total = entries.length;
+  if (settings.inputMode === "text") {
+    const groups = new Map();
+    for (const e of entries) {
+      const raw = String(e.answerText ?? "").trim().slice(0, 120) || "(blank)";
+      const norm = normalizeAnswerForCompare(e.answerText);
+      if (!groups.has(norm)) groups.set(norm, { label: raw, count: 0, voters: [] });
+      const g = groups.get(norm);
+      g.count += 1;
+      if (e.playerName) g.voters.push(e.playerName);
+    }
+    const correctNorm = getRound()?.correctAnswer ? normalizeAnswerForCompare(getRound().correctAnswer) : null;
+    const rows = [...groups.entries()].map(([norm, g]) => ({
+      key: norm,
+      label: g.label,
+      count: g.count,
+      pct: total ? Math.round((g.count / total) * 100) : 0,
+      voters: g.voters,
+      correct: correctNorm !== null && norm === correctNorm,
+    })).sort((a, b) => b.count - a.count || String(a.label).localeCompare(String(b.label)));
+    return { kind: "text", roundId, total, rows };
+  }
+  // Buttons mode (option picks).
+  const optionCount = Number(settings.optionCount) || 4;
+  const correctSet = new Set((getRound()?.correctOptions || []).map(Number));
+  const rows = [];
+  for (let opt = 1; opt <= optionCount; opt++) {
+    const picked = entries.filter((e) => Number(e.option) === opt);
+    rows.push({
+      key: String(opt),
+      label: settings.optionCount === 4 ? `Option ${optionButtonLabel(opt)} (${opt})` : `Option ${opt}`,
+      count: picked.length,
+      pct: total ? Math.round((picked.length / total) * 100) : 0,
+      voters: picked.map((e) => e.playerName).filter(Boolean),
+      correct: correctSet.has(Number(opt)),
+    });
+  }
+  if (!total) return { kind: "idle", roundId, total: 0, rows };
+  return { kind: "buttons", roundId, total, rows };
+}
+
+// Short mode badge for a gameLog entry. Used by renderLog and analytics.
+function getLogEntryBadge(entry) {
+  if (!entry || typeof entry !== "object") return { slug: "buzz", label: getSnark("shared.analytics.badgeBuzz", "Buzz") };
+  if (entry.type === "manual-reset" || entry.type === "manual-adjust") return { slug: "manual", label: getSnark("shared.analytics.badgeManual", "Manual") };
+  if (entry.type === "bingo") return { slug: "bingo", label: getSnark("shared.analytics.badgeBingo", "Bingo") };
+  if (entry.type === "disordat") return { slug: "disordat", label: getSnark("shared.analytics.badgeDisOrDat", "DisOrDat") };
+  if (entry.type === "quixort") return { slug: "quixort", label: getSnark("shared.analytics.badgeQuixort", "Quixort") };
+  if (entry.type === "fibbage") return { slug: "fibbage", label: getSnark("shared.analytics.badgeFibbage", "Fibbage") };
+  if (entry.answerText !== null && entry.answerText !== undefined && String(entry.answerText) !== "") return { slug: "text", label: getSnark("shared.analytics.badgeText", "Text") };
+  if (entry.option !== null && entry.option !== undefined) return { slug: "buttons", label: getSnark("shared.analytics.badgeButtons", "Buttons") };
+  return { slug: "buzz", label: getSnark("shared.analytics.badgeBuzz", "Buzz") };
+}
+
+function renderAnalyticsCard(audience = false) {
+  const data = getCurrentRoundAnalytics();
+  const modeBadge = data.kind === "buttons"
+    ? getSnark("shared.analytics.badgeButtons", "Buttons")
+    : data.kind === "text"
+      ? getSnark("shared.analytics.badgeText", "Text")
+      : data.kind === "minigame"
+        ? getSnark("shared.analytics.badgeMinigame", "Minigame")
+        : getSnark("shared.analytics.badgeBuzz", "Buzz");
+  const title = audience
+    ? getSnark("shared.analytics.audienceTitle", "Round results")
+    : getSnark("shared.analytics.title", "Analytics");
+  const roundLabel = Number(data.roundId) > 0 ? `Round ${data.roundId}` : "Pre-game";
+  if (data.kind === "minigame" || data.kind === "idle" || data.total === 0) {
+    const emptyMsg = data.kind === "minigame"
+      ? getSnark("shared.analytics.minigameNote", "Analytics covers Buttons/Text rounds only.")
+      : getSnark("shared.analytics.empty", "No answers yet this round — percentages appear after the first buzz.");
+    return `
+    <section class="card analytics-card" data-analytics-card>
+      <h2>${escapeHtml(title)} <span class="log-badge log-badge-buzz">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)}</span></h2>
+      <p class="muted">${escapeHtml(emptyMsg)}</p>
+    </section>`;
+  }
+  const rows = data.rows.map((row) => {
+    const voters = row.voters.length
+      ? `<span class="analytics-voters">${row.voters.map((v) => escapeHtml(v)).join(", ")}</span>`
+      : `<span class="analytics-voters muted">—</span>`;
+    const correct = row.correct ? ` <span class="analytics-correct" title="Correct">✓</span>` : "";
+    return `
+      <div class="analytics-row">
+        <div class="analytics-row-head"><span><strong>${escapeHtml(row.label)}</strong>${correct}</span><span>${row.pct}% · ${row.count}/${data.total}</span></div>
+        <div class="analytics-bar-track"><div class="analytics-bar-fill" style="width:${row.pct}%"></div></div>
+        ${voters}
+      </div>`;
+  }).join("");
+  return `
+    <section class="card analytics-card" data-analytics-card>
+      <h2>${escapeHtml(title)} <span class="log-badge log-badge-${data.kind === "text" ? "text" : "buttons"}">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)} · ${data.total} pick${data.total === 1 ? "" : "s"}</span></h2>
+      <div class="analytics-rows">${rows}</div>
+    </section>`;
+}
+
+// Host/producer call-to-action for mirroring analytics onto audience displays.
+// Unlike credits/spotlight this is producer-accessible by decision: the toggle
+// relays through producer-action when clicked by a producer.
+function renderAnalyticsHostCta() {
+  if (!hasHostPrivileges()) return "";
+  const active = Boolean(getAnalyticsSpotlight());
+  const button = active
+    ? `<button type="button" data-analytics-hide>${escapeHtml(getSnark("shared.analytics.hideButton", "Hide from audience"))}</button>`
+    : `<button type="button" data-analytics-show>${escapeHtml(getSnark("shared.analytics.showButton", "Show on audience"))}</button>`;
+  const audienceHint = hasAudienceDisplay()
+    ? getSnark("shared.analytics.audienceConnected", "An audience display is connected.")
+    : getSnark("shared.analytics.audienceMissing", "No audience display connected — the toggle still works and applies when one joins.");
+  return `
+    <section class="card analytics-cta-card">
+      <h2>${escapeHtml(getSnark("shared.analytics.title", "Analytics"))}</h2>
+      <p class="muted">${escapeHtml(getSnark("shared.analytics.ctaHelper", "Current-round answer percentages. Mirror them onto the audience display."))} ${escapeHtml(audienceHint)}</p>
+      ${button}
+    </section>`;
+}
+
 function getCreditsBaseUrl() {
   try {
     const base = import.meta?.env?.BASE_URL;
@@ -8442,6 +8603,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (joinCount > 0) roomCodeModalAutoDismissed = false;
   const spotlightActive = Boolean(getRoomCodeSpotlight());
   const showRoomCodeModal = roomCodeModalOpen || spotlightActive || (joinCount === 0 && !roomCodeModalAutoDismissed);
+  const showAnalytics = Boolean(getAnalyticsSpotlight());
 
   return `
     <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
@@ -8464,6 +8626,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         ${showScores ? renderScores(players, scores) : ""}
         ${showScrews ? renderAudienceScrewPanel(round) : ""}
       </section>
+      ${showAnalytics ? renderAnalyticsCard(true) : ""}
       ${showRoomCodeModal ? renderRoomCodeModal(roomCode) : ""}
     </main>
   `;
@@ -9407,10 +9570,12 @@ function renderLog(log, settings) {
         </div>
       `
       : "";
+    const badge = getLogEntryBadge(entry);
 
     return `
       <li>
         <div class="log-main">
+          <span class="log-badge log-badge-${badge.slug}">${escapeHtml(badge.label)}</span>
           <span class="log-player">${escapeHtml(entry.playerName)}</span>
           <span>${entry.scoreTarget ? `To ${escapeHtml(entry.scoreTarget)}` : ""}</span>
           <span>
@@ -9572,9 +9737,11 @@ function render() {
   if (isTeamSelectActive()) {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
+      ${renderAnalyticsHostCta()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
+      ${renderAnalyticsCard(false)}
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
         ${renderTeamSelectPlayerPanel(settings, players, mePlayer)}
@@ -9768,6 +9935,7 @@ function render() {
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderCreditsHostCta()}
       ${renderRoomCodeSpotlightHostCta()}
+      ${showAdminData ? renderAnalyticsHostCta() : ""}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
@@ -9775,6 +9943,7 @@ function render() {
           : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable."))}
       </section>
 
+      ${showAdminData ? renderAnalyticsCard(false) : ""}
       ${renderLockedRuling(settings, pendingEntry)}
       ${showAdminData ? renderLog(gameLog, settings) : ""}
     </main>
@@ -9858,6 +10027,8 @@ function bindEvents() {
   delegate("click", "[data-credits-end]", () => { endCredits(); });
   delegate("click", "[data-room-code-spotlight-show]", () => { startRoomCodeSpotlight(); });
   delegate("click", "[data-room-code-spotlight-hide]", () => { endRoomCodeSpotlight(); });
+  delegate("click", "[data-analytics-show]", () => { startAnalyticsSpotlight(); });
+  delegate("click", "[data-analytics-hide]", () => { endAnalyticsSpotlight(); });
   delegate("click", "[data-credits-close]", () => { dismissCreditsLocally(); });
   delegate("click", "[data-credits-overlay]", (e, el) => {
     if (e.target !== el) return; // backdrop only — dialog clicks stay open
@@ -10944,6 +11115,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     kickPlayer, unkickPlayer, setPlayerScrewBlocked, refundPlayerScrew,
     setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
     startQuixort, endQuixort, resetQuixort, exitQuixort,
+    startAnalyticsSpotlight, endAnalyticsSpotlight,
   };
   RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };

@@ -32,7 +32,6 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 ### What's coming?
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
- - Per-round Analytics
  - Bounce gamemode
  - BINGO/Wendit UI revamp
  - Episode creator
@@ -89,6 +88,7 @@ IDK possibly
 - Handwritten snark
 - Coopertition mode
 - Credits roll
+- Per-round Analytics
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
 - and probably more (soon!)
