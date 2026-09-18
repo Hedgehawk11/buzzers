@@ -691,6 +691,12 @@ function getRound() {
     winnerOption: null,
     winnerAnswer: null,
     winnerName: null,
+    winnerCoopKey: null,
+    // Host pre-set correct answer: buttons modes use correctOptions (multi),
+    // text mode uses correctAnswer. Null when absent — never drop these keys
+    // (undefined breaks signature + strict checks after mode cycles).
+    correctOptions: null,
+    correctAnswer: null,
     // Coopertition Jeopardy control: score key of the slot that buzzed in
     // first this round (null until someone buzzes). Only that slot's options
     // unlock; cleared whenever buzzers open/close/reset.
@@ -1753,12 +1759,13 @@ function startRoulettePhase() {
       opensAt: null,
       closesAt: null,
       remainingCs: settings.timeOpen * 100,
-      winnerId: null,
-      winnerTeam: null,
-      winnerOption: null,
-      winnerAnswer: null,
-      winnerName: null,
-      coopControl: null,
+        winnerId: null,
+        winnerTeam: null,
+        winnerOption: null,
+        winnerAnswer: null,
+        winnerName: null,
+        winnerCoopKey: null,
+        coopControl: null,
       buzzedPlayerIds: [],
       buzzCounts: {},
       roulette: {
@@ -1784,6 +1791,9 @@ function startRoulettePhase() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
     },
     true,
@@ -2621,7 +2631,11 @@ function openBuzzers() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
+      screwsUsedBy: [],
     },
     true,
   );
@@ -2682,6 +2696,9 @@ function pauseBuzzers() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
     },
     true,
@@ -4231,7 +4248,11 @@ function resetRound() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
+      screwsUsedBy: [],
     },
     true,
   );
@@ -4483,8 +4504,10 @@ function closeScrewMode() {
       screweeId: null,
       screeeName: null,
       screwTimerMs: null,
+      screwTimerEndsAt: null,
       frozenCs: null,
       frozenPoints: null,
+      activatedAt: null,
     },
     screwsUsedBy,
   };
@@ -4515,6 +4538,10 @@ function resetScrews() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        screwTimerEndsAt: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
       screwsUsedBy: [],
     },
@@ -4781,6 +4808,62 @@ function handleCoopRoster(senderPlayer, payload) {
 }
 
 // =============================================================================
+// Fresh IDLE buzzer round for mode switches — full null-invariant shape so
+// cycling gamemodes never leaves correctOptions/correctAnswer/winnerCoopKey
+// as undefined (which breaks preset judging + signature checks).
+// Preset is intentionally cleared (new mode = new question context).
+// =============================================================================
+function freshIdleBuzzerRound(settings) {
+  return {
+    status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
+    remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+    winnerId: null, winnerTeam: null,
+    winnerOption: null, winnerAnswer: null, winnerName: null, winnerCoopKey: null,
+    coopControl: null,
+    correctOptions: null,
+    correctAnswer: null,
+    buzzedPlayerIds: [],
+    buzzCounts: {},
+    roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+    screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null },
+    screwsUsedBy: [],
+  };
+}
+
+// Deactivate any live special-mode sub-state when switching inputMode, so
+// orphaned timers (fibbage/disordat voteEndsAt, bingo cycling) can't resurrect
+// when switching back. The mode being entered re-initializes itself after.
+function deactivateSpecialStates(except) {
+  try {
+    if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+  } catch {}
+  try {
+    if (except !== "bingo" && except !== "wendithapn") {
+      const b = getBingo();
+      if (b.active || b.cycling) setState("bingo", { ...b, active: false, cycling: false, currentLitIndex: -1, currentLitSlot: 0 }, true);
+    }
+  } catch {}
+  try {
+    if (except !== "fibbage") {
+      const fb = getFibbage();
+      if (fb.active) setState("fibbage", { ...fb, active: false, timeEndsAt: null, voteEndsAt: null }, true);
+    }
+  } catch {}
+  try {
+    if (except !== "disordat") {
+      const dd = getDisOrDat();
+      if (dd.active) setState("disordat", { ...dd, active: false, timeEndsAt: null, pendingPick: false }, true);
+    }
+  } catch {}
+  try {
+    if (except !== "quixort") {
+      const qx = getQuixort();
+      if (qx.active) setState("quixort", { ...qx, active: false, phase: "setup", expectedTracks: [], runs: {} }, true);
+    }
+  } catch {}
+}
+
+// =============================================================================
 // Host applies a settings change — validates and syncs dependent fields
 // =============================================================================
 function setHostSetting(key, value) {
@@ -4847,12 +4930,29 @@ function setHostSetting(key, value) {
     }
   }
   if (key === "optionCount") {
+    let effectiveCount;
     if (isCoopMode(next) && Number(value) < 4) {
       next.optionCount = 4;
       next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, 4);
+      effectiveCount = 4;
     } else {
-      next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
+      next.optionCount = Number(value) || settings.optionCount || 4;
+      next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, next.optionCount);
+      effectiveCount = next.optionCount;
     }
+    // Prune a multi-correct preset down to the new option range so hidden
+    // options (e.g. 5/6 after a 6->4 shrink) can't linger as an unhittable preset.
+    try {
+      const curRound = getRound();
+      if (Array.isArray(curRound.correctOptions) && curRound.correctOptions.length) {
+        const pruned = curRound.correctOptions.map(Number).filter((v) => Number.isInteger(v) && v >= 1 && v <= effectiveCount);
+        const curSig = JSON.stringify([...curRound.correctOptions].map(Number).sort((a, b) => a - b));
+        const nextSig = JSON.stringify([...pruned].sort((a, b) => a - b));
+        if (curSig !== nextSig) {
+          setState("round", { ...curRound, correctOptions: pruned.length ? pruned : null }, true);
+        }
+      }
+    } catch {}
   }
   if (key === "coopertitionEnabled") {
     if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text") {
@@ -4890,6 +4990,17 @@ function setHostSetting(key, value) {
         next.optionCount = 4;
         next.disabledOptions = normalizeDisabledOptions(next.disabledOptions, 4);
       }
+      // Forcing 4+ options can orphan a preset (e.g. option 1-2 only game):
+      // prune it to the enforced range like the optionCount path does.
+      try {
+        const curRound = getRound();
+        if (Array.isArray(curRound.correctOptions) && curRound.correctOptions.length) {
+          const pruned = curRound.correctOptions.map(Number).filter((v) => Number.isInteger(v) && v >= 1 && v <= 4);
+          const curSig = JSON.stringify([...curRound.correctOptions].map(Number).sort((a, b) => a - b));
+          const nextSig = JSON.stringify([...pruned].sort((a, b) => a - b));
+          if (curSig !== nextSig) setState("round", { ...curRound, correctOptions: pruned.length ? pruned : null }, true);
+        }
+      } catch {}
       // A screw active at toggle time would freeze slot-identity buzzing —
       // clear it outright.
       try {
@@ -4897,7 +5008,7 @@ function setHostSetting(key, value) {
         if (curRound.screw?.active) {
           setState("round", {
             ...curRound,
-            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
+            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, screwTimerEndsAt: null, frozenCs: null, frozenPoints: null, activatedAt: null },
             screwsUsedBy: [],
           }, true);
         }
@@ -4908,40 +5019,41 @@ function setHostSetting(key, value) {
     }
   }
   if (key === "inputMode") {
-    if (value !== "bingo" && value !== "wendithapn") {
-      if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
-      setState("bingo", getBingo(), true);
-    }
+    deactivateSpecialStates(value);
     if (value === "text") {
       next.optionCount = settings.optionCount || 4;
       next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
     }
+    if (value === "buttons" || value === "text") {
+      // Stay on the current buzzer round: preserve both presets (the harness
+      // and existing UX rely on correctOptions surviving a text detour and
+      // vice versa — judging only reads the preset matching inputMode).
+      // Just repair the null-invariant so undefined keys become null.
+      try {
+        const cur = getRound();
+        const patch = { ...cur };
+        if (patch.winnerCoopKey === undefined) patch.winnerCoopKey = null;
+        if (patch.correctOptions === undefined) patch.correctOptions = null;
+        if (patch.correctAnswer === undefined) patch.correctAnswer = null;
+        if (patch.screwsUsedBy === undefined) patch.screwsUsedBy = [];
+        if (!patch.screw || typeof patch.screw !== "object") {
+          patch.screw = { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null };
+        } else {
+          if (patch.screw.frozenCs === undefined) patch.screw.frozenCs = null;
+          if (patch.screw.frozenPoints === undefined) patch.screw.frozenPoints = null;
+          if (patch.screw.activatedAt === undefined) patch.screw.activatedAt = null;
+          if (patch.screw.screwTimerMs === undefined) patch.screw.screwTimerMs = null;
+        }
+        const changed = patch.winnerCoopKey !== cur.winnerCoopKey || patch.correctAnswer !== cur.correctAnswer || patch.correctOptions !== cur.correctOptions || patch.screwsUsedBy !== cur.screwsUsedBy || patch.screw !== cur.screw;
+        if (changed) setState("round", patch, true);
+      } catch {}
+    }
     if (value === "bingo" || value === "wendithapn") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
     }
     if (value === "disordat") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       setState("disordat", {
         ...getDisOrDat(),
@@ -4961,33 +5073,13 @@ function setHostSetting(key, value) {
       }, true);
     }
     if (value === "fibbage") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const fb = getFibbage();
       setState("fibbage", { ...freshFibbageState(), lieTimeSec: fb.lieTimeSec || 30, voteTimeSec: fb.voteTimeSec || 30, multiplier: fb.multiplier || 1 }, true);
     }
     if (value === "quixort") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const qx = getQuixort();
       setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: qx.blockSec || 30 }, true);

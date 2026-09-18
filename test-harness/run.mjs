@@ -800,6 +800,39 @@ check("reset clears coopControl", S().round?.coopControl === null, JSON.stringif
 check("reset clears winnerCoopKey", S().round?.winnerCoopKey === null, JSON.stringify(S().round?.winnerCoopKey));
 check("reset clears correctOptions", S().round?.correctOptions === null, JSON.stringify(S().round?.correctOptions));
 check("reset clears correctAnswer", S().round?.correctAnswer === null, JSON.stringify(S().round?.correctAnswer));
+// --- regression: multi-correct preset survives judging, mode cycles keep null-invariant ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["optionCount", 6] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [3] }, prod);
+check("multi-correct preset holds both", JSON.stringify((S().round?.correctOptions || []).map(Number).sort()) === JSON.stringify([1, 3]), JSON.stringify(S().round?.correctOptions));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, prod);
+check("bingo cycle clears preset to null", S().round?.correctOptions === null && S().round?.correctAnswer === null, `opts=${JSON.stringify(S().round?.correctOptions)} ans=${JSON.stringify(S().round?.correctAnswer)}`);
+check("bingo cycle keeps winnerCoopKey null", S().round?.winnerCoopKey === null, JSON.stringify(S().round?.winnerCoopKey));
+check("bingo cycle keeps screwsUsedBy array", Array.isArray(S().round?.screwsUsedBy), JSON.stringify(S().round?.screwsUsedBy));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+check("back to buttons preset stays null", S().round?.correctOptions === null && S().round?.correctAnswer === null, `opts=${JSON.stringify(S().round?.correctOptions)} ans=${JSON.stringify(S().round?.correctAnswer)}`);
+await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [2] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [4] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);
+check("buttons->text preserves correctOptions", JSON.stringify((S().round?.correctOptions || []).map(Number).sort()) === JSON.stringify([2, 4]), JSON.stringify(S().round?.correctOptions));
+await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: ["hello"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+check("text->buttons preserves correctAnswer", S().round?.correctAnswer === "hello", JSON.stringify(S().round?.correctAnswer));
+check("setCorrectAnswerValue clears correctOptions", S().round?.correctOptions === null, JSON.stringify(S().round?.correctOptions));
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["optionCount", 6] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [5] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [6] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["optionCount", 4] }, prod);
+check("optionCount shrink prunes preset", S().round?.correctOptions === null, JSON.stringify(S().round?.correctOptions));
+if (!COOP) {
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fibbage"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  check("leaving fibbage deactivates it", S().fibbage?.active !== true, JSON.stringify(S().fibbage?.active));
+}
 // --- regression: roulette roster frozen at phase start ---
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["valueSelectionMethod", "roulette"] }, prod);
