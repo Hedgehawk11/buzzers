@@ -1010,6 +1010,7 @@ function getBingo() {
     collectedCounts: {},
     winner: null,
     playerItems: {},
+    scoredTracks: {},
   });
 }
 
@@ -1429,6 +1430,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
         playerItems: b.playerItems,
         collectedCounts: b.collectedCounts,
         coopLockout: b.coopLockout,
+        scoredTracks: b.scoredTracks,
         winner: b.winner,
       };
     })(),
@@ -2794,6 +2796,7 @@ function startBingo() {
     collectedCounts: {},
     winner: null,
     playerItems: {},
+    scoredTracks: {},
   }, true);
   setBuzzNotice(`${isWen ? "Wen Dit Happn" : "Bingo"} started!`);
   render();
@@ -2818,8 +2821,8 @@ function setBingoTarget(index) {
   const bingo = getBingo();
   if (bingo.cycling) return;
   if (!Array.isArray(bingo.items) || index < 0 || index >= bingo.items.length) return;
-  // A new target re-arms locked-out coop siblings.
-  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {} }, true);
+  // A new target re-arms locked-out coop siblings and per-track scoring.
+  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {}, scoredTracks: {} }, true);
   render();
 }
 
@@ -2831,6 +2834,41 @@ function shuffledIndices(n) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+// Draw the next lit index, preserving the less-random queue invariant (every
+// option appears once per full cycle). Mutates bingoCycleQueue.
+function drawNextBingoLitIndex(itemCount, currentLitIndex) {
+  if (getSettings().bingoLessRandom) {
+    if (bingoCycleQueue.length === 0) {
+      bingoCycleQueue = shuffledIndices(itemCount);
+      if (bingoCycleQueue.length > 1 && bingoCycleQueue[0] === currentLitIndex) {
+        [bingoCycleQueue[0], bingoCycleQueue[1]] = [bingoCycleQueue[1], bingoCycleQueue[0]];
+      }
+    }
+    return bingoCycleQueue.shift();
+  }
+  let nextIdx;
+  do {
+    nextIdx = Math.floor(Math.random() * itemCount);
+  } while (nextIdx === currentLitIndex && itemCount > 1);
+  return nextIdx;
+}
+
+// Single cycling tick shared by the interval loop. Exported as a named
+// function (not an inline closure) so the correct-buzz continue path can
+// restart the same behavior instead of diverging.
+function advanceBingoCycleTick() {
+  if (!isHost()) return;
+  const cur = getBingo();
+  if (!cur.active || !cur.cycling) return;
+  const nextIdx = drawNextBingoLitIndex(cur.items.length, cur.currentLitIndex);
+  setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitSlot: (cur.currentLitSlot || 0) + 1, currentLitTs: now() }, true);
+}
+
+function ensureBingoCycleLoop() {
+  if (bingoCycleInterval) return;
+  bingoCycleInterval = setInterval(advanceBingoCycleTick, BINGO_ITEM_CHANGE_INTERVAL_MS);
 }
 
 // Begin rapidly cycling through items so players must buzz at the right moment
@@ -2857,26 +2895,7 @@ function startBingoCycling() {
     currentLitTs: now(),
   }, true);
   if (bingoCycleInterval) clearInterval(bingoCycleInterval);
-  bingoCycleInterval = setInterval(() => {
-    if (!isHost()) return;
-    const cur = getBingo();
-    if (!cur.active || !cur.cycling) return;
-    let nextIdx;
-    if (getSettings().bingoLessRandom) {
-      if (bingoCycleQueue.length === 0) {
-        bingoCycleQueue = shuffledIndices(cur.items.length);
-        if (bingoCycleQueue.length > 1 && bingoCycleQueue[0] === cur.currentLitIndex) {
-          [bingoCycleQueue[0], bingoCycleQueue[1]] = [bingoCycleQueue[1], bingoCycleQueue[0]];
-        }
-      }
-      nextIdx = bingoCycleQueue.shift();
-    } else {
-      do {
-        nextIdx = Math.floor(Math.random() * cur.items.length);
-      } while (nextIdx === cur.currentLitIndex && cur.items.length > 1);
-    }
-    setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitSlot: (cur.currentLitSlot || 0) + 1, currentLitTs: now() }, true);
-  }, BINGO_ITEM_CHANGE_INTERVAL_MS);
+  bingoCycleInterval = setInterval(advanceBingoCycleTick, BINGO_ITEM_CHANGE_INTERVAL_MS);
   render();
 }
 
@@ -2942,7 +2961,15 @@ function handleBingoBuzz(player, payload) {
   const targetIndex = bingo.targetIndex;
   const playerItems = bingo.playerItems || {};
   const collected = playerItems[trackKey] || [];
+  const scoredTracks = bingo.scoredTracks || {};
+  const scoredForTarget = Array.isArray(scoredTracks[targetIndex]) ? scoredTracks[targetIndex] : [];
   if (observedIndex === targetIndex) {
+    const isWen = isWenDitHapnMode();
+    // Each track scores once per target so "multiple correct" lets other
+    // players score too instead of letting one player farm the same target.
+    if (isWen ? scoredForTarget.includes(trackKey) : collected.includes(targetIndex)) {
+      return { ok: false, reason: getSnark("player.bingo.alreadyCollected", "You already got that one — let someone else buzz!") };
+    }
     let newPlayerItems = playerItems;
     let collectedCounts = bingo.collectedCounts || {};
     let winner = null;
@@ -2952,19 +2979,14 @@ function handleBingoBuzz(player, payload) {
       collectedCounts = bingo.collectedCounts || {};
       winner = null;
     } else {
-      const alreadyCollected = collected.includes(targetIndex);
-      newPlayerItems = { ...playerItems };
-      if (!alreadyCollected) {
-        newPlayerItems[trackKey] = [...collected, targetIndex];
-      }
+      newPlayerItems = { ...playerItems, [trackKey]: [...collected, targetIndex] };
       collectedCounts = { ...bingo.collectedCounts };
-      if (!alreadyCollected) {
-        collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
-      }
+      collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
       if ((collectedCounts[trackKey] || 0) >= (Array.isArray(bingo.items) ? bingo.items.length : 0)) {
         winner = trackKey;
       }
     }
+    const nextScoredTracks = { ...scoredTracks, [targetIndex]: [...scoredForTarget, trackKey] };
     const scores = { ...getScores() };
     scores[scoreKey] = Number(scores[scoreKey] || 0) + BINGO_CORRECT_POINTS;
     setState("scores", scores, true);
@@ -2983,17 +3005,28 @@ function handleBingoBuzz(player, payload) {
       awardedDelta: BINGO_CORRECT_POINTS,
       resolved: true,
     }], true);
-    if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
-    bingoCycleQueue = [];
-    const settings = getSettings();
-    const shouldStopCycling = !settings.bingoAllowMultipleCorrect;
+    const allowMultiple = getSettings().bingoAllowMultipleCorrect === true;
     // Coop sibling lockout: teammates of the scorer wait for the next target.
     const nextLockout = coopActive ? { ...(bingo.coopLockout || {}), [player.id]: scoreKey } : bingo.coopLockout;
-    setState("bingo", {
-      ...bingo, playerItems: newPlayerItems,
-      collectedCounts, winner, cycling: shouldStopCycling, currentLitIndex: -1, currentLitSlot: 0,
-      coopLockout: nextLockout,
-    }, true);
+    // A full-board winner ends cycling even when multiple-correct is on.
+    const keepCycling = allowMultiple && !winner;
+    if (!keepCycling) {
+      if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+      bingoCycleQueue = [];
+      setState("bingo", {
+        ...bingo, playerItems: newPlayerItems,
+        collectedCounts, winner, cycling: false, currentLitIndex: -1, currentLitSlot: 0, currentLitTs: 0,
+        coopLockout: nextLockout, scoredTracks: nextScoredTracks,
+      }, true);
+    } else {
+      const nextIdx = drawNextBingoLitIndex(bingo.items.length, targetIndex);
+      ensureBingoCycleLoop();
+      setState("bingo", {
+        ...bingo, playerItems: newPlayerItems,
+        collectedCounts, winner, cycling: true, currentLitIndex: nextIdx, currentLitSlot: (bingo.currentLitSlot || 0) + 1, currentLitTs: now(),
+        coopLockout: nextLockout, scoredTracks: nextScoredTracks,
+      }, true);
+    }
     render();
     return { ok: true, message: getSnark("player.outcome.bingoCorrect", "Correct! +500") };
   } else {
@@ -6011,6 +6044,7 @@ function renderBingoHostPanel(settings, players) {
       </div>
       ${renderBingoAlternateViewersToggle(settings)}
       ${renderBingoLessRandomToggle(settings)}
+      ${renderBingoAllowMultipleCorrectToggle(settings)}
       ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
       ${isWen ? "" : `<div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>`}
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
@@ -11401,7 +11435,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   setInterval(() => {
     if (!isBingoMode()) return;
     const b = getBingo();
-    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${JSON.stringify(b.coopLockout || {})}|${b.winner || ""}`;
+    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${JSON.stringify(b.coopLockout || {})}|${JSON.stringify(b.scoredTracks || {})}|${b.winner || ""}`;
     if (key === lastBingoRenderKey) return;
     lastBingoRenderKey = key;
     scheduleRender(render);
