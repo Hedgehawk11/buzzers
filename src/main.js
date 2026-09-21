@@ -130,6 +130,12 @@ let creditsFetchInFlight = false;
 let creditsDismissedAt = null;
 const COOP_COUNT_KEY = "buzzer_coop_count";
 const COOP_NAMES_KEY = "buzzer_coop_names";
+const PRODUCER_PASSWORD_KEY = "buzzer_producer_password";
+// Producer password is host-local only (never shared PlayroomKit state —
+// room state is synced to every client, so broadcasting it leaks the code).
+// Persisted in localStorage so a same-device host reload keeps the code;
+// a new host device generates a fresh one.
+let hostProducerPassword = "";
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -691,6 +697,12 @@ function getRound() {
     winnerOption: null,
     winnerAnswer: null,
     winnerName: null,
+    winnerCoopKey: null,
+    // Host pre-set correct answer: buttons modes use correctOptions (multi),
+    // text mode uses correctAnswer. Null when absent — never drop these keys
+    // (undefined breaks signature + strict checks after mode cycles).
+    correctOptions: null,
+    correctAnswer: null,
     // Coopertition Jeopardy control: score key of the slot that buzzed in
     // first this round (null until someone buzzes). Only that slot's options
     // unlock; cleared whenever buzzers open/close/reset.
@@ -1004,6 +1016,7 @@ function getBingo() {
     collectedCounts: {},
     winner: null,
     playerItems: {},
+    scoredTracks: {},
   });
 }
 
@@ -1048,6 +1061,117 @@ function isProducer() {
 
 function hasHostPrivileges() {
   return isHost() || isProducer();
+}
+
+// Host-local producer password. Returns "" on non-host clients so the code
+// can never be read from a broadcast or rendered off-host.
+function getHostProducerPassword() {
+  if (!isHost()) return "";
+  return typeof hostProducerPassword === "string" ? hostProducerPassword : "";
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function getProducerPasswordCryptoKey() {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(`producer-password:${getRoomCode() || "no-room"}:${location.origin}`),
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: enc.encode("instant-buzzers-producer-password-v1"),
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptProducerPassword(plain) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await getProducerPasswordCryptoKey();
+  const cipher = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(plain)
+  );
+  return `enc:v1:${bytesToBase64(iv)}:${bytesToBase64(new Uint8Array(cipher))}`;
+}
+
+async function decryptProducerPassword(stored) {
+  if (typeof stored !== "string" || !stored.startsWith("enc:v1:")) return "";
+  const parts = stored.split(":");
+  if (parts.length !== 4) return "";
+  const iv = base64ToBytes(parts[2]);
+  const data = base64ToBytes(parts[3]);
+  const key = await getProducerPasswordCryptoKey();
+  const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+  return new TextDecoder().decode(plainBuf);
+}
+
+// Unbiased 5-digit PIN in [10000, 100000) via rejection sampling.
+// Uses browser WebCrypto (crypto.getRandomValues) — NOT node:crypto's
+// randomInt, which doesn't exist in browsers. Falls back to Math.random
+// only when WebCrypto is unavailable (non-secure contexts / stubs).
+function randomProducerPin() {
+  const min = 10000;
+  const range = 90000;
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const maxU32 = 0xffffffff;
+      const limit = maxU32 - (maxU32 % range);
+      const buf = new Uint32Array(1);
+      let x;
+      do {
+        crypto.getRandomValues(buf);
+        x = buf[0];
+      } while (x >= limit);
+      return min + (x % range);
+    }
+  } catch {}
+  return Math.floor(min + Math.random() * range);
+}
+
+async function ensureHostProducerPassword() {
+  if (!isHost()) return "";
+  if (/^\d{5}$/.test(hostProducerPassword || "")) return hostProducerPassword;
+  try {
+    const stored = localStorage.getItem(PRODUCER_PASSWORD_KEY);
+    if (/^\d{5}$/.test(stored || "")) {
+      hostProducerPassword = stored;
+      return hostProducerPassword;
+    }
+    const decrypted = await decryptProducerPassword(stored || "");
+    if (/^\d{5}$/.test(decrypted || "")) {
+      hostProducerPassword = decrypted;
+      return hostProducerPassword;
+    }
+  } catch {}
+  hostProducerPassword = String(randomProducerPin());
+  try {
+    const encrypted = await encryptProducerPassword(hostProducerPassword);
+    localStorage.setItem(PRODUCER_PASSWORD_KEY, encrypted);
+  } catch {}
+  return hostProducerPassword;
 }
 
 async function producerDispatch(fnName, ...args) {
@@ -1423,6 +1547,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
         playerItems: b.playerItems,
         collectedCounts: b.collectedCounts,
         coopLockout: b.coopLockout,
+        scoredTracks: b.scoredTracks,
         winner: b.winner,
       };
     })(),
@@ -1753,12 +1878,13 @@ function startRoulettePhase() {
       opensAt: null,
       closesAt: null,
       remainingCs: settings.timeOpen * 100,
-      winnerId: null,
-      winnerTeam: null,
-      winnerOption: null,
-      winnerAnswer: null,
-      winnerName: null,
-      coopControl: null,
+        winnerId: null,
+        winnerTeam: null,
+        winnerOption: null,
+        winnerAnswer: null,
+        winnerName: null,
+        winnerCoopKey: null,
+        coopControl: null,
       buzzedPlayerIds: [],
       buzzCounts: {},
       roulette: {
@@ -1784,6 +1910,9 @@ function startRoulettePhase() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
     },
     true,
@@ -2621,7 +2750,11 @@ function openBuzzers() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
+      screwsUsedBy: [],
     },
     true,
   );
@@ -2682,6 +2815,9 @@ function pauseBuzzers() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
     },
     true,
@@ -2777,6 +2913,7 @@ function startBingo() {
     collectedCounts: {},
     winner: null,
     playerItems: {},
+    scoredTracks: {},
   }, true);
   setBuzzNotice(`${isWen ? "Wen Dit Happn" : "Bingo"} started!`);
   render();
@@ -2801,8 +2938,8 @@ function setBingoTarget(index) {
   const bingo = getBingo();
   if (bingo.cycling) return;
   if (!Array.isArray(bingo.items) || index < 0 || index >= bingo.items.length) return;
-  // A new target re-arms locked-out coop siblings.
-  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {} }, true);
+  // A new target re-arms locked-out coop siblings and per-track scoring.
+  setState("bingo", { ...bingo, targetIndex: index, currentLitIndex: -1, currentLitSlot: 0, coopLockout: {}, scoredTracks: {} }, true);
   render();
 }
 
@@ -2814,6 +2951,41 @@ function shuffledIndices(n) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+// Draw the next lit index, preserving the less-random queue invariant (every
+// option appears once per full cycle). Mutates bingoCycleQueue.
+function drawNextBingoLitIndex(itemCount, currentLitIndex) {
+  if (getSettings().bingoLessRandom) {
+    if (bingoCycleQueue.length === 0) {
+      bingoCycleQueue = shuffledIndices(itemCount);
+      if (bingoCycleQueue.length > 1 && bingoCycleQueue[0] === currentLitIndex) {
+        [bingoCycleQueue[0], bingoCycleQueue[1]] = [bingoCycleQueue[1], bingoCycleQueue[0]];
+      }
+    }
+    return bingoCycleQueue.shift();
+  }
+  let nextIdx;
+  do {
+    nextIdx = Math.floor(Math.random() * itemCount);
+  } while (nextIdx === currentLitIndex && itemCount > 1);
+  return nextIdx;
+}
+
+// Single cycling tick shared by the interval loop. Exported as a named
+// function (not an inline closure) so the correct-buzz continue path can
+// restart the same behavior instead of diverging.
+function advanceBingoCycleTick() {
+  if (!isHost()) return;
+  const cur = getBingo();
+  if (!cur.active || !cur.cycling) return;
+  const nextIdx = drawNextBingoLitIndex(cur.items.length, cur.currentLitIndex);
+  setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitSlot: (cur.currentLitSlot || 0) + 1, currentLitTs: now() }, true);
+}
+
+function ensureBingoCycleLoop() {
+  if (bingoCycleInterval) return;
+  bingoCycleInterval = setInterval(advanceBingoCycleTick, BINGO_ITEM_CHANGE_INTERVAL_MS);
 }
 
 // Begin rapidly cycling through items so players must buzz at the right moment
@@ -2840,26 +3012,7 @@ function startBingoCycling() {
     currentLitTs: now(),
   }, true);
   if (bingoCycleInterval) clearInterval(bingoCycleInterval);
-  bingoCycleInterval = setInterval(() => {
-    if (!isHost()) return;
-    const cur = getBingo();
-    if (!cur.active || !cur.cycling) return;
-    let nextIdx;
-    if (getSettings().bingoLessRandom) {
-      if (bingoCycleQueue.length === 0) {
-        bingoCycleQueue = shuffledIndices(cur.items.length);
-        if (bingoCycleQueue.length > 1 && bingoCycleQueue[0] === cur.currentLitIndex) {
-          [bingoCycleQueue[0], bingoCycleQueue[1]] = [bingoCycleQueue[1], bingoCycleQueue[0]];
-        }
-      }
-      nextIdx = bingoCycleQueue.shift();
-    } else {
-      do {
-        nextIdx = Math.floor(Math.random() * cur.items.length);
-      } while (nextIdx === cur.currentLitIndex && cur.items.length > 1);
-    }
-    setState("bingo", { ...cur, currentLitIndex: nextIdx, currentLitSlot: (cur.currentLitSlot || 0) + 1, currentLitTs: now() }, true);
-  }, BINGO_ITEM_CHANGE_INTERVAL_MS);
+  bingoCycleInterval = setInterval(advanceBingoCycleTick, BINGO_ITEM_CHANGE_INTERVAL_MS);
   render();
 }
 
@@ -2925,7 +3078,15 @@ function handleBingoBuzz(player, payload) {
   const targetIndex = bingo.targetIndex;
   const playerItems = bingo.playerItems || {};
   const collected = playerItems[trackKey] || [];
+  const scoredTracks = bingo.scoredTracks || {};
+  const scoredForTarget = Array.isArray(scoredTracks[targetIndex]) ? scoredTracks[targetIndex] : [];
   if (observedIndex === targetIndex) {
+    const isWen = isWenDitHapnMode();
+    // Each track scores once per target so "multiple correct" lets other
+    // players score too instead of letting one player farm the same target.
+    if (isWen ? scoredForTarget.includes(trackKey) : collected.includes(targetIndex)) {
+      return { ok: false, reason: getSnark("player.bingo.alreadyCollected", "You already got that one — let someone else buzz!") };
+    }
     let newPlayerItems = playerItems;
     let collectedCounts = bingo.collectedCounts || {};
     let winner = null;
@@ -2935,19 +3096,14 @@ function handleBingoBuzz(player, payload) {
       collectedCounts = bingo.collectedCounts || {};
       winner = null;
     } else {
-      const alreadyCollected = collected.includes(targetIndex);
-      newPlayerItems = { ...playerItems };
-      if (!alreadyCollected) {
-        newPlayerItems[trackKey] = [...collected, targetIndex];
-      }
+      newPlayerItems = { ...playerItems, [trackKey]: [...collected, targetIndex] };
       collectedCounts = { ...bingo.collectedCounts };
-      if (!alreadyCollected) {
-        collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
-      }
+      collectedCounts[trackKey] = (collectedCounts[trackKey] || 0) + 1;
       if ((collectedCounts[trackKey] || 0) >= (Array.isArray(bingo.items) ? bingo.items.length : 0)) {
         winner = trackKey;
       }
     }
+    const nextScoredTracks = { ...scoredTracks, [targetIndex]: [...scoredForTarget, trackKey] };
     const scores = { ...getScores() };
     scores[scoreKey] = Number(scores[scoreKey] || 0) + BINGO_CORRECT_POINTS;
     setState("scores", scores, true);
@@ -2966,17 +3122,28 @@ function handleBingoBuzz(player, payload) {
       awardedDelta: BINGO_CORRECT_POINTS,
       resolved: true,
     }], true);
-    if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
-    bingoCycleQueue = [];
-    const settings = getSettings();
-    const shouldStopCycling = !settings.bingoAllowMultipleCorrect;
+    const allowMultiple = getSettings().bingoAllowMultipleCorrect === true;
     // Coop sibling lockout: teammates of the scorer wait for the next target.
     const nextLockout = coopActive ? { ...(bingo.coopLockout || {}), [player.id]: scoreKey } : bingo.coopLockout;
-    setState("bingo", {
-      ...bingo, playerItems: newPlayerItems,
-      collectedCounts, winner, cycling: shouldStopCycling, currentLitIndex: -1, currentLitSlot: 0,
-      coopLockout: nextLockout,
-    }, true);
+    // A full-board winner ends cycling even when multiple-correct is on.
+    const keepCycling = allowMultiple && !winner;
+    if (!keepCycling) {
+      if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+      bingoCycleQueue = [];
+      setState("bingo", {
+        ...bingo, playerItems: newPlayerItems,
+        collectedCounts, winner, cycling: false, currentLitIndex: -1, currentLitSlot: 0, currentLitTs: 0,
+        coopLockout: nextLockout, scoredTracks: nextScoredTracks,
+      }, true);
+    } else {
+      const nextIdx = drawNextBingoLitIndex(bingo.items.length, targetIndex);
+      ensureBingoCycleLoop();
+      setState("bingo", {
+        ...bingo, playerItems: newPlayerItems,
+        collectedCounts, winner, cycling: true, currentLitIndex: nextIdx, currentLitSlot: (bingo.currentLitSlot || 0) + 1, currentLitTs: now(),
+        coopLockout: nextLockout, scoredTracks: nextScoredTracks,
+      }, true);
+    }
     render();
     return { ok: true, message: getSnark("player.outcome.bingoCorrect", "Correct! +500") };
   } else {
@@ -4231,7 +4398,11 @@ function resetRound() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
+      screwsUsedBy: [],
     },
     true,
   );
@@ -4483,8 +4654,10 @@ function closeScrewMode() {
       screweeId: null,
       screeeName: null,
       screwTimerMs: null,
+      screwTimerEndsAt: null,
       frozenCs: null,
       frozenPoints: null,
+      activatedAt: null,
     },
     screwsUsedBy,
   };
@@ -4515,6 +4688,10 @@ function resetScrews() {
         screweeId: null,
         screeeName: null,
         screwTimerMs: null,
+        screwTimerEndsAt: null,
+        frozenCs: null,
+        frozenPoints: null,
+        activatedAt: null,
       },
       screwsUsedBy: [],
     },
@@ -4781,6 +4958,62 @@ function handleCoopRoster(senderPlayer, payload) {
 }
 
 // =============================================================================
+// Fresh IDLE buzzer round for mode switches — full null-invariant shape so
+// cycling gamemodes never leaves correctOptions/correctAnswer/winnerCoopKey
+// as undefined (which breaks preset judging + signature checks).
+// Preset is intentionally cleared (new mode = new question context).
+// =============================================================================
+function freshIdleBuzzerRound(settings) {
+  return {
+    status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
+    remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+    winnerId: null, winnerTeam: null,
+    winnerOption: null, winnerAnswer: null, winnerName: null, winnerCoopKey: null,
+    coopControl: null,
+    correctOptions: null,
+    correctAnswer: null,
+    buzzedPlayerIds: [],
+    buzzCounts: {},
+    roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
+    screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null },
+    screwsUsedBy: [],
+  };
+}
+
+// Deactivate any live special-mode sub-state when switching inputMode, so
+// orphaned timers (fibbage/disordat voteEndsAt, bingo cycling) can't resurrect
+// when switching back. The mode being entered re-initializes itself after.
+function deactivateSpecialStates(except) {
+  try {
+    if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
+  } catch {}
+  try {
+    if (except !== "bingo" && except !== "wendithapn") {
+      const b = getBingo();
+      if (b.active || b.cycling) setState("bingo", { ...b, active: false, cycling: false, currentLitIndex: -1, currentLitSlot: 0 }, true);
+    }
+  } catch {}
+  try {
+    if (except !== "fibbage") {
+      const fb = getFibbage();
+      if (fb.active) setState("fibbage", { ...fb, active: false, timeEndsAt: null, voteEndsAt: null }, true);
+    }
+  } catch {}
+  try {
+    if (except !== "disordat") {
+      const dd = getDisOrDat();
+      if (dd.active) setState("disordat", { ...dd, active: false, timeEndsAt: null, pendingPick: false }, true);
+    }
+  } catch {}
+  try {
+    if (except !== "quixort") {
+      const qx = getQuixort();
+      if (qx.active) setState("quixort", { ...qx, active: false, phase: "setup", expectedTracks: [], runs: {} }, true);
+    }
+  } catch {}
+}
+
+// =============================================================================
 // Host applies a settings change — validates and syncs dependent fields
 // =============================================================================
 function setHostSetting(key, value) {
@@ -4847,12 +5080,29 @@ function setHostSetting(key, value) {
     }
   }
   if (key === "optionCount") {
+    let effectiveCount;
     if (isCoopMode(next) && Number(value) < 4) {
       next.optionCount = 4;
       next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, 4);
+      effectiveCount = 4;
     } else {
-      next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, value);
+      next.optionCount = Number(value) || settings.optionCount || 4;
+      next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, next.optionCount);
+      effectiveCount = next.optionCount;
     }
+    // Prune a multi-correct preset down to the new option range so hidden
+    // options (e.g. 5/6 after a 6->4 shrink) can't linger as an unhittable preset.
+    try {
+      const curRound = getRound();
+      if (Array.isArray(curRound.correctOptions) && curRound.correctOptions.length) {
+        const pruned = curRound.correctOptions.map(Number).filter((v) => Number.isInteger(v) && v >= 1 && v <= effectiveCount);
+        const curSig = JSON.stringify([...curRound.correctOptions].map(Number).sort((a, b) => a - b));
+        const nextSig = JSON.stringify([...pruned].sort((a, b) => a - b));
+        if (curSig !== nextSig) {
+          setState("round", { ...curRound, correctOptions: pruned.length ? pruned : null }, true);
+        }
+      }
+    } catch {}
   }
   if (key === "coopertitionEnabled") {
     if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text") {
@@ -4890,6 +5140,17 @@ function setHostSetting(key, value) {
         next.optionCount = 4;
         next.disabledOptions = normalizeDisabledOptions(next.disabledOptions, 4);
       }
+      // Forcing 4+ options can orphan a preset (e.g. option 1-2 only game):
+      // prune it to the enforced range like the optionCount path does.
+      try {
+        const curRound = getRound();
+        if (Array.isArray(curRound.correctOptions) && curRound.correctOptions.length) {
+          const pruned = curRound.correctOptions.map(Number).filter((v) => Number.isInteger(v) && v >= 1 && v <= 4);
+          const curSig = JSON.stringify([...curRound.correctOptions].map(Number).sort((a, b) => a - b));
+          const nextSig = JSON.stringify([...pruned].sort((a, b) => a - b));
+          if (curSig !== nextSig) setState("round", { ...curRound, correctOptions: pruned.length ? pruned : null }, true);
+        }
+      } catch {}
       // A screw active at toggle time would freeze slot-identity buzzing —
       // clear it outright.
       try {
@@ -4897,7 +5158,7 @@ function setHostSetting(key, value) {
         if (curRound.screw?.active) {
           setState("round", {
             ...curRound,
-            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
+            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, screwTimerEndsAt: null, frozenCs: null, frozenPoints: null, activatedAt: null },
             screwsUsedBy: [],
           }, true);
         }
@@ -4908,40 +5169,41 @@ function setHostSetting(key, value) {
     }
   }
   if (key === "inputMode") {
-    if (value !== "bingo" && value !== "wendithapn") {
-      if (bingoCycleInterval) { clearInterval(bingoCycleInterval); bingoCycleInterval = null; }
-      setState("bingo", getBingo(), true);
-    }
+    deactivateSpecialStates(value);
     if (value === "text") {
       next.optionCount = settings.optionCount || 4;
       next.disabledOptions = normalizeDisabledOptions([], settings.optionCount || 4);
     }
+    if (value === "buttons" || value === "text") {
+      // Stay on the current buzzer round: preserve both presets (the harness
+      // and existing UX rely on correctOptions surviving a text detour and
+      // vice versa — judging only reads the preset matching inputMode).
+      // Just repair the null-invariant so undefined keys become null.
+      try {
+        const cur = getRound();
+        const patch = { ...cur };
+        if (patch.winnerCoopKey === undefined) patch.winnerCoopKey = null;
+        if (patch.correctOptions === undefined) patch.correctOptions = null;
+        if (patch.correctAnswer === undefined) patch.correctAnswer = null;
+        if (patch.screwsUsedBy === undefined) patch.screwsUsedBy = [];
+        if (!patch.screw || typeof patch.screw !== "object") {
+          patch.screw = { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null };
+        } else {
+          if (patch.screw.frozenCs === undefined) patch.screw.frozenCs = null;
+          if (patch.screw.frozenPoints === undefined) patch.screw.frozenPoints = null;
+          if (patch.screw.activatedAt === undefined) patch.screw.activatedAt = null;
+          if (patch.screw.screwTimerMs === undefined) patch.screw.screwTimerMs = null;
+        }
+        const changed = patch.winnerCoopKey !== cur.winnerCoopKey || patch.correctAnswer !== cur.correctAnswer || patch.correctOptions !== cur.correctOptions || patch.screwsUsedBy !== cur.screwsUsedBy || patch.screw !== cur.screw;
+        if (changed) setState("round", patch, true);
+      } catch {}
+    }
     if (value === "bingo" || value === "wendithapn") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
     }
     if (value === "disordat") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       setState("disordat", {
         ...getDisOrDat(),
@@ -4961,33 +5223,13 @@ function setHostSetting(key, value) {
       }, true);
     }
     if (value === "fibbage") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const fb = getFibbage();
       setState("fibbage", { ...freshFibbageState(), lieTimeSec: fb.lieTimeSec || 30, voteTimeSec: fb.voteTimeSec || 30, multiplier: fb.multiplier || 1 }, true);
     }
     if (value === "quixort") {
-      const idleRound = {
-        status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-        remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
-        winnerId: null, winnerTeam: null,
-        winnerOption: null, winnerAnswer: null, winnerName: null, coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-        screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null },
-      };
-      setState("round", idleRound, true);
+      setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const qx = getQuixort();
       setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: qx.blockSec || 30 }, true);
@@ -5685,10 +5927,15 @@ function ensureHostInit() {
   if (!getState("fibbage")) {
     setState("fibbage", freshFibbageState(), true);
   }
-  if (!getState("producerPassword")) {
-    const password = String(Math.floor(10000 + Math.random() * 90000));
-    setState("producerPassword", password, true);
-  }
+  // Producer password is host-local only (shared room state is readable by
+  // every client). Wipe any legacy broadcast value, then ensure the local
+  // code exists. Never setState() the real password.
+  ensureHostProducerPassword();
+  try {
+    if (getState("producerPassword") !== null && getState("producerPassword") !== undefined) {
+      setState("producerPassword", null, true);
+    }
+  } catch {}
   if (!getState("producerIds")) {
     setState("producerIds", [], true);
   } else {
@@ -5919,6 +6166,7 @@ function renderBingoHostPanel(settings, players) {
       </div>
       ${renderBingoAlternateViewersToggle(settings)}
       ${renderBingoLessRandomToggle(settings)}
+      ${renderBingoAllowMultipleCorrectToggle(settings)}
       ${winnerLabel ? `<div class="bingo-winner"><h3>Winner: ${winnerLabel}!</h3></div>` : ""}
       ${isWen ? "" : `<div class="bingo-progress"><h3>Progress</h3>${progressHtml || '<p class="muted">No players yet.</p>'}</div>`}
       <button type="button" data-bingo-end>Stop ${isWen ? "Wen Dit Happn" : "Bingo"}</button>
@@ -5940,18 +6188,39 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   const items = bingo.items;
   const collected = (bingo.playerItems?.[trackKey] || []);
   const activeViewer = isBingoActiveViewer(bingo, bingo.currentLitSlot, mePlayer.id, settings, assignments);
+  // The scorer's own screen freezes on a correct buzz while cycling continues
+  // for everyone else (multiple-correct mode). scoredTracks carries every
+  // track that already scored the live target, so this client can tell it is
+  // done without any local-only UI state (which would never sync).
+  const scoredList = Array.isArray((bingo.scoredTracks || {})[bingo.targetIndex])
+    ? bingo.scoredTracks[bingo.targetIndex]
+    : [];
+  const coopActive = isCoopMode(settings);
+  let myScoredTarget = false;
+  if (coopActive) {
+    const cnt = getCoopSlotCount(mePlayer.id);
+    for (let slot = 0; slot < cnt; slot++) {
+      if (scoredList.includes(getCoopScoreKey(mePlayer.id, slot))) { myScoredTarget = true; break; }
+    }
+    if (!myScoredTarget && Boolean((bingo.coopLockout || {})[mePlayer.id])) myScoredTarget = true;
+  } else {
+    myScoredTarget = scoredList.includes(trackKey);
+  }
+  const cyclingForMe = bingo.cycling && !myScoredTarget;
   const tilesHtml = items.map((item, i) => {
-    const isLit = bingo.cycling && i === bingo.currentLitIndex && activeViewer;
+    const isLit = cyclingForMe && i === bingo.currentLitIndex && activeViewer;
     const isMine = isWen ? false : collected.includes(i);
     let cls = "bingo-tile";
     if (isLit) cls += " is-lit";
     if (isMine) cls += " is-mine";
     return `<span class="${cls}">${item}</span>`;
   }).join("");
-  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isProducer() && activeViewer;
-  const coopActive = isCoopMode(settings);
+  const canBuzz = bingo.active && cyclingForMe && !isControllerPlayer() && !isProducer() && activeViewer;
   const waitHint = bingo.active && bingo.cycling && settings.bingoAlternateViewers && isSharedTeam && !activeViewer
     ? `<p class="muted bingo-wait-hint">${getSnark("player.bingo.waitForTeammate", "Wait for your teammate to call the letter!")}</p>`
+    : "";
+  const scoredHint = bingo.active && bingo.cycling && myScoredTarget
+    ? `<p class="muted bingo-scored-hint">${getSnark("player.bingo.alreadyScored", "You got it! Cycling continues for everyone else.")}</p>`
     : "";
   const notice = getRecentBuzzNotice();
   const scores = getScores();
@@ -5971,8 +6240,10 @@ function renderBingoPlayerPanel(settings, mePlayer) {
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
         ${waitHint}
+        ${scoredHint}
         ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
       </div>`}
+      ${coopActive ? scoredHint : ""}
       ${canBuzz ? `<p class="muted bingo-space-hint">${getSnark("player.bingo.spaceHint", "Tip: <kbd>Space</kbd> buzzes too.")}</p>` : ""}
       <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
@@ -5986,6 +6257,9 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
   const deviceId = mePlayer.id;
   const count = getCoopSlotCount(deviceId);
   const lockout = bingo.coopLockout || {};
+  const scoredList = Array.isArray((bingo.scoredTracks || {})[bingo.targetIndex])
+    ? bingo.scoredTracks[bingo.targetIndex]
+    : [];
   const cols = [];
   for (let slot = 0; slot < count; slot++) {
     const key = getCoopScoreKey(deviceId, slot);
@@ -5993,12 +6267,16 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
     const hint = getCoopKeyHint(slot, count);
     const collected = ((bingo.playerItems || {})[key] || []).length;
     const locked = lockout[deviceId] && lockout[deviceId] !== key;
+    const scored = scoredList.includes(key);
     const muted = isCoopSlotMuted(settings, deviceId, slot) || isCoopSlotFrozen(deviceId, slot);
-    const off = !canBuzz || !activeViewer || locked || muted;
+    const off = !canBuzz || !activeViewer || locked || muted || scored;
+    const statusMsg = scored
+      ? getSnark("player.bingo.alreadyScored", "You got it! Cycling continues for everyone else.")
+      : (locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : "");
     cols.push(`
-      <div class="coop-slot${locked ? " is-locked" : ""}">
+      <div class="coop-slot${locked || scored ? " is-locked" : ""}">
         <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()))}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
-        <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : ""}</p>
+        <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${statusMsg}</p>
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
       </div>`);
   }
@@ -9319,7 +9597,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
               <label>
                 Producer password
-                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${hasHostPrivileges() ? escapeHtml(getSafeState("producerPassword", "")) : "•••••"}</div>
+                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${isHost() && getHostProducerPassword() ? escapeHtml(getHostProducerPassword()) : "•••••"}</div>
                 <p class="setting-helper">Share this 5-digit code with your producers (producer option under host menu).</p>
               </label>
               <label>
@@ -10567,16 +10845,27 @@ function handleBingoSpaceKeydown(event) {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   if (!isBingoActiveViewer(bingo, bingo.currentLitSlot, self.id, settings, assignments)) return;
+  // A client that already scored this target sees frozen bingo — space must
+  // not re-buzz (the host rejects it anyway, but don't even send it).
+  const scoredList = Array.isArray((bingo.scoredTracks || {})[bingo.targetIndex])
+    ? bingo.scoredTracks[bingo.targetIndex]
+    : [];
   let slot = null;
   if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) {
     const lockout = bingo.coopLockout || {};
     for (let s = 0; s < getCoopSlotCount(self.id); s++) {
       if (isCoopSlotFrozen(self.id, s) || isCoopSlotMuted(settings, self.id, s)) continue;
       if (lockout[self.id] && lockout[self.id] !== getCoopScoreKey(self.id, s)) continue;
+      if (scoredList.includes(getCoopScoreKey(self.id, s))) continue;
       slot = s;
       break;
     }
     if (slot === null) return;
+  } else {
+    const myKey = isCoopMode(settings)
+      ? getCoopScoreKey(self.id, 0)
+      : getTeamTrackKey(self.id, settings, assignments);
+    if (scoredList.includes(myKey)) return;
   }
   event.preventDefault();
   submitBingoBuzz(slot);
@@ -10697,6 +10986,29 @@ function handleCoopBuzzKeydown(event) {
 async function submitBingoBuzz(slot = null) {
   if (isControllerPlayer() || isProducer()) return;
   const bState = getBingo();
+  if (bState.active && bState.cycling) {
+    const scoredList = Array.isArray((bState.scoredTracks || {})[bState.targetIndex])
+      ? bState.scoredTracks[bState.targetIndex]
+      : [];
+    const self = me();
+    if (self?.id) {
+      const settings = getSettings();
+      const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+      let myKey = null;
+      if (isCoopMode(settings)) {
+        const count = getCoopSlotCount(self.id);
+        if (count > 1 && Number.isInteger(slot) && slot >= 0 && slot < count) myKey = getCoopScoreKey(self.id, slot);
+        else if (count <= 1) myKey = getCoopScoreKey(self.id, 0);
+      } else {
+        myKey = getTeamTrackKey(self.id, settings, assignments);
+      }
+      if (myKey && scoredList.includes(myKey)) {
+        setBuzzNotice(getSnark("player.bingo.alreadyScored", "You got it! Cycling continues for everyone else."));
+        scheduleRender(render);
+        return;
+      }
+    }
+  }
   const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
   if (slot !== null && slot !== undefined) payload.coopSlot = slot;
   try {
@@ -11201,7 +11513,10 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
     }
-    const storedPassword = getSafeState("producerPassword", "");
+    const storedPassword = getHostProducerPassword();
+    if (!/^\d{5}$/.test(storedPassword || "")) {
+      return { ok: false, reason: "Invalid producer password." };
+    }
     if (payload?.password === storedPassword) {
       const current = getSafeState("producerIds", []);
       if (!Array.isArray(current) || !current.includes(senderPlayer.id)) {
@@ -11309,7 +11624,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   setInterval(() => {
     if (!isBingoMode()) return;
     const b = getBingo();
-    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${JSON.stringify(b.coopLockout || {})}|${b.winner || ""}`;
+    const key = `${b.active}|${b.cycling}|${b.currentLitIndex}|${b.currentLitSlot}|${b.targetIndex}|${JSON.stringify(b.items)}|${JSON.stringify(b.itemStates)}|${JSON.stringify(b.playerItems || {})}|${JSON.stringify(b.collectedCounts || {})}|${JSON.stringify(b.coopLockout || {})}|${JSON.stringify(b.scoredTracks || {})}|${b.winner || ""}`;
     if (key === lastBingoRenderKey) return;
     lastBingoRenderKey = key;
     scheduleRender(render);
