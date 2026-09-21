@@ -1128,6 +1128,29 @@ async function decryptProducerPassword(stored) {
   return new TextDecoder().decode(plainBuf);
 }
 
+// Unbiased 5-digit PIN in [10000, 100000) via rejection sampling.
+// Uses browser WebCrypto (crypto.getRandomValues) — NOT node:crypto's
+// randomInt, which doesn't exist in browsers. Falls back to Math.random
+// only when WebCrypto is unavailable (non-secure contexts / stubs).
+function randomProducerPin() {
+  const min = 10000;
+  const range = 90000;
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const maxU32 = 0xffffffff;
+      const limit = maxU32 - (maxU32 % range);
+      const buf = new Uint32Array(1);
+      let x;
+      do {
+        crypto.getRandomValues(buf);
+        x = buf[0];
+      } while (x >= limit);
+      return min + (x % range);
+    }
+  } catch {}
+  return Math.floor(min + Math.random() * range);
+}
+
 async function ensureHostProducerPassword() {
   if (!isHost()) return "";
   if (/^\d{5}$/.test(hostProducerPassword || "")) return hostProducerPassword;
@@ -1143,7 +1166,7 @@ async function ensureHostProducerPassword() {
       return hostProducerPassword;
     }
   } catch {}
-  hostProducerPassword = String(crypto.randomInt(10000, 100000));
+  hostProducerPassword = String(randomProducerPin());
   try {
     const encrypted = await encryptProducerPassword(hostProducerPassword);
     localStorage.setItem(PRODUCER_PASSWORD_KEY, encrypted);
