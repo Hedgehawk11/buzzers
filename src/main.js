@@ -1143,7 +1143,8 @@ async function ensureHostProducerPassword() {
       return hostProducerPassword;
     }
   } catch {}
-  hostProducerPassword = String(Math.floor(10000 + Math.random() * 90000));
+  const randomU32 = crypto.getRandomValues(new Uint32Array(1))[0];
+  hostProducerPassword = String(10000 + (randomU32 % 90000));
   try {
     const encrypted = await encryptProducerPassword(hostProducerPassword);
     localStorage.setItem(PRODUCER_PASSWORD_KEY, encrypted);
