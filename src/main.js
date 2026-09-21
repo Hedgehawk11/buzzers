@@ -130,6 +130,12 @@ let creditsFetchInFlight = false;
 let creditsDismissedAt = null;
 const COOP_COUNT_KEY = "buzzer_coop_count";
 const COOP_NAMES_KEY = "buzzer_coop_names";
+const PRODUCER_PASSWORD_KEY = "buzzer_producer_password";
+// Producer password is host-local only (never shared PlayroomKit state —
+// room state is synced to every client, so broadcasting it leaks the code).
+// Persisted in localStorage so a same-device host reload keeps the code;
+// a new host device generates a fresh one.
+let hostProducerPassword = "";
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -1055,6 +1061,28 @@ function isProducer() {
 
 function hasHostPrivileges() {
   return isHost() || isProducer();
+}
+
+// Host-local producer password. Returns "" on non-host clients so the code
+// can never be read from a broadcast or rendered off-host.
+function getHostProducerPassword() {
+  if (!isHost()) return "";
+  return typeof hostProducerPassword === "string" ? hostProducerPassword : "";
+}
+
+function ensureHostProducerPassword() {
+  if (!isHost()) return "";
+  if (/^\d{5}$/.test(hostProducerPassword || "")) return hostProducerPassword;
+  try {
+    const stored = localStorage.getItem(PRODUCER_PASSWORD_KEY);
+    if (/^\d{5}$/.test(stored || "")) {
+      hostProducerPassword = stored;
+      return hostProducerPassword;
+    }
+  } catch {}
+  hostProducerPassword = String(Math.floor(10000 + Math.random() * 90000));
+  try { localStorage.setItem(PRODUCER_PASSWORD_KEY, hostProducerPassword); } catch {}
+  return hostProducerPassword;
 }
 
 async function producerDispatch(fnName, ...args) {
@@ -5810,10 +5838,15 @@ function ensureHostInit() {
   if (!getState("fibbage")) {
     setState("fibbage", freshFibbageState(), true);
   }
-  if (!getState("producerPassword")) {
-    const password = String(Math.floor(10000 + Math.random() * 90000));
-    setState("producerPassword", password, true);
-  }
+  // Producer password is host-local only (shared room state is readable by
+  // every client). Wipe any legacy broadcast value, then ensure the local
+  // code exists. Never setState() the real password.
+  ensureHostProducerPassword();
+  try {
+    if (getState("producerPassword") !== null && getState("producerPassword") !== undefined) {
+      setState("producerPassword", null, true);
+    }
+  } catch {}
   if (!getState("producerIds")) {
     setState("producerIds", [], true);
   } else {
@@ -6066,18 +6099,39 @@ function renderBingoPlayerPanel(settings, mePlayer) {
   const items = bingo.items;
   const collected = (bingo.playerItems?.[trackKey] || []);
   const activeViewer = isBingoActiveViewer(bingo, bingo.currentLitSlot, mePlayer.id, settings, assignments);
+  // The scorer's own screen freezes on a correct buzz while cycling continues
+  // for everyone else (multiple-correct mode). scoredTracks carries every
+  // track that already scored the live target, so this client can tell it is
+  // done without any local-only UI state (which would never sync).
+  const scoredList = Array.isArray((bingo.scoredTracks || {})[bingo.targetIndex])
+    ? bingo.scoredTracks[bingo.targetIndex]
+    : [];
+  const coopActive = isCoopMode(settings);
+  let myScoredTarget = false;
+  if (coopActive) {
+    const cnt = getCoopSlotCount(mePlayer.id);
+    for (let slot = 0; slot < cnt; slot++) {
+      if (scoredList.includes(getCoopScoreKey(mePlayer.id, slot))) { myScoredTarget = true; break; }
+    }
+    if (!myScoredTarget && Boolean((bingo.coopLockout || {})[mePlayer.id])) myScoredTarget = true;
+  } else {
+    myScoredTarget = scoredList.includes(trackKey);
+  }
+  const cyclingForMe = bingo.cycling && !myScoredTarget;
   const tilesHtml = items.map((item, i) => {
-    const isLit = bingo.cycling && i === bingo.currentLitIndex && activeViewer;
+    const isLit = cyclingForMe && i === bingo.currentLitIndex && activeViewer;
     const isMine = isWen ? false : collected.includes(i);
     let cls = "bingo-tile";
     if (isLit) cls += " is-lit";
     if (isMine) cls += " is-mine";
     return `<span class="${cls}">${item}</span>`;
   }).join("");
-  const canBuzz = bingo.active && bingo.cycling && !isControllerPlayer() && !isProducer() && activeViewer;
-  const coopActive = isCoopMode(settings);
+  const canBuzz = bingo.active && cyclingForMe && !isControllerPlayer() && !isProducer() && activeViewer;
   const waitHint = bingo.active && bingo.cycling && settings.bingoAlternateViewers && isSharedTeam && !activeViewer
     ? `<p class="muted bingo-wait-hint">${getSnark("player.bingo.waitForTeammate", "Wait for your teammate to call the letter!")}</p>`
+    : "";
+  const scoredHint = bingo.active && bingo.cycling && myScoredTarget
+    ? `<p class="muted bingo-scored-hint">${getSnark("player.bingo.alreadyScored", "You got it! Cycling continues for everyone else.")}</p>`
     : "";
   const notice = getRecentBuzzNotice();
   const scores = getScores();
@@ -6097,8 +6151,10 @@ function renderBingoPlayerPanel(settings, mePlayer) {
       <div class="bingo-buzz-area">
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz ${canBuzz ? "" : "disabled"}>BUZZ${canBuzz ? "!" : ""}</button>
         ${waitHint}
+        ${scoredHint}
         ${notice ? `<p class="muted bingo-notice">${notice}</p>` : ""}
       </div>`}
+      ${coopActive ? scoredHint : ""}
       ${canBuzz ? `<p class="muted bingo-space-hint">${getSnark("player.bingo.spaceHint", "Tip: <kbd>Space</kbd> buzzes too.")}</p>` : ""}
       <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
       ${winnerLabel ? `<p class="bingo-winner-msg">${getSnark("player.bingo.winnerMsg", `${winnerLabel} wins!`, { winner: winnerLabel })}</p>` : ""}
@@ -6112,6 +6168,9 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
   const deviceId = mePlayer.id;
   const count = getCoopSlotCount(deviceId);
   const lockout = bingo.coopLockout || {};
+  const scoredList = Array.isArray((bingo.scoredTracks || {})[bingo.targetIndex])
+    ? bingo.scoredTracks[bingo.targetIndex]
+    : [];
   const cols = [];
   for (let slot = 0; slot < count; slot++) {
     const key = getCoopScoreKey(deviceId, slot);
@@ -6119,12 +6178,16 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
     const hint = getCoopKeyHint(slot, count);
     const collected = ((bingo.playerItems || {})[key] || []).length;
     const locked = lockout[deviceId] && lockout[deviceId] !== key;
+    const scored = scoredList.includes(key);
     const muted = isCoopSlotMuted(settings, deviceId, slot) || isCoopSlotFrozen(deviceId, slot);
-    const off = !canBuzz || !activeViewer || locked || muted;
+    const off = !canBuzz || !activeViewer || locked || muted || scored;
+    const statusMsg = scored
+      ? getSnark("player.bingo.alreadyScored", "You got it! Cycling continues for everyone else.")
+      : (locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : "");
     cols.push(`
-      <div class="coop-slot${locked ? " is-locked" : ""}">
+      <div class="coop-slot${locked || scored ? " is-locked" : ""}">
         <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()))}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
-        <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : ""}</p>
+        <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${statusMsg}</p>
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
       </div>`);
   }
@@ -9445,7 +9508,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
               <label>
                 Producer password
-                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${hasHostPrivileges() ? escapeHtml(getSafeState("producerPassword", "")) : "•••••"}</div>
+                <div class="room-code-badge" style="font-size:1.2rem;letter-spacing:0.3em;margin-top:0.3rem">${isHost() && getHostProducerPassword() ? escapeHtml(getHostProducerPassword()) : "•••••"}</div>
                 <p class="setting-helper">Share this 5-digit code with your producers (producer option under host menu).</p>
               </label>
               <label>
@@ -10693,16 +10756,27 @@ function handleBingoSpaceKeydown(event) {
   const settings = getSettings();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
   if (!isBingoActiveViewer(bingo, bingo.currentLitSlot, self.id, settings, assignments)) return;
+  // A client that already scored this target sees frozen bingo — space must
+  // not re-buzz (the host rejects it anyway, but don't even send it).
+  const scoredList = Array.isArray((bingo.scoredTracks || {})[bingo.targetIndex])
+    ? bingo.scoredTracks[bingo.targetIndex]
+    : [];
   let slot = null;
   if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) {
     const lockout = bingo.coopLockout || {};
     for (let s = 0; s < getCoopSlotCount(self.id); s++) {
       if (isCoopSlotFrozen(self.id, s) || isCoopSlotMuted(settings, self.id, s)) continue;
       if (lockout[self.id] && lockout[self.id] !== getCoopScoreKey(self.id, s)) continue;
+      if (scoredList.includes(getCoopScoreKey(self.id, s))) continue;
       slot = s;
       break;
     }
     if (slot === null) return;
+  } else {
+    const myKey = isCoopMode(settings)
+      ? getCoopScoreKey(self.id, 0)
+      : getTeamTrackKey(self.id, settings, assignments);
+    if (scoredList.includes(myKey)) return;
   }
   event.preventDefault();
   submitBingoBuzz(slot);
@@ -10823,6 +10897,29 @@ function handleCoopBuzzKeydown(event) {
 async function submitBingoBuzz(slot = null) {
   if (isControllerPlayer() || isProducer()) return;
   const bState = getBingo();
+  if (bState.active && bState.cycling) {
+    const scoredList = Array.isArray((bState.scoredTracks || {})[bState.targetIndex])
+      ? bState.scoredTracks[bState.targetIndex]
+      : [];
+    const self = me();
+    if (self?.id) {
+      const settings = getSettings();
+      const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+      let myKey = null;
+      if (isCoopMode(settings)) {
+        const count = getCoopSlotCount(self.id);
+        if (count > 1 && Number.isInteger(slot) && slot >= 0 && slot < count) myKey = getCoopScoreKey(self.id, slot);
+        else if (count <= 1) myKey = getCoopScoreKey(self.id, 0);
+      } else {
+        myKey = getTeamTrackKey(self.id, settings, assignments);
+      }
+      if (myKey && scoredList.includes(myKey)) {
+        setBuzzNotice(getSnark("player.bingo.alreadyScored", "You got it! Cycling continues for everyone else."));
+        scheduleRender(render);
+        return;
+      }
+    }
+  }
   const payload = { litIndex: bState.currentLitIndex, litSlot: bState.currentLitSlot };
   if (slot !== null && slot !== undefined) payload.coopSlot = slot;
   try {
@@ -11327,7 +11424,10 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
     }
-    const storedPassword = getSafeState("producerPassword", "");
+    const storedPassword = getHostProducerPassword();
+    if (!/^\d{5}$/.test(storedPassword || "")) {
+      return { ok: false, reason: "Invalid producer password." };
+    }
     if (payload?.password === storedPassword) {
       const current = getSafeState("producerIds", []);
       if (!Array.isArray(current) || !current.includes(senderPlayer.id)) {
