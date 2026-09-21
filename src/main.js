@@ -1070,7 +1070,65 @@ function getHostProducerPassword() {
   return typeof hostProducerPassword === "string" ? hostProducerPassword : "";
 }
 
-function ensureHostProducerPassword() {
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function getProducerPasswordCryptoKey() {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(`producer-password:${getRoomCode() || "no-room"}:${location.origin}`),
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: enc.encode("instant-buzzers-producer-password-v1"),
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptProducerPassword(plain) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await getProducerPasswordCryptoKey();
+  const cipher = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(plain)
+  );
+  return `enc:v1:${bytesToBase64(iv)}:${bytesToBase64(new Uint8Array(cipher))}`;
+}
+
+async function decryptProducerPassword(stored) {
+  if (typeof stored !== "string" || !stored.startsWith("enc:v1:")) return "";
+  const parts = stored.split(":");
+  if (parts.length !== 4) return "";
+  const iv = base64ToBytes(parts[2]);
+  const data = base64ToBytes(parts[3]);
+  const key = await getProducerPasswordCryptoKey();
+  const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+  return new TextDecoder().decode(plainBuf);
+}
+
+async function ensureHostProducerPassword() {
   if (!isHost()) return "";
   if (/^\d{5}$/.test(hostProducerPassword || "")) return hostProducerPassword;
   try {
@@ -1079,9 +1137,17 @@ function ensureHostProducerPassword() {
       hostProducerPassword = stored;
       return hostProducerPassword;
     }
+    const decrypted = await decryptProducerPassword(stored || "");
+    if (/^\d{5}$/.test(decrypted || "")) {
+      hostProducerPassword = decrypted;
+      return hostProducerPassword;
+    }
   } catch {}
   hostProducerPassword = String(Math.floor(10000 + Math.random() * 90000));
-  try { localStorage.setItem(PRODUCER_PASSWORD_KEY, hostProducerPassword); } catch {}
+  try {
+    const encrypted = await encryptProducerPassword(hostProducerPassword);
+    localStorage.setItem(PRODUCER_PASSWORD_KEY, encrypted);
+  } catch {}
   return hostProducerPassword;
 }
 
