@@ -5,20 +5,20 @@ Vanilla JS SPA (Vite 8 + PlayroomKit 0.0.95). No framework, TS, linter, or test 
 
 ## Commands
 ```
-npm run dev          # vite dev server
-npm run dev-server   # vite --host (LAN multi-device)
-npm run build        # vite build → dist/ (verify after every change)
-npm run preview      # vite preview built output
-npm run test:harness     # node stub harness, coop-on run, 199 checks
-npm run test:harness:all  # both runs: HARNESS_COOP=on (199) + off (165)
+npm run dev              # vite dev server
+npm run dev-server       # vite --host (LAN multi-device)
+npm run build            # vite build → dist/ (verify after every change)
+npm run preview          # vite preview built output
+npm run test:harness     # coop-on run, ~246 checks
+npm run test:harness:all # both runs: HARNESS_COOP=on (~246) + off (~213)
 ```
 No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports. CI (`.github/workflows/node.js.yml`, node 20/22/24) runs only `npm run build` — the harness never runs in CI, so run it locally.
 
 ## Key structure
-- `src/main.js` (~10900 lines) — entire game: state, RPC, render assembly. Game logic goes here.
-- `src/render.js` (~475 lines) — resilient renderer: rAF scheduler, delegated bus, input preservation (`[data-log-input]` keyed by entry id), `transitionMount` (`:423`), `showToast`, score-delta, smooth timer. Only split from `main.js` — keep it that way.
+- `src/main.js` (~11.6k lines) — entire game: state, RPC, render assembly. Game logic goes here. Function names are stable; line numbers rot fast, so grep instead of trusting any cited line.
+- `src/render.js` (~480 lines) — resilient renderer: rAF scheduler, delegated bus, input preservation (`[data-log-input]` keyed by entry id), `transitionMount`, `showToast`, score-delta, smooth timer. Only split from `main.js` — keep it that way.
 - `src/snark.json` (~1475 lines) — `screen.group.key → {en,snark1,snark2}` with `{token}`. All player strings via `getSnark()`. **Vars are `escapeHtml`'d by `getSnark`** — pass raw values; pre-wrapped `<strong>` double-escapes in snark modes (off mode returns the fallback as-is, so keep its inline HTML).
-- `src/style.css` (~2670 lines) — flat CSS, custom properties, no modules. Font stack is Segoe-first (`"Segoe UI", system-ui, …`) — Avenir was dropped (missing/ugly off-Mac). `body:has(...)` backgrounds are order-dependent: screw block is deliberately last (wins ties).
+- `src/style.css` (~2.8k lines) — flat CSS, custom properties, no modules. Font stack is Segoe-first (`"Segoe UI", system-ui, …`) — Avenir was dropped (missing/ugly off-Mac). `body:has(...)` backgrounds are order-dependent: screw block is deliberately last (wins ties).
 - `index.html` — `<div id="app">` + `<div id="toast-layer">` + `src/main.js` + footer.
 - `vite.config.js` — `VitePWA` only. Workbox precaches `gif` (coop faces).
 - `test-harness/` — node ESM harness stubbing PlayroomKit + DOM, drives real RPC handlers (`run.mjs`, `dom-stub.mjs`/`pk-stub.mjs`/`empty-style.mjs`, `hooks.mjs`).
@@ -27,21 +27,22 @@ No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — s
 - **PlayroomKit** (`insertCoin({skipLobby:true, maxPlayersPerRoom:42})`) — host is SSOT via `setState(k,v,true)` (reliable). Players → host via `RPC.call(…,RPC.Mode.HOST)`. Hash cleared via `history.replaceState` before `insertCoin`.
 - Round: `IDLE → OPEN → LOCKED/ROULETTE → CLOSED → IDLE` (`ROUND_STATUSES`). Host drives `setState("round",…)`. Round shape has a null-invariant: `coopControl`/`winnerCoopKey`/`correctOptions`/`correctAnswer` are `null` when absent — `resetRound`/`open`/`close`/finalize must all write `null`, never drop keys (`undefined` breaks signature + strict checks).
 - Roles: `player` | `host` | `producer` | `display` | `tablet_timer`. `clientMode` picks render path. `isAudienceDisplayClient()` true for display/tablet.
-- **Auth model**: `producer-action` requires sender ∈ `producerIds` — any other sender gets `{ok:false}`. `screw` victim-pick requires sender = screwer or producer. Producer password is broadcast state; only host/producer clients render it. No rate-limiting on `claim-producer` (accepted risk).
+- **Auth model**: `producer-action` requires sender ∈ `producerIds` — any other sender gets `{ok:false}`. `screw` victim-pick requires sender = screwer or producer. Producer password is **host-local only, never broadcast**: held in a module var, persisted to `localStorage` as `enc:v1:` AES-GCM (PBKDF2 key from room code + origin); the shared `producerPassword` key is legacy and always wiped to `null`. Only host/producer clients render the code. No rate-limiting on `claim-producer` (accepted risk).
+- **Crypto rule**: browsers have only WebCrypto (`crypto.getRandomValues`/`crypto.subtle`) — never `node:crypto` (`randomInt` etc.), which broke prod + harness before. Unbiased PINs go through `randomProducerPin()` (rejection sampling + `Math.random` fallback); reuse it, don't re-derive.
 - **Host per-player powers** (all producer callable via `producer-action`): manual score adjust (NaN/zero are no-ops, never write non-finite), rename via `customNames` (blank clears the key), per-player screw block (`settings.screwBlockedPlayerIds`, enforced at `screw` RPC), kick/re-admit (`settings.kickedPlayerIds` — kicked can't buzz, shown as removed in host panel). All ids pruned to live players in `ensureHostInit`. Global **Reset scores** (`resetAllScores`, also producer-callable) zeroes every key including `team:*` totals — writes `0`, never deletes keys — and logs one `manual-reset` entry so the signature flips.
-- Shared keys (all `,true`): `settings`, `round`, `scores`, `gameLog`, `bingo`, `disordat`, `fibbage`, `teamAssignments`/`teamSelect`, `controllerId`, `producerPassword`/`producerIds`, `customNames` (host renames), `credits` + `roomCodeSpotlight` (host-written broadcasts, both in the signature), plus coop `coopRosters`/`coopMoods`/`coopLastCorrect`. `ensureHostInit()` seeds defaults, prunes departed rosters/scores/`buzzedPlayerIds`/`coopControl`/`coopMoods`/`coopLastCorrect`/`customNames`/kicked+screw-blocked ids, forces alliance when coop is on.
-- `getUiSignature()` (`main.js:1277`) is the dirty-check for the 1s host tick and 250ms audience poll. It carries `scores` + a bounded `gameLogDigest` (`id/awardedDelta/resolved/basePoints/result/scoreKey`) + `coopLastCorrect`/`buzzCounts`/presets + the `credits`/`roomCodeSpotlight` broadcast states — **any score/log/broadcast change must flip it** or remote screens go stale (their tick otherwise only patches timers). Never put full `gameLog` back in (unbounded stringify every 250ms/display).
+- Shared keys (all `,true`): `settings`, `round`, `scores`, `gameLog`, `bingo`, `disordat`, `fibbage`, `quixort`, `teamAssignments`/`teamSelect`, `controllerId`, `producerIds`, `customNames` (host renames), `credits` + `roomCodeSpotlight` + `analyticsSpotlight` (host-written broadcasts, all in the signature), plus coop `coopRosters`/`coopMoods`/`coopLastCorrect`. `ensureHostInit()` seeds defaults, prunes departed rosters/scores/`buzzedPlayerIds`/`coopControl`/`coopMoods`/`coopLastCorrect`/`customNames`/kicked+screw-blocked ids, forces alliance when coop is on.
+- `getUiSignature()` is the dirty-check for the 1s host tick and 250ms audience poll. It carries `scores` + a bounded `gameLogDigest` (per-entry `id/awardedDelta/resolved/basePoints/result/scoreKey/roundId/type/option/answerText/playerId/coopKey`) + `coopLastCorrect`/`buzzCounts`/presets + `controllerId`/`producerIds`/`pendingLogId` + the `credits`/`roomCodeSpotlight`/`analyticsSpotlight` broadcasts + compact `disordat`/`fibbage`/`quixort` summaries — **any score/log/broadcast change must flip it** or remote screens go stale (their tick otherwise only patches timers). Never put full `gameLog` back in (unbounded stringify every 250ms/display).
 - **Room-code spotlight** (`roomCodeSpotlight: {active, startedAt}`, host-written like `credits`): the host CTA card (`renderRoomCodeSpotlightHostCta`, mounted beside every credits CTA) forces the mega modal onto all audience displays. Display-side badge/close drives only the local/auto modal — it never clears the spotlight; only the host ending it does. Host-only: producers never see the CTA.
 - **Credits overlay** (`credits: {active, startedAt}`, host-written; tablet excluded, local dismiss per screen): player sections come from `getCreditsPlayerSections()` — coop groups, otherwise teams whenever team mode is on (shared reads the `team:*` total, alliance sums member totals, unassigned players trail as their own section), else flat individuals.
 - `updateTimerDisplays()` patches `data-*` timers without full `render()`; it also sets `data-timer-urgent` when ≤10s remain (drives the urgency pulse — patch-only, never add it to the signature).
 - Timers: handlers enforce wall-clock (`timeEndsAt`/`voteEndsAt` with `>=`); the 1s `hostTick` only backstops. Screw without a started timer auto-releases after 60s (`activatedAt`); `startScrewTimer` won't extend a running timer.
 
 ## Renderer (do not revert to per-render rebinding)
-- `render()` (`main.js:9358`) assembles HTML, mounts via `transitionMount` (250ms out/in, interrupts pending, respects `uiAnimationsEnabled`/`prefers-reduced-motion`). Mode keys only change between gamemodes.
-- Delegated events: `bindEvents()` (`main.js:9648`) runs once (`delegatedBound`), `delegate(type, selector, fn)`. `render.js` attaches types registered before `#app` exists once it resolves (via `initRenderer` + `getApp`). Never add per-render listeners.
+- `render()` assembles HTML, mounts via `transitionMount` (250ms out/in, interrupts pending, respects `uiAnimationsEnabled`/`prefers-reduced-motion`). Mode keys only change between gamemodes.
+- Delegated events: `bindEvents()` runs once (`delegatedBound`), `delegate(type, selector, fn)`. `render.js` attaches types registered before `#app` exists once it resolves (via `initRenderer` + `getApp`). Never add per-render listeners.
 - `scheduleRender(render)` coalesces callers into one rAF with input capture/restore. `renderImmediate` for prejoin only.
 - Local-only UI state (modal open/dismiss flags, `coopEditing`) lives in module vars — never shared PlayroomKit state, or every screen would mirror one screen's popup.
-- `PRESERVED_INPUT_IDS` (`render.js`) + generic focused-input fallback — no manual draft logic. `isEditingControl()` (`main.js:10288`) treats any focused input/select/textarea as editing (Q/B/P/space suppressed).
+- `PRESERVED_INPUT_IDS` (`render.js`) + generic focused-input fallback — no manual draft logic. `isEditingControl()` treats any focused input/select/textarea as editing (Q/B/P/space suppressed).
 - `setBuzzNotice` auto-toasts to `#toast-layer` (top-right, limit 3). No bottom notice bar (removed).
 - Score delta: `renderScores` emits `data-score-key`/`data-score-value`; `applyScoreDeltas` adds the `::after` pill, which floats **above** the row (never over the number). Audience never shows deltas (guard + CSS).
 - Smooth timer is display-only; 1s `hostTick` stays authoritative.
@@ -58,7 +59,7 @@ No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — s
 - **Correct-solution lockout is per-device**: ruling positive appends the solving device's remaining slots to `buzzedPlayerIds`; other groups keep playing. Must run **after** all round writes — ruling branches spread a stale `round` snapshot that wipes it.
 - Bingo/Wen are coop-adapted (per-slot tracks, sibling lockout till next target, last-place auto-pick + host override). Fibbage + DisOrDat have no coop model — keep it that way. Bingo trusts client `litIndex` by decision (forgery possible; strict validation was considered and skipped).
 - Roulette stays **device-level by decision** (ceiling ÷ devices, device-keyed stops) with a **frozen roster** (`expectedPlayerIds` snapshot at phase start): late joiners sit out, departs don't early-finalize, single-player target-leave finalizes at 0. Each group fields its last-correct rep (`coopLastCorrect`), telegraphed by dance/highlight. `startRoulettePhase` also calls `startRouletteAnimationLoop`, but that is just a backup — the loop is session-persistent (started once at login on every client, cheap status check when idle, never self-clears) so all screens animate every phase. Do not reintroduce self-clearing or only the host will animate. `openBuzzers` with roulette method and no `finalValue` stays blocked (empty-player roulette goes straight to OPEN — set a value first).
-- Faces: `public/avatars.md` is the spec (`{slot}-{buzz,dance,correct,wrong}.*`, correct/wrong = filmstrips, frames auto-detected). Only `*-dance.gif` exist on disk and all avatar GIFs are gitignored by decision — fresh deploys 404 probes and fall back silently; rank-1 badge collides with `1.gif`. `correct` self-clears after ~1.5s; `wrong` holds until reset/roulette-exit/re-buzz. Audience forced `idle`.
+- Faces: `public/avatars.md` is the spec (`{slot}-{buzz,dance,correct,wrong}.*`, correct/wrong = filmstrips, frames auto-detected). All avatar GIFs are gitignored by decision — local `1/2/3(.gif)` + `*-dance.gif` exist here but fresh deploys 404-probe and fall back silently; rank-1 badge collides with `1.gif`. `correct` self-clears after ~1.5s; `wrong` holds until reset/roulette-exit/re-buzz. Audience forced `idle`.
 - Mobile multi-slot blocked (`isMobileDevice`: coarse pointer + narrow); 1P exempt.
 
 ## Verification (no test runner — use these)
