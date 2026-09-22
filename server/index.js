@@ -21,6 +21,7 @@ import { randomInt, randomBytes, scrypt as scryptCb, timingSafeEqual } from "nod
 import { promisify } from "node:util";
 import { normalizeEpisode, validateEpisode } from "../src/episodes/schema.js";
 import { getEpisodesCollection, closeDb } from "./db.js";
+import { createRateLimiter } from "./ratelimit.js";
 
 const scrypt = promisify(scryptCb);
 
@@ -66,15 +67,41 @@ function publicDoc(doc) {
   return { code: doc.code, episode: doc.episode, updatedAt: doc.updatedAt };
 }
 
-export function createApp(store) {
+export function createApp(store, options = {}) {
   const app = express();
+  // Only trust X-Forwarded-For when explicitly behind a proxy — otherwise a
+  // client could spoof it to rotate rate-limit identities.
+  if (process.env.TRUST_PROXY) app.set("trust proxy", 1);
   app.use(express.json({ limit: MAX_BODY }));
 
   const getStore = async () => store || getEpisodesCollection();
 
+  // Rate limits: generous general bucket, tight buckets on DB-writing /
+  // password-guessing routes. Env-tunable (options.limits wins in tests).
+  const envMax = (name, fallback) => {
+    const n = Number(process.env[name]);
+    return Number.isInteger(n) && n > 0 ? n : fallback;
+  };
+  const WINDOW_MS = 15 * 60 * 1000;
+  const limits = {
+    general: { windowMs: WINDOW_MS, max: envMax("RATE_GENERAL_MAX", 300), ...(options.limits?.general || {}) },
+    save: { windowMs: WINDOW_MS, max: envMax("RATE_SAVE_MAX", 30), ...(options.limits?.save || {}) },
+    overwrite: { windowMs: WINDOW_MS, max: envMax("RATE_OVERWRITE_MAX", 15), ...(options.limits?.overwrite || {}) },
+  };
+  const clientIp = (req) => req.ip || req.socket?.remoteAddress || "unknown";
+  // Limiter-first ordering matters: rejected requests never reach validation
+  // or scrypt, so abuse can't burn CPU/Mongo either.
+  app.use("/api/", createRateLimiter({ ...limits.general, key: clientIp }));
+  const saveLimiter = createRateLimiter({ ...limits.save, key: clientIp, message: "Too many saves — try again later." });
+  const overwriteLimiter = createRateLimiter({
+    ...limits.overwrite,
+    key: (req) => `${clientIp(req)}:${String(req.params.code || "").toUpperCase()}`,
+    message: "Too many password attempts — try again later.",
+  });
+
   app.get("/api/health", (req, res) => res.json({ ok: true }));
 
-  app.post("/api/episodes", async (req, res) => {
+  app.post("/api/episodes", saveLimiter, async (req, res) => {
     try {
       const episode = normalizeEpisode(req.body?.episode);
       const { ok, errors } = validateEpisode(episode);
@@ -119,7 +146,7 @@ export function createApp(store) {
     }
   });
 
-  app.put("/api/episodes/:code", async (req, res) => {
+  app.put("/api/episodes/:code", overwriteLimiter, async (req, res) => {
     try {
       const code = String(req.params.code || "").toUpperCase();
       if (!CODE_RE.test(code)) return res.status(404).json({ ok: false, reason: "Unknown code." });

@@ -1444,6 +1444,8 @@ const epui = await import("../src/episodes/ui.js");
   });
   const base = `http://127.0.0.1:${srv.address().port}`;
   epApi.configureEpisodeApiUrl(base);
+  let rateLimitCode = null;
+  let rateLimitEp = null;
   try {
     check("cloud enabled with server", (await epApi.isEpisodeCloudEnabled()) === true, "health check failed");
     const cloudEp = {
@@ -1453,6 +1455,8 @@ const epui = await import("../src/episodes/ui.js");
       items: [{ id: "c1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
     };
     const saved = await epApi.saveEpisode(cloudEp, "secret-1");
+    rateLimitCode = saved.code;
+    rateLimitEp = cloudEp;
     check("save mints code", /^[A-Z2-9]{6}$/.test(saved.code), JSON.stringify(saved));
     let threw = null;
     try { await epApi.saveEpisode({ schemaVersion: 1, meta: {}, defaults: {}, items: [] }, "secret-1"); } catch (e) { threw = e; }
@@ -1479,6 +1483,51 @@ const epui = await import("../src/episodes/ui.js");
   } finally {
     epApi.configureEpisodeApiUrl("");
     await new Promise((resolve) => srv.close(resolve));
+  }
+  // Rate limits: tiny buckets prove the wiring without hammering hundreds
+  // of requests. Separate apps so the general bucket doesn't trip the
+  // overwrite test (every /api/ request counts toward general).
+  const generalSrv = await new Promise((resolve) => {
+    const s = epServer
+      .createApp(fakeStore, { limits: { general: { windowMs: 60000, max: 3 } } })
+      .listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const generalBase = `http://127.0.0.1:${generalSrv.address().port}`;
+  try {
+    const statuses = [];
+    for (let i = 0; i < 4; i++) {
+      statuses.push((await fetch(`${generalBase}/api/health`)).status);
+    }
+    check("general limit trips", JSON.stringify(statuses) === "[200,200,200,429]", JSON.stringify(statuses));
+    const limitedRes = await fetch(`${generalBase}/api/health`);
+    const limitedBody = await limitedRes.json().catch(() => ({}));
+    check("limited response shape", limitedRes.status === 429 && limitedBody.ok === false && typeof limitedBody.reason === "string", `${limitedRes.status} ${JSON.stringify(limitedBody)}`);
+    check("retry-after header", limitedRes.headers.get("retry-after") !== null, "no Retry-After");
+  } finally {
+    await new Promise((resolve) => generalSrv.close(resolve));
+  }
+  const guessSrv = await new Promise((resolve) => {
+    const s = epServer
+      .createApp(fakeStore, { limits: { general: { windowMs: 60000, max: 1000 }, overwrite: { windowMs: 60000, max: 2 } } })
+      .listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const guessBase = `http://127.0.0.1:${guessSrv.address().port}`;
+  try {
+    // Overwrite bucket is per IP+code and runs before auth: two bad guesses
+    // 401, the third 429s without ever reaching scrypt.
+    const putStatuses = [];
+    for (let i = 0; i < 3; i++) {
+      putStatuses.push(
+        (await fetch(`${guessBase}/api/episodes/${rateLimitCode}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ episode: rateLimitEp, ownerPassword: "wrong" }),
+        })).status,
+      );
+    }
+    check("overwrite guesses limited", JSON.stringify(putStatuses) === "[401,401,429]", JSON.stringify(putStatuses));
+  } finally {
+    await new Promise((resolve) => guessSrv.close(resolve));
   }
   check("cloud disabled after reset", (await epApi.isEpisodeCloudEnabled()) === false, "override stuck");
 }
