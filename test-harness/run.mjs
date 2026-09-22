@@ -1229,6 +1229,259 @@ await sleep(50);
   const html = _mount.innerHTML;
   check("new round shows waiting analytics", html.includes("data-analytics-card") && html.includes("still open") && !html.includes("67%"), "stale percentages lingered");
 }
+// --- episode schema v1: validator (mode-independent) ---
+const eps = await import("../src/episodes/schema.js");
+function validEp() {
+  return {
+    schemaVersion: 1,
+    meta: { title: "Test Ep", author: "Host", createdAt: "2026-01-01T00:00:00.000Z" },
+    defaults: { scoringMode: "uniform", uniformPoints: 1000, timeOpen: 20, lockAfterBuzz: false, rebuzzAllowed: false },
+    items: [
+      { id: "q1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], overrides: { uniformPoints: 500 } },
+      { id: "q2", kind: "text", prompt: "Capital of France?", correctAnswer: "Paris" },
+      { id: "q3", kind: "fibbage", prompt: "The ___ is real", truth: "thing", lieTimeSec: 30, voteTimeSec: 45, multiplier: 2 },
+      { id: "q4", kind: "disordat", prompt: "Sort these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"] },
+      { id: "q5", kind: "quixort", prompt: "Sort oldest first", items: ["a", "b", "c", "d"], trash: ["zzz"], multiplier: 1, blockSec: 30 },
+      { id: "q6", kind: "bingo", prompt: "Letters", word: "HELLO" },
+      { id: "q7", kind: "wendithapn", prompt: "When?" },
+    ],
+  };
+}
+check("episode valid passes", eps.validateEpisode(validEp()).ok === true, JSON.stringify(eps.validateEpisode(validEp()).errors));
+const badCases = [
+  ["empty title", (e) => { e.meta.title = "  "; }, "meta.title"],
+  ["bad schema", (e) => { e.schemaVersion = 2; }, "schemaVersion"],
+  ["unknown top key", (e) => { e.junk = 1; }, "junk"],
+  ["no items", (e) => { e.items = []; }, "items"],
+  ["dup ids", (e) => { e.items[1].id = "q1"; }, "id"],
+  ["bad kind", (e) => { e.items[0].kind = "bounce"; }, "kind"],
+  ["empty prompt", (e) => { e.items[0].prompt = ""; }, "prompt"],
+  ["bad optionCount", (e) => { e.items[0].optionCount = 3; }, "optionCount"],
+  ["no correct options", (e) => { e.items[0].correctOptions = []; }, "correctOptions"],
+  ["option out of range", (e) => { e.items[0].correctOptions = [5]; }, "correctOptions"],
+  ["bad points", (e) => { e.items[0].overrides = { uniformPoints: -5 }; }, "items[0].overrides.uniformPoints"],
+  ["bad override key", (e) => { e.items[0].overrides = { noSuchKey: 1 }; }, "items[0].overrides.noSuchKey"],
+  ["bad jack", (e) => { e.items[0].overrides = { jackMultiplier: 9 }; }, "items[0].overrides.jackMultiplier"],
+  ["bad layout", (e) => { e.items[0].overrides = { choiceLayout: "circle" }; }, "items[0].overrides.choiceLayout"],
+  ["bad maxbuzz", (e) => { e.items[0].overrides = { maxBuzzesPerOption: 0 }; }, "items[0].overrides.maxBuzzesPerOption"],
+  ["non-bool override", (e) => { e.items[0].overrides = { lockAfterBuzz: "yes" }; }, "items[0].overrides.lockAfterBuzz"],
+  ["overrides non-object", (e) => { e.items[0].overrides = []; }, "overrides"],
+  ["empty answer", (e) => { e.items[1].correctAnswer = ""; }, "correctAnswer"],
+  ["empty truth", (e) => { e.items[2].truth = " "; }, "truth"],
+  ["bad lie time", (e) => { e.items[2].lieTimeSec = 20; }, "lieTimeSec"],
+  ["bad fibbage mult", (e) => { e.items[2].multiplier = 9; }, "multiplier"],
+  ["disordat short", (e) => { e.items[3].answers = ["dis"]; }, "answers"],
+  ["disordat bad value", (e) => { e.items[3].answers[0] = "maybe"; }, "answers"],
+  ["quixort few items", (e) => { e.items[4].items = ["a", "b"]; }, "items"],
+  ["quixort dupes", (e) => { e.items[4].trash = ["A "]; }, "items"],
+  ["quixort bad block", (e) => { e.items[4].blockSec = 25; }, "blockSec"],
+  ["bingo short word", (e) => { e.items[5].word = "HI"; }, "word"],
+  ["bad default key", (e) => { e.defaults.junk = 1; }, "defaults.junk"],
+  ["bad scoring mode", (e) => { e.defaults.scoringMode = "chaos"; }, "defaults.scoringMode"],
+];
+for (const [name, mutate, field] of badCases) {
+  const e = validEp();
+  mutate(e);
+  const r = eps.validateEpisode(e);
+  check(`episode invalid: ${name}`, r.ok === false && r.errors.some((x) => x.field === field), JSON.stringify(r.errors));
+}
+{
+  const messy = validEp();
+  messy.items[0].correctOptions = [4, 1, 1];
+  messy.items[3].answers = ["DIS", "DAT", "Both", "dis", "dat", "both", "dis"];
+  messy.items[5].word = "hello";
+  const n = eps.normalizeEpisode(messy);
+  check("normalize sorts/dedupes options", JSON.stringify(n.items[0].correctOptions) === "[1,4]", JSON.stringify(n.items[0].correctOptions));
+  check("normalize lowercases answers", n.items[3].answers[0] === "dis" && n.items[3].answers[2] === "both", JSON.stringify(n.items[3].answers));
+  check("normalize uppercases bingo", n.items[5].word === "HELLO", n.items[5].word);
+  check("normalized messy passes", eps.validateEpisode(n).ok === true, JSON.stringify(eps.validateEpisode(n).errors));
+  {
+    const base = validEp();
+    const merged = eps.effectiveItemSettings(base, base.items[0]);
+    check("override wins over default", merged.uniformPoints === 500, JSON.stringify(merged));
+    const gap = eps.effectiveItemSettings(base, base.items[1]);
+    check("gap falls back to default", gap.uniformPoints === 1000 && gap.scoringMode === "uniform", JSON.stringify(gap));
+    check("absent keys omitted", !("jackMultiplier" in gap) && !("maxBuzzesPerOption" in gap) && !("choiceLayout" in gap) && !("closeBuzzersOnPointsGiven" in gap), JSON.stringify(gap));
+  }
+}
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "bingo" ? { word: "ABCDE" } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
+// --- episode editor ops (mode-independent, DOM-free) ---
+const eped = await import("../src/episodes/editor.js");
+const epui = await import("../src/episodes/ui.js");
+{
+  let ep = eped.loadDraft();
+  check("draft starts blank", Array.isArray(ep.items) && ep.items.length === 0, JSON.stringify(ep.items?.length));
+  ep = eped.addItem(ep, "buttons");
+  ep = eped.addItem(ep, "text");
+  ep = eped.addItem(ep, "quixort");
+  check("add items", ep.items.length === 3, String(ep.items.length));
+  const firstId = ep.items[0].id;
+  ep = eped.updateItem(ep, firstId, { prompt: "2+2?", optionCount: 4, correctOptions: [4] });
+  check("update item", ep.items[0].prompt === "2+2?", ep.items[0].prompt);
+  ep = eped.updateItem(ep, "missing-id", { prompt: "x" });
+  check("update missing no-op", ep.items.length === 3, String(ep.items.length));
+  ep = eped.moveItem(ep, firstId, 1);
+  check("move item", ep.items[1].id === firstId, ep.items.map((i) => i.id).join(","));
+  ep = eped.moveItem(ep, firstId, -1);
+  check("move back", ep.items[0].id === firstId, ep.items.map((i) => i.id).join(","));
+  ep = eped.duplicateItem(ep, firstId);
+  check("duplicate item", ep.items.length === 4 && ep.items[1].prompt === "2+2?" && ep.items[1].id !== firstId, String(ep.items.length));
+  const dupId = ep.items[1].id;
+  ep = eped.deleteItem(ep, dupId);
+  check("delete item", ep.items.length === 3 && ep.items.every((i) => i.id !== dupId), String(ep.items.length));
+  ep = eped.updateMeta(ep, { title: "Night", author: "H", junk: "drop" });
+  check("update meta", ep.meta.title === "Night" && ep.meta.junk === undefined, JSON.stringify(ep.meta));
+  ep = eped.updateDefaults(ep, { scoringMode: "uniform", uniformPoints: 500, timeOpen: "" });
+  check("update defaults", ep.defaults.scoringMode === "uniform" && ep.defaults.uniformPoints === 500 && !("timeOpen" in ep.defaults), JSON.stringify(ep.defaults));
+  const textId = ep.items.find((i) => i.kind === "text").id;
+  const qxId = ep.items.find((i) => i.kind === "quixort").id;
+  ep = eped.updateItem(ep, textId, { prompt: "Capital?", correctAnswer: "Paris" });
+  ep = eped.updateItem(ep, qxId, { prompt: "Order these", items: ["a", "b", "c", "d"], trash: [] });
+  const text = eped.exportText(ep);
+  const rt = eped.parseImportText(text);
+  check("export/parse round-trip", rt.ok === true && rt.episode.items.length === 3, rt.errorMessage || JSON.stringify(rt.errors));
+  const badJson = eped.parseImportText("{nope");
+  check("import rejects non-json", badJson.ok === false, JSON.stringify(badJson));
+  const badEp = eped.parseImportText(JSON.stringify({ schemaVersion: 1, meta: {}, defaults: {}, items: [] }));
+  check("import rejects invalid episode", badEp.ok === false && badEp.errors.length > 0, JSON.stringify(badEp));
+  check("export filename slugs title", eped.exportFileName(ep) === "night.episode.json", eped.exportFileName(ep));
+  const html = epui.renderCreatorScreen({ ep, selectedId: firstId, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+  check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
+  check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
+  check("creator cloud disabled", html.includes('data-ep-cloud-save disabled'), "cloud save not disabled");
+  const htmlNoSel = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+  check("creator no edit without selection", !htmlNoSel.includes('id="ep-prompt"'), "edit form leaked");
+  const harvested = epui.harvestCreatorFields(null);
+  check("harvest null-safe", harvested.item === null && harvested.meta.title === undefined, JSON.stringify(harvested));
+}
+// --- episode runner: attach + load + broadcast (driven via producer-action) ---
+{
+  const testEp = {
+    schemaVersion: 1,
+    meta: { title: "Harness Ep", author: "T" },
+    defaults: { scoringMode: "uniform", uniformPoints: 777, timeOpen: 25 },
+    items: [
+      { id: "h1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], overrides: { uniformPoints: 500 } },
+      { id: "h2", kind: "text", prompt: "Capital?", correctAnswer: "Paris", overrides: { timeOpen: 45 } },
+      { id: "h3", kind: "fibbage", prompt: "The ___!", truth: "real", lieTimeSec: 30, voteTimeSec: 30, multiplier: 2 },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  const upBefore = S().settings?.uniformPoints;
+  check(
+    "impostor cannot attach episode",
+    (await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [testEp] }, impostor))?.ok === false,
+    "impostor attached an episode",
+  );
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [{ schemaVersion: 1, meta: {}, defaults: {}, items: [] }] }, prod);
+  check("invalid attach rejected", S().episodePrompt === null && S().settings?.uniformPoints === upBefore, JSON.stringify(S().episodePrompt));
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [testEp] }, prod);
+  check("attach seeds defaults", S().settings?.uniformPoints === 777 && S().settings?.timeOpen === 25, JSON.stringify({ u: S().settings?.uniformPoints, t: S().settings?.timeOpen }));
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("runner card on host", _mount.innerHTML.includes("ep-runner") && _mount.innerHTML.includes("Harness Ep"), "runner card missing");
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("load seeds MC preset", JSON.stringify(S().round?.correctOptions) === "[4]", JSON.stringify(S().round?.correctOptions));
+  check("load applies point override", S().settings?.uniformPoints === 500, String(S().settings?.uniformPoints));
+  check("load leaves other defaults", S().settings?.timeOpen === 25, String(S().settings?.timeOpen));
+  check("load broadcasts prompt", S().episodePrompt?.prompt === "2+2?" && S().episodePrompt?.index === 0 && S().episodePrompt?.total === 3, JSON.stringify(S().episodePrompt));
+  pk._store.self = dev3;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("player sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?"), "banner missing for player");
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("display sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?"), "banner missing on display");
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [1] }, prod);
+  check("load blocked while open", S().episodePrompt?.index === 0, JSON.stringify(S().episodePrompt));
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+  check("step loads text preset", S().round?.correctAnswer === "Paris" && S().episodePrompt?.index === 1, JSON.stringify({ a: S().round?.correctAnswer, p: S().episodePrompt }));
+  check("step falls back to default points", S().settings?.uniformPoints === 777, String(S().settings?.uniformPoints));
+  check("step applies time override", S().settings?.timeOpen === 45, String(S().settings?.timeOpen));
+  if (!COOP) {
+    await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+    check("step loads fibbage truth", S().fibbage?.truth === "real" && S().episodePrompt?.index === 2, JSON.stringify({ t: S().fibbage?.truth, p: S().episodePrompt }));
+    await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+    check("step stops at end", S().episodePrompt?.index === 2, JSON.stringify(S().episodePrompt));
+  }
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  check("end clears prompt", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("banner gone after end", !_mount.innerHTML.includes("ep-prompt-banner"), "stale banner on display");
+  pk._store.self = pk._store.participants.host1;
+}
+// --- episode cloud: API server + client over real HTTP (in-memory store) ---
+{
+  const epApi = await import("../src/episodes/api.js");
+  const epServer = await import("../server/index.js");
+  check("cloud disabled when unconfigured", (await epApi.isEpisodeCloudEnabled()) === false, "cloud on without server");
+  const hash = await epServer.hashOwnerPassword("secret-1");
+  check("owner hash verifies", (await epServer.verifyOwnerPassword("secret-1", hash)) === true, "verify failed");
+  check("owner hash rejects wrong", (await epServer.verifyOwnerPassword("nope", hash)) === false, "verify passed wrong password");
+  check("share code shape", /^[A-Z2-9]{6}$/.test(epServer.makeShareCode()), epServer.makeShareCode());
+  const mem = new Map();
+  const fakeStore = {
+    async findOne({ code }) { return mem.get(code) || null; },
+    async insertOne(doc) {
+      if (mem.has(doc.code)) { const e = new Error("duplicate key"); e.code = 11000; throw e; }
+      mem.set(doc.code, { ...doc });
+      return { insertedId: doc.code };
+    },
+    async updateOne({ code }, { $set }) {
+      const cur = mem.get(code);
+      if (cur) mem.set(code, { ...cur, ...$set });
+      return { modifiedCount: cur ? 1 : 0 };
+    },
+  };
+  const srv = await new Promise((resolve) => {
+    const s = epServer.createApp(fakeStore).listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  epApi.configureEpisodeApiUrl(base);
+  try {
+    check("cloud enabled with server", (await epApi.isEpisodeCloudEnabled()) === true, "health check failed");
+    const cloudEp = {
+      schemaVersion: 1,
+      meta: { title: "Cloud Ep" },
+      defaults: {},
+      items: [{ id: "c1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
+    };
+    const saved = await epApi.saveEpisode(cloudEp, "secret-1");
+    check("save mints code", /^[A-Z2-9]{6}$/.test(saved.code), JSON.stringify(saved));
+    let threw = null;
+    try { await epApi.saveEpisode({ schemaVersion: 1, meta: {}, defaults: {}, items: [] }, "secret-1"); } catch (e) { threw = e; }
+    check("save rejects invalid episode", threw?.status === 400, String(threw?.status));
+    threw = null;
+    try { await epApi.saveEpisode(cloudEp, "x"); } catch (e) { threw = e; }
+    check("save rejects short password", threw?.status === 400, String(threw?.status));
+    const loaded = await epApi.loadEpisode(saved.code.toLowerCase());
+    check("load returns copy", loaded.episode?.meta?.title === "Cloud Ep" && loaded.episode?.items?.length === 1, JSON.stringify(loaded.episode?.meta));
+    threw = null;
+    try { await epApi.loadEpisode("ZZZZZZ"); } catch (e) { threw = e; }
+    check("load 404s unknown code", threw?.status === 404, String(threw?.status));
+    const raw = await (await fetch(`${base}/api/episodes/${saved.code}`)).json();
+    check("hash never leaks", raw && !("ownerHash" in raw), Object.keys(raw || {}).join(","));
+    threw = null;
+    try { await epApi.overwriteEpisode(saved.code, "wrong", { ...cloudEp, meta: { title: "Hijacked" } }); } catch (e) { threw = e; }
+    check("overwrite rejects wrong password", threw?.status === 401, String(threw?.status));
+    const still = await epApi.loadEpisode(saved.code);
+    check("failed overwrite keeps original", still.episode?.meta?.title === "Cloud Ep", JSON.stringify(still.episode?.meta));
+    const over = await epApi.overwriteEpisode(saved.code, "secret-1", { ...cloudEp, meta: { title: "Cloud Ep v2" } });
+    check("overwrite keeps code", over.code === saved.code, JSON.stringify(over));
+    const after = await epApi.loadEpisode(saved.code);
+    check("overwrite applies", after.episode?.meta?.title === "Cloud Ep v2", JSON.stringify(after.episode?.meta));
+  } finally {
+    epApi.configureEpisodeApiUrl("");
+    await new Promise((resolve) => srv.close(resolve));
+  }
+  check("cloud disabled after reset", (await epApi.isEpisodeCloudEnabled()) === false, "override stuck");
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

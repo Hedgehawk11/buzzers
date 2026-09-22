@@ -6,6 +6,24 @@ import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
 import { scheduleRender, renderImmediate, initRenderer, delegate, getApp, computeAudienceTimerFrozenCs, showToast, trackScoreSnapshot, applyScoreDeltas, startSmoothTimer, transitionMount } from "./render.js";
+import {
+  addItem as epAddItem,
+  deleteItem as epDeleteItem,
+  duplicateItem as epDuplicateItem,
+  exportFileName as epExportFileName,
+  exportText as epExportText,
+  loadDraft as epLoadDraft,
+  moveItem as epMoveItem,
+  newDraft as epNewDraft,
+  parseImportText as epParseImportText,
+  persistDraft as epPersistDraft,
+  updateDefaults as epUpdateDefaults,
+  updateItem as epUpdateItem,
+  updateMeta as epUpdateMeta,
+} from "./episodes/editor.js";
+import { harvestCreatorFields, kindLabel as epKindLabel, renderCreatorScreen } from "./episodes/ui.js";
+import { EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
+import { isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -105,6 +123,21 @@ let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
 let hostPrejoinCoopSetting = false;
+// Episode creator is pre-launch and local-only: the draft never enters
+// PlayroomKit state, so one screen's editing never mirrors to another.
+let episodeDraft = null;
+let creatorSelectedId = null;
+let creatorImportErrors = [];
+let episodeCloudEnabled = false;
+let cloudView = null;
+// Episode runtime (host-local only, never mirrored): pendingEpisode is picked
+// on the host prejoin form, attachedEpisode is consumed once by
+// ensureHostInit, activeEpisode/episodeIndex drive the host runner card. The
+// loaded prompt is the only part that goes shared (episodePrompt broadcast).
+let pendingEpisode = null;
+let attachedEpisode = null;
+let activeEpisode = null;
+let episodeIndex = 0;
 let bingoCycleInterval = null;
 let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
@@ -1506,6 +1539,10 @@ showScoresToPlayers: settings.showScoresToPlayers,
     // Analytics mirror broadcast — audience screens only re-render the card
     // when this flips (their tick otherwise only patches timers).
     analyticsSpotlight: getSafeState("analyticsSpotlight", null),
+    // Episode prompt broadcast — player/audience screens only re-render the
+    // question banner when this flips (their tick otherwise only patches
+    // timers). Small bounded object (one prompt), never a list.
+    episodePrompt: getSafeState("episodePrompt", null),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     quixort: (() => {
@@ -5823,6 +5860,19 @@ function ensureHostInit() {
       true,
     );
   }
+  // Episode attach (host prejoin): seed episode defaults once, then stash the
+  // playlist host-local for the runner card. Consumed once — the 1s hostTick
+  // re-entry must neither re-apply defaults nor wipe runner progress.
+  if (attachedEpisode) {
+    applyEpisodeSettings(attachedEpisode.defaults);
+    activeEpisode = attachedEpisode;
+    episodeIndex = 0;
+    attachedEpisode = null;
+  }
+  // Prompt broadcast backfill for rooms created before episodes existed.
+  if (getState("episodePrompt") === undefined) {
+    try { setState("episodePrompt", null, true); } catch {}
+  }
   // Coop + shared-team scoring can never coexist (alliances only).
   try {
     const s = getSettings();
@@ -8752,6 +8802,188 @@ function renderAnalyticsCard(audience = false) {
 // producer-accessible (relays through producer-action when clicked by a
 // producer) and hides in minigame views (analytics covers Buttons/Text only).
 // Returns "" when no row is visible (e.g. producers in minigame views).
+// =============================================================================
+// Episode runner — ordered playlist loaded from the creator (host-local
+// activeEpisode/episodeIndex; only the current prompt is shared state).
+// "Load" switches inputMode first (which resets per-mode setup), then seeds
+// the question's presets. The host then runs the question normally.
+// =============================================================================
+function getEpisodePrompt() {
+  return getSafeState("episodePrompt", null);
+}
+
+function renderEpisodePromptBanner() {
+  const ep = getEpisodePrompt();
+  if (!ep || !ep.prompt) return "";
+  const pos = `Q${Number(ep.index) + 1} of ${ep.total}`;
+  return `
+    <section class="card ep-prompt-banner" data-episode-prompt="true">
+      <p class="prejoin-kicker">${escapeHtml(ep.title ? `${ep.title} — ${pos}` : pos)} • ${escapeHtml(epKindLabel(ep.kind))}</p>
+      <p class="ep-prompt-text">${escapeHtml(ep.prompt)}</p>
+    </section>`;
+}
+
+// Apply a settings-like object (episode defaults, or defaults merged with a
+// question's overrides) through setHostSetting so live-game validation runs.
+// Only touches keys that actually differ. Coop-gated values (JACK scoring,
+// re-buzz) are skipped silently — the runner already verified the mode.
+function applyEpisodeSettings(source) {
+  if (!source || typeof source !== "object") return;
+  const settings = getSettings();
+  const coop = isCoopMode(settings);
+  const setIfDiff = (key, value) => {
+    if (value === undefined) return;
+    if (settings[key] === value) return;
+    setHostSetting(key, value);
+  };
+  if (source.scoringMode !== undefined && source.scoringMode !== settings.scoringMode) {
+    if (!(coop && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
+  }
+  setIfDiff("uniformPoints", source.uniformPoints !== undefined ? Number(source.uniformPoints) : undefined);
+  setIfDiff("jackMultiplier", source.jackMultiplier !== undefined ? Number(source.jackMultiplier) : undefined);
+  setIfDiff("timeOpen", source.timeOpen !== undefined ? Number(source.timeOpen) : undefined);
+  setIfDiff("maxBuzzesPerOption", source.maxBuzzesPerOption !== undefined ? Number(source.maxBuzzesPerOption) : undefined);
+  setIfDiff("choiceLayout", source.choiceLayout);
+  setIfDiff("lockAfterBuzz", source.lockAfterBuzz);
+  setIfDiff("closeBuzzersOnPointsGiven", source.closeBuzzersOnPointsGiven);
+  if (source.rebuzzAllowed !== undefined && !(coop && source.rebuzzAllowed === true)) {
+    setIfDiff("rebuzzAllowed", source.rebuzzAllowed);
+  }
+}
+
+// Attach a validated episode as the runner playlist. Usable pre-launch (via
+// attachedEpisode) and live (host panel / producer action).
+function attachEpisode(episode) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "attachEpisode", args: [episode] }, RPC.Mode.HOST);
+    return { ok: false, reason: "Not host." };
+  }
+  const check = epValidateEpisode(episode);
+  if (!check.ok) {
+    setBuzzNotice(`Episode has ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} — fix it in the creator first.`);
+    render();
+    return { ok: false, reason: "Invalid episode." };
+  }
+  activeEpisode = episode;
+  episodeIndex = 0;
+  try { setState("episodePrompt", null, true); } catch {}
+  // Apply episode defaults immediately on explicit attach (same merge as the
+  // pre-launch path in ensureHostInit).
+  applyEpisodeSettings(episode.defaults);
+  render();
+  return { ok: true };
+}
+
+function episodeRunLoad(index) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunLoad", args: [index] }, RPC.Mode.HOST);
+    return false;
+  }
+  const ep = activeEpisode;
+  if (!ep || !Array.isArray(ep.items)) {
+    setBuzzNotice("No episode attached.");
+    render();
+    return false;
+  }
+  const item = ep.items[Number(index)];
+  if (!item) return false;
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.IDLE && round.status !== ROUND_STATUSES.CLOSED) {
+    setBuzzNotice("Reset the round before loading the next question.");
+    render();
+    return false;
+  }
+  setHostSetting("inputMode", item.kind);
+  if (getSettings().inputMode !== item.kind) {
+    setBuzzNotice(`${epKindLabel(item.kind)} is not available right now (coopertition limits special modes).`);
+    render();
+    return false;
+  }
+  // Episode defaults merged with this question's overrides (overrides win,
+  // gaps fall back to defaults, absent keys leave the game setting alone).
+  applyEpisodeSettings(epEffectiveSettings(ep, item));
+  if (item.kind === "buttons") {
+    if (Number(item.optionCount) !== Number(getSettings().optionCount)) setHostSetting("optionCount", item.optionCount);
+    const r = getRound();
+    setState("round", { ...r, correctOptions: [...(item.correctOptions || [])].map(Number).sort((a, b) => a - b), correctAnswer: null }, true);
+  } else if (item.kind === "text") {
+    const r = getRound();
+    setState("round", { ...r, correctAnswer: item.correctAnswer, correctOptions: null }, true);
+  } else if (item.kind === "fibbage") {
+    setState("fibbage", { ...getFibbage(), truth: item.truth, lieTimeSec: item.lieTimeSec, voteTimeSec: item.voteTimeSec, multiplier: item.multiplier }, true);
+  } else if (item.kind === "disordat") {
+    setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers] }, true);
+  } else if (item.kind === "quixort") {
+    setState("quixort", { ...getQuixort(), items: [...item.items], trash: [...(item.trash || [])], multiplier: item.multiplier, blockSec: item.blockSec }, true);
+  } else if (item.kind === "bingo") {
+    const word = String(item.word || "").toUpperCase();
+    setState("bingo", { ...getBingo(), word, items: word.split("") }, true);
+    // startBingo reads the setup input, so keep it in sync when visible.
+    try { const input = document.querySelector("#bingo-word"); if (input) input.value = word; } catch {}
+  }
+  // wendithapn needs no seeding (fixed Before/Never/After).
+  setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt }, true);
+  episodeIndex = Number(index);
+  render();
+  return true;
+}
+
+function episodeRunStep(dir) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunStep", args: [dir] }, RPC.Mode.HOST);
+    return false;
+  }
+  const ep = activeEpisode;
+  if (!ep || !Array.isArray(ep.items) || !ep.items.length) {
+    setBuzzNotice("No episode attached.");
+    render();
+    return false;
+  }
+  const next = episodeIndex + (Number(dir) >= 0 ? 1 : -1);
+  if (next < 0 || next >= ep.items.length) {
+    setBuzzNotice(next < 0 ? "Already at the first question." : "That was the last question.");
+    render();
+    return false;
+  }
+  return episodeRunLoad(next);
+}
+
+function episodeRunEnd() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunEnd", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  activeEpisode = null;
+  episodeIndex = 0;
+  try { setState("episodePrompt", null, true); } catch {}
+  setBuzzNotice("Episode ended.");
+  render();
+}
+
+function renderEpisodeRunnerCard() {
+  const ep = activeEpisode;
+  if (!ep || !Array.isArray(ep.items) || !ep.items.length) return "";
+  if (!hasHostPrivileges()) return "";
+  const item = ep.items[episodeIndex] || ep.items[0];
+  const idx = ep.items.indexOf(item);
+  const round = getRound();
+  const roundBusy = round.status !== ROUND_STATUSES.IDLE && round.status !== ROUND_STATUSES.CLOSED;
+  return `
+    <section class="card ep-runner">
+      <div class="ep-edit-head">
+        <h2>Episode: ${escapeHtml(ep.meta?.title || "Untitled")} (Q${idx + 1}/${ep.items.length})</h2>
+        <button type="button" data-ep-run-end>End episode</button>
+      </div>
+      <p><span class="ep-badge">${escapeHtml(epKindLabel(item.kind))}</span> ${escapeHtml(item.prompt || "")}</p>
+      ${roundBusy ? `<p class="muted">Reset the round to load a question.</p>` : ""}
+      <div class="ep-toolbar">
+        <button type="button" data-ep-run-step="-1" ${idx <= 0 ? "disabled" : ""}>← Prev</button>
+        <button type="button" class="primary-action" data-ep-run-load="${idx}" ${roundBusy ? "disabled" : ""}>Load Q${idx + 1}</button>
+        <button type="button" data-ep-run-step="1" ${idx >= ep.items.length - 1 ? "disabled" : ""}>Next →</button>
+      </div>
+    </section>`;
+}
+
 function renderBroadcastHostCard() {
   const rows = [];
   if (isHost()) {
@@ -8974,11 +9206,11 @@ function mountView(mount, html, modeKey) {
 }
 
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
-  if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
-  if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
-  if (isDisOrDatMode()) return renderDisOrDatAudienceDisplay(settings, players);
-  if (isFibbageMode()) return renderFibbageAudienceDisplay(settings, players);
-  if (isQuixortMode()) return renderQuixortAudienceDisplay(settings, players);
+  if (isTeamSelectActive()) return renderEpisodePromptBanner() + renderTeamSelectAudienceDisplay(settings, players);
+  if (isBingoMode()) return renderEpisodePromptBanner() + renderBingoAudienceDisplay(settings, players);
+  if (isDisOrDatMode()) return renderEpisodePromptBanner() + renderDisOrDatAudienceDisplay(settings, players);
+  if (isFibbageMode()) return renderEpisodePromptBanner() + renderFibbageAudienceDisplay(settings, players);
+  if (isQuixortMode()) return renderEpisodePromptBanner() + renderQuixortAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
@@ -9014,6 +9246,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         </div>
       </header>
 
+      ${renderEpisodePromptBanner()}
       <section class="${mainColumns}">
         ${primaryPanel}
         ${showScores ? renderScores(players, scores) : ""}
@@ -10135,6 +10368,7 @@ function render() {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -10172,11 +10406,13 @@ function render() {
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
@@ -10206,11 +10442,13 @@ function render() {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
@@ -10243,11 +10481,13 @@ function render() {
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${fibScoresHost}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${fibScoresPlayer}
       </section>` ;
@@ -10279,11 +10519,13 @@ function render() {
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${qxScoresHost}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${qxScoresPlayer}
       </section>` ;
@@ -10327,7 +10569,9 @@ function render() {
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores, showAdminData ? "score-card-host" : "")
@@ -10776,9 +11020,296 @@ function bindEvents() {
   // Also keep old per-render pointerdown for buzz still uses delegate above.
 
   // Prejoin delegated (once) — keeps prejoin screen also resilient
-  delegate("click", "[data-prejoin-open]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinOpen || "landing"));
+  delegate("click", "[data-prejoin-open]", (e, btn) => {
+    const next = btn.dataset.prejoinOpen || "landing";
+    if (next === "creator") { enterEpisodeCreator(); return; }
+    renderPrejoinScreen(next);
+  });
   delegate("click", "[data-prejoin-switch]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinSwitch || "landing"));
   delegate("click", "[data-prejoin-back]", () => renderPrejoinScreen());
+
+  // --- Episode creator (pre-launch, local-only draft) ---
+  function ensureEpisodeDraft() {
+    if (!episodeDraft) episodeDraft = epLoadDraft();
+    return episodeDraft;
+  }
+  function enterEpisodeCreator() {
+    ensureEpisodeDraft();
+    renderPrejoinScreen("creator");
+    try {
+      isEpisodeCloudEnabled().then((ok) => {
+        if (ok !== episodeCloudEnabled) {
+          episodeCloudEnabled = ok;
+          if (prejoinMode === "creator") renderPrejoinScreen("creator");
+        }
+      });
+    } catch {}
+  }
+  // Harvest visible creator fields into the draft before any structural
+  // action, so switching questions never drops typed-but-uncommitted edits.
+  function harvestIntoDraft() {
+    ensureEpisodeDraft();
+    let harvested = null;
+    try { harvested = harvestCreatorFields(getApp() || app); } catch { harvested = null; }
+    if (!harvested) return;
+    if (harvested.meta && Object.keys(harvested.meta).length) episodeDraft = epUpdateMeta(episodeDraft, harvested.meta);
+    if (harvested.defaults && Object.keys(harvested.defaults).length) episodeDraft = epUpdateDefaults(episodeDraft, harvested.defaults);
+    if (harvested.item && creatorSelectedId) {
+      const patch = { ...harvested.item };
+      const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+      const count = Number(patch.optionCount ?? sel?.optionCount) || 0;
+      if (Array.isArray(patch.correctOptions) && count > 0) {
+        patch.correctOptions = patch.correctOptions.filter((n) => Number.isInteger(n) && n >= 1 && n <= count);
+      }
+      episodeDraft = epUpdateItem(episodeDraft, creatorSelectedId, patch);
+    }
+    epPersistDraft(episodeDraft);
+  }
+  function refreshCreator() { renderPrejoinScreen("creator"); }
+  function downloadEpisodeJson() {
+    harvestIntoDraft();
+    const { ok, errors } = epValidateEpisode(episodeDraft);
+    try {
+      const blob = new Blob([epExportText(episodeDraft)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = epExportFileName(episodeDraft);
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
+    } catch {
+      showToast("Export failed in this browser.", { variant: "error" });
+      return;
+    }
+    showToast(ok ? `Exported ${episodeDraft.items.length} question${episodeDraft.items.length === 1 ? "" : "s"}.` : `Exported with ${errors.length} validation problem${errors.length === 1 ? "" : "s"} — fix before running.`, { variant: ok ? "info" : "error" });
+  }
+  delegate("click", "[data-ep-add]", () => {
+    harvestIntoDraft();
+    let kind = "buttons";
+    try { kind = document.querySelector("#ep-add-kind")?.value || "buttons"; } catch {}
+    episodeDraft = epAddItem(episodeDraft, EP_CREATOR_KINDS.includes(kind) ? kind : "buttons");
+    creatorSelectedId = episodeDraft.items[episodeDraft.items.length - 1]?.id || null;
+    creatorImportErrors = [];
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-edit]", (e, btn) => {
+    harvestIntoDraft();
+    creatorSelectedId = btn.dataset.epEdit || null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-close-edit]", () => {
+    harvestIntoDraft();
+    creatorSelectedId = null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-del]", (e, btn) => {
+    harvestIntoDraft();
+    const id = btn.dataset.epDel;
+    episodeDraft = epDeleteItem(episodeDraft, id);
+    if (creatorSelectedId === id) creatorSelectedId = null;
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-dup]", (e, btn) => {
+    harvestIntoDraft();
+    episodeDraft = epDuplicateItem(episodeDraft, btn.dataset.epDup);
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-move]", (e, btn) => {
+    harvestIntoDraft();
+    episodeDraft = epMoveItem(episodeDraft, btn.dataset.epMove, Number(btn.dataset.dir) || 0);
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-new]", () => {
+    harvestIntoDraft();
+    let confirmed = true;
+    try { confirmed = window.confirm("Start a new episode? Unsaved work is kept only in the exported file."); } catch {}
+    if (!confirmed) return;
+    episodeDraft = epNewDraft();
+    creatorSelectedId = null;
+    creatorImportErrors = [];
+    refreshCreator();
+    showToast("Started a new episode.");
+  });
+  delegate("click", "[data-ep-export]", () => downloadEpisodeJson());
+  delegate("click", "[data-ep-import-btn]", () => {
+    try { document.querySelector("#ep-import-file")?.click(); } catch {}
+  });
+  delegate("change", "#ep-import-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = epParseImportText(String(reader.result || ""));
+      if (result.ok && result.episode) {
+        episodeDraft = result.episode;
+        creatorSelectedId = null;
+        creatorImportErrors = [];
+        epPersistDraft(episodeDraft);
+        showToast(`Imported "${episodeDraft.meta?.title || "episode"}" (${episodeDraft.items.length} questions).`);
+      } else {
+        creatorImportErrors = (result.errors || []).slice(0, 12).map((er) => ({
+          index: -1,
+          itemId: null,
+          field: er.index >= 0 ? `Q${er.index + 1}${er.field ? ` (${er.field})` : ""}` : er.field,
+          message: er.message,
+        }));
+        if (!creatorImportErrors.length) {
+          creatorImportErrors = [{ index: -1, itemId: null, field: "", message: result.errorMessage || "Import failed." }];
+        }
+        showToast(result.errorMessage || "Import failed.", { variant: "error" });
+      }
+      try { input.value = ""; } catch {}
+      refreshCreator();
+    };
+    reader.onerror = () => showToast("Could not read that file.", { variant: "error" });
+    try { reader.readAsText(file); } catch { showToast("Could not read that file.", { variant: "error" }); }
+  });
+  // Selects/checkboxes commit immediately; text fields harvest on actions.
+  delegate("change", "[data-ep-harvest]", () => {
+    if (prejoinMode !== "creator") return;
+    harvestIntoDraft();
+    refreshCreator();
+  });
+
+  // --- Episode runner (host + producer via producer-action relay) ---
+  delegate("click", "[data-ep-run-load]", (e, btn) => {
+    episodeRunLoad(Number(btn.dataset.epRunLoad));
+  });
+  delegate("click", "[data-ep-run-step]", (e, btn) => {
+    episodeRunStep(Number(btn.dataset.epRunStep) || 0);
+  });
+  delegate("click", "[data-ep-run-end]", () => {
+    episodeRunEnd();
+  });
+
+  // --- Episode attach on the host prejoin form ---
+  function refreshAttachLabel() {
+    try {
+      const label = document.querySelector("#ep-attach-label");
+      if (label) label.textContent = pendingEpisode ? `${pendingEpisode.meta?.title || "Untitled"} (${pendingEpisode.items.length})` : "none";
+    } catch {}
+  }
+  delegate("click", "[data-ep-attach-btn]", () => {
+    try { document.querySelector("#ep-attach-file")?.click(); } catch {}
+  });
+  delegate("click", "[data-ep-attach-draft]", () => {
+    const draft = epLoadDraft();
+    const check = epValidateEpisode(draft);
+    if (!check.ok) {
+      showToast(`Creator draft has ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} — fix it in the creator first.`, { variant: "error" });
+      return;
+    }
+    pendingEpisode = draft;
+    refreshAttachLabel();
+    showToast(`Attached "${draft.meta?.title || "Untitled"}".`);
+  });
+  delegate("click", "[data-ep-attach-clear]", () => {
+    pendingEpisode = null;
+    refreshAttachLabel();
+  });
+  delegate("change", "#ep-attach-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = epParseImportText(String(reader.result || ""));
+      if (result.ok && result.episode) {
+        pendingEpisode = result.episode;
+        showToast(`Attached "${result.episode.meta?.title || "episode"}" (${result.episode.items.length} questions).`);
+      } else {
+        showToast(result.errorMessage || "Could not attach that file.", { variant: "error" });
+      }
+      try { input.value = ""; } catch {}
+      refreshAttachLabel();
+    };
+    reader.onerror = () => showToast("Could not read that file.", { variant: "error" });
+    try { reader.readAsText(file); } catch { showToast("Could not read that file.", { variant: "error" }); }
+  });
+
+  // --- Episode cloud save/load (creator toolbar; buttons disabled unless
+  // a server is configured — see isEpisodeCloudEnabled) ---
+  delegate("click", "[data-ep-cloud-save]", () => {
+    if (!episodeCloudEnabled) return;
+    cloudView = { mode: "save" };
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-load]", () => {
+    if (!episodeCloudEnabled) return;
+    cloudView = { mode: "load" };
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-cancel]", () => {
+    cloudView = null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-copy]", (e, btn) => {
+    const code = btn.dataset.epCloudCopy || "";
+    try {
+      if (navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(code).then(
+          () => showToast("Code copied."),
+          () => showToast("Copy failed — write it down.", { variant: "error" }),
+        );
+      } else {
+        showToast("Copy not available — write it down.");
+      }
+    } catch { showToast("Copy failed — write it down.", { variant: "error" }); }
+  });
+  delegate("click", "[data-ep-cloud-save-confirm]", async () => {
+    harvestIntoDraft();
+    let password = "";
+    let code = "";
+    try {
+      password = String(document.querySelector("#ep-cloud-password")?.value || "");
+      code = String(document.querySelector("#ep-cloud-code")?.value || "").trim().toUpperCase();
+    } catch {}
+    const check = epValidateEpisode(episodeDraft);
+    if (!check.ok) {
+      cloudView = { mode: "save", error: `Fix ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} before saving.` };
+      refreshCreator();
+      return;
+    }
+    try {
+      const result = code
+        ? await epCloudOverwrite(code, password, episodeDraft)
+        : await epCloudSave(episodeDraft, password);
+      cloudView = { mode: "saved", code: result.code };
+      showToast(code ? `Overwrote ${result.code}.` : `Saved — code ${result.code}.`);
+    } catch (e) {
+      cloudView = { mode: "save", error: e?.message || "Save failed." };
+      showToast(e?.message || "Save failed.", { variant: "error" });
+    }
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-load-confirm]", async () => {
+    let code = "";
+    try { code = String(document.querySelector("#ep-cloud-load-code")?.value || "").trim().toUpperCase(); } catch {}
+    if (!code) {
+      cloudView = { mode: "load", error: "Enter a share code." };
+      refreshCreator();
+      return;
+    }
+    try {
+      const { episode } = await epCloudLoad(code);
+      const check = epValidateEpisode(episode);
+      if (!check.ok) throw new Error("That episode failed validation.");
+      episodeDraft = episode;
+      creatorSelectedId = null;
+      creatorImportErrors = [];
+      cloudView = null;
+      epPersistDraft(episodeDraft);
+      showToast(`Loaded "${episode.meta?.title || "episode"}" (${episode.items.length} questions).`);
+    } catch (e) {
+      cloudView = { mode: "load", code, error: e?.message || "Load failed." };
+      showToast(e?.message || "Load failed.", { variant: "error" });
+    }
+    refreshCreator();
+  });
   delegate("input", "#prejoin-room-code", (e) => {
     const upper = e.target.value.toUpperCase();
     if (e.target.value !== upper) e.target.value = upper;
@@ -10806,6 +11337,8 @@ function bindEvents() {
       const selectedTeamSetting = String(teamModeInput?.value || "off");
       hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
       hostPrejoinCoopSetting = mount.querySelector("#prejoin-coop")?.checked === true;
+      attachedEpisode = pendingEpisode;
+      pendingEpisode = null;
     }
     const submitButton = form.querySelector("button[type='submit']");
     if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
@@ -11128,6 +11661,16 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <span>Coopertition mode (up to 3 players per device)</span>
             </label>
 
+            <div class="ep-attach-row">
+              <span class="muted">Episode (optional): <strong id="ep-attach-label">none</strong></span>
+              <div class="ep-attach-actions">
+                <button class="secondary-action" data-ep-attach-btn type="button">Attach JSON file</button>
+                <input type="file" id="ep-attach-file" accept="application/json,.json" hidden />
+                <button class="secondary-action" data-ep-attach-draft type="button">Use creator draft</button>
+                <button class="secondary-action" data-ep-attach-clear type="button">Clear</button>
+              </div>
+            </div>
+
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
 
             <div class="prejoin-actions">
@@ -11297,10 +11840,27 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <span class="prejoin-choice-label">Audience display</span>
               <span class="muted">Show the live buzzer board beside a slide deck.</span>
             </button>
+            <button class="prejoin-choice" data-prejoin-open="creator" type="button">
+              <span class="prejoin-choice-label">Episode creator</span>
+              <span class="muted">Build a question playlist to run when hosting.</span>
+            </button>
           </div>
         </section>
       </main>
     `;
+  }
+  if (mode === "creator") {
+    ensureEpisodeDraft();
+    const creatorCheck = epValidateEpisode(episodeDraft);
+    prejoinHtml = renderCreatorScreen({
+      ep: episodeDraft,
+      selectedId: creatorSelectedId,
+      errors: creatorCheck.errors,
+      importErrors: creatorImportErrors,
+      cloudEnabled: episodeCloudEnabled,
+      cloud: cloudView,
+      esc: escapeHtml,
+    });
   }
   const mount = getApp() || app;
   const prejoinKey = `prejoin-${mode}` + (error ? "-error" : "");
@@ -11544,6 +12104,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
     startQuixort, endQuixort, resetQuixort, exitQuixort,
     startAnalyticsSpotlight, endAnalyticsSpotlight,
+    attachEpisode, episodeRunLoad, episodeRunStep, episodeRunEnd,
   };
   RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };

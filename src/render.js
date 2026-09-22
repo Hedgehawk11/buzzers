@@ -47,6 +47,14 @@ const PRESERVED_INPUT_IDS = [
   "coop-name-0",
   "coop-name-1",
   "coop-name-2",
+  "ep-title",
+  "ep-author",
+  "ep-prompt",
+  "ep-answer",
+  "ep-truth",
+  "ep-word",
+  "ep-dislabel",
+  "ep-datlabel",
 ];
 
 let inputDrafts = new Map(); // id -> { value, selStart, selEnd, focused }
