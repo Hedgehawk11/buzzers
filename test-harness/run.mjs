@@ -1482,6 +1482,33 @@ const epui = await import("../src/episodes/ui.js");
   }
   check("cloud disabled after reset", (await epApi.isEpisodeCloudEnabled()) === false, "override stuck");
 }
+// --- episode creator opens pre-launch (regression: helpers must be
+// top-level scope — a nested-in-bindEvents helper broke this silently) ---
+{
+  const firePrejoin = async (selector, dataset = {}) => {
+    const t = { dataset, closest: (s) => (s === selector ? t : null) };
+    for (const fn of mount._listeners.click || []) await fn({ target: t, preventDefault() {} });
+    await sleep(600);
+  };
+  const handlerErrors = [];
+  const origWarn2 = console.warn;
+  console.warn = (...a) => {
+    const s = a.map(String).join(" ");
+    if (s.includes("delegated handler failed")) handlerErrors.push(s);
+    origWarn2(...a);
+  };
+  try {
+    await firePrejoin("[data-prejoin-open]", { prejoinOpen: "creator" });
+    check("creator opens from landing", _mount.innerHTML.includes("ep-panel") && _mount.innerHTML.includes("data-ep-add"), "creator panel missing");
+    await firePrejoin("[data-ep-add]");
+    check("creator add works headless", _mount.innerHTML.includes('id="ep-prompt"'), "edit form missing after add");
+    await firePrejoin("[data-ep-close-edit]");
+    check("creator close works headless", !_mount.innerHTML.includes('id="ep-prompt"'), "edit form stuck open");
+    check("no creator handler errors", handlerErrors.length === 0, handlerErrors.join(" || ").slice(0, 300));
+  } finally {
+    console.warn = origWarn2;
+  }
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

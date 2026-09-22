@@ -8803,6 +8803,66 @@ function renderAnalyticsCard(audience = false) {
 // producer) and hides in minigame views (analytics covers Buttons/Text only).
 // Returns "" when no row is visible (e.g. producers in minigame views).
 // =============================================================================
+// Episode creator helpers (pre-launch, local-only draft). Top-level on
+// purpose: renderPrejoinScreen and the bindEvents delegates share them.
+// =============================================================================
+function ensureEpisodeDraft() {
+  if (!episodeDraft) episodeDraft = epLoadDraft();
+  return episodeDraft;
+}
+function enterEpisodeCreator() {
+  ensureEpisodeDraft();
+  renderPrejoinScreen("creator");
+  try {
+    isEpisodeCloudEnabled().then((ok) => {
+      if (ok !== episodeCloudEnabled) {
+        episodeCloudEnabled = ok;
+        if (prejoinMode === "creator") renderPrejoinScreen("creator");
+      }
+    });
+  } catch {}
+}
+// Harvest visible creator fields into the draft before any structural
+// action, so switching questions never drops typed-but-uncommitted edits.
+function harvestIntoDraft() {
+  ensureEpisodeDraft();
+  let harvested = null;
+  try { harvested = harvestCreatorFields(getApp() || app); } catch { harvested = null; }
+  if (!harvested) return;
+  if (harvested.meta && Object.keys(harvested.meta).length) episodeDraft = epUpdateMeta(episodeDraft, harvested.meta);
+  if (harvested.defaults && Object.keys(harvested.defaults).length) episodeDraft = epUpdateDefaults(episodeDraft, harvested.defaults);
+  if (harvested.item && creatorSelectedId) {
+    const patch = { ...harvested.item };
+    const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+    const count = Number(patch.optionCount ?? sel?.optionCount) || 0;
+    if (Array.isArray(patch.correctOptions) && count > 0) {
+      patch.correctOptions = patch.correctOptions.filter((n) => Number.isInteger(n) && n >= 1 && n <= count);
+    }
+    episodeDraft = epUpdateItem(episodeDraft, creatorSelectedId, patch);
+  }
+  epPersistDraft(episodeDraft);
+}
+function refreshCreator() { renderPrejoinScreen("creator"); }
+function downloadEpisodeJson() {
+  harvestIntoDraft();
+  const { ok, errors } = epValidateEpisode(episodeDraft);
+  try {
+    const blob = new Blob([epExportText(episodeDraft)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = epExportFileName(episodeDraft);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
+  } catch {
+    showToast("Export failed in this browser.", { variant: "error" });
+    return;
+  }
+  showToast(ok ? `Exported ${episodeDraft.items.length} question${episodeDraft.items.length === 1 ? "" : "s"}.` : `Exported with ${errors.length} validation problem${errors.length === 1 ? "" : "s"} — fix before running.`, { variant: ok ? "info" : "error" });
+}
+
+// =============================================================================
 // Episode runner — ordered playlist loaded from the creator (host-local
 // activeEpisode/episodeIndex; only the current prompt is shared state).
 // "Load" switches inputMode first (which resets per-mode setup), then seeds
@@ -11028,62 +11088,6 @@ function bindEvents() {
   delegate("click", "[data-prejoin-switch]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinSwitch || "landing"));
   delegate("click", "[data-prejoin-back]", () => renderPrejoinScreen());
 
-  // --- Episode creator (pre-launch, local-only draft) ---
-  function ensureEpisodeDraft() {
-    if (!episodeDraft) episodeDraft = epLoadDraft();
-    return episodeDraft;
-  }
-  function enterEpisodeCreator() {
-    ensureEpisodeDraft();
-    renderPrejoinScreen("creator");
-    try {
-      isEpisodeCloudEnabled().then((ok) => {
-        if (ok !== episodeCloudEnabled) {
-          episodeCloudEnabled = ok;
-          if (prejoinMode === "creator") renderPrejoinScreen("creator");
-        }
-      });
-    } catch {}
-  }
-  // Harvest visible creator fields into the draft before any structural
-  // action, so switching questions never drops typed-but-uncommitted edits.
-  function harvestIntoDraft() {
-    ensureEpisodeDraft();
-    let harvested = null;
-    try { harvested = harvestCreatorFields(getApp() || app); } catch { harvested = null; }
-    if (!harvested) return;
-    if (harvested.meta && Object.keys(harvested.meta).length) episodeDraft = epUpdateMeta(episodeDraft, harvested.meta);
-    if (harvested.defaults && Object.keys(harvested.defaults).length) episodeDraft = epUpdateDefaults(episodeDraft, harvested.defaults);
-    if (harvested.item && creatorSelectedId) {
-      const patch = { ...harvested.item };
-      const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
-      const count = Number(patch.optionCount ?? sel?.optionCount) || 0;
-      if (Array.isArray(patch.correctOptions) && count > 0) {
-        patch.correctOptions = patch.correctOptions.filter((n) => Number.isInteger(n) && n >= 1 && n <= count);
-      }
-      episodeDraft = epUpdateItem(episodeDraft, creatorSelectedId, patch);
-    }
-    epPersistDraft(episodeDraft);
-  }
-  function refreshCreator() { renderPrejoinScreen("creator"); }
-  function downloadEpisodeJson() {
-    harvestIntoDraft();
-    const { ok, errors } = epValidateEpisode(episodeDraft);
-    try {
-      const blob = new Blob([epExportText(episodeDraft)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = epExportFileName(episodeDraft);
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
-    } catch {
-      showToast("Export failed in this browser.", { variant: "error" });
-      return;
-    }
-    showToast(ok ? `Exported ${episodeDraft.items.length} question${episodeDraft.items.length === 1 ? "" : "s"}.` : `Exported with ${errors.length} validation problem${errors.length === 1 ? "" : "s"} — fix before running.`, { variant: ok ? "info" : "error" });
-  }
   delegate("click", "[data-ep-add]", () => {
     harvestIntoDraft();
     let kind = "buttons";
