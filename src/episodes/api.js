@@ -14,16 +14,26 @@ export function configureEpisodeApiUrl(url) {
   apiUrlOverride = typeof url === "string" && url.trim() ? url.trim().replace(/\/+$/, "") : null;
   cloudAvailable = null;
   cloudCheckAt = 0;
+  lastProbe = { url: apiUrlOverride || "", ok: null, error: "", at: 0 };
 }
 
 export function episodeApiUrl() {
   if (apiUrlOverride) return apiUrlOverride;
   try {
     const url = import.meta?.env?.VITE_EPISODE_API_URL;
-    return typeof url === "string" && url.trim() ? url.trim().replace(/\/+$/, "") : "";
-  } catch {
-    return "";
-  }
+    if (typeof url === "string" && url.trim()) return url.trim().replace(/\/+$/, "");
+  } catch {}
+  // Zero-config default: same-origin /api. Works with the vite dev proxy
+  // (vite.config.js forwards /api → localhost:3001) and with same-origin
+  // prod deploys. Otherwise the health probe fails fast and cloud UI stays
+  // disabled with a reason instead of hard-failing.
+  try {
+    if (typeof window !== "undefined") {
+      const origin = window.location?.origin;
+      if (typeof origin === "string" && /^https?:\/\//.test(origin)) return origin;
+    }
+  } catch {}
+  return "";
 }
 
 export class EpisodeApiError extends Error {
@@ -64,26 +74,43 @@ async function apiFetch(path, { method = "GET", body } = {}) {
   }
 }
 
+// Last probe outcome, for UI diagnosis (why are the buttons disabled?).
+// ok: null = never checked, false with empty url = unconfigured.
+let lastProbe = { url: "", ok: null, error: "", at: 0 };
+
+export function episodeCloudDiagnosis() {
+  return { ...lastProbe };
+}
+
 // False when no server is configured (or the check failed): callers must
 // disable cloud save/load rather than erroring (offline/PWA-safe).
-export async function isEpisodeCloudEnabled() {
+// force=true skips the 60s cache (Retry button). Every probe records into
+// episodeCloudDiagnosis() so the UI can say *why* it is disabled.
+export async function isEpisodeCloudEnabled(force = false) {
   const base = episodeApiUrl();
-  if (!base) return false;
+  if (!base) {
+    cloudAvailable = false;
+    cloudCheckAt = Date.now();
+    lastProbe = { url: "", ok: false, error: "unconfigured", at: Date.now() };
+    return false;
+  }
   try {
-    if (cloudAvailable !== null && Date.now() - cloudCheckAt < CLOUD_CHECK_TTL_MS) return cloudAvailable;
+    if (!force && cloudAvailable !== null && Date.now() - cloudCheckAt < CLOUD_CHECK_TTL_MS) return cloudAvailable;
     const ctrl = new AbortController();
     const timer = setTimeout(() => { try { ctrl.abort(); } catch {} }, 5000);
     try {
       const res = await fetch(`${base}/api/health`, { signal: ctrl.signal });
       cloudAvailable = res.ok;
+      lastProbe = { url: base, ok: res.ok, error: res.ok ? "" : `HTTP ${res.status}`, at: Date.now() };
     } finally {
       clearTimeout(timer);
     }
     cloudCheckAt = Date.now();
     return cloudAvailable;
-  } catch {
+  } catch (e) {
     cloudAvailable = false;
     cloudCheckAt = Date.now();
+    lastProbe = { url: base, ok: false, error: String(e?.message || "unreachable"), at: Date.now() };
     return false;
   }
 }

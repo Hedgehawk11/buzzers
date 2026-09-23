@@ -21,9 +21,9 @@ import {
   updateItem as epUpdateItem,
   updateMeta as epUpdateMeta,
 } from "./episodes/editor.js";
-import { harvestCreatorFields, kindLabel as epKindLabel, renderCreatorScreen } from "./episodes/ui.js";
+import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
 import { EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
-import { isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
+import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -129,6 +129,7 @@ let episodeDraft = null;
 let creatorSelectedId = null;
 let creatorImportErrors = [];
 let episodeCloudEnabled = false;
+let episodeCloudError = "";
 let cloudView = null;
 // Episode runtime (host-local only, never mirrored): pendingEpisode is picked
 // on the host prejoin form, attachedEpisode is consumed once by
@@ -8813,14 +8814,25 @@ function ensureEpisodeDraft() {
 function enterEpisodeCreator() {
   ensureEpisodeDraft();
   renderPrejoinScreen("creator");
+  probeEpisodeCloud(false);
+}
+// Re-probe cloud availability and refresh the creator if it is still open.
+// force=true skips the 60s cache (Retry button after starting the server).
+function probeEpisodeCloud(force = false) {
   try {
-    isEpisodeCloudEnabled().then((ok) => {
-      if (ok !== episodeCloudEnabled) {
-        episodeCloudEnabled = ok;
-        if (prejoinMode === "creator") renderPrejoinScreen("creator");
-      }
+    isEpisodeCloudEnabled(force).then((ok) => {
+      episodeCloudEnabled = ok;
+      const d = epCloudDiagnosis();
+      episodeCloudError = !d.url
+        ? "Cloud is off — set VITE_EPISODE_API_URL and restart dev."
+        : ok ? "" : `Cloud unreachable at ${d.url} — is the episode server running?`;
+      if (prejoinMode === "creator") renderPrejoinScreen("creator");
     });
-  } catch {}
+  } catch {
+    episodeCloudEnabled = false;
+    episodeCloudError = "Cloud check failed.";
+    if (prejoinMode === "creator") renderPrejoinScreen("creator");
+  }
 }
 // Harvest visible creator fields into the draft before any structural
 // action, so switching questions never drops typed-but-uncommitted edits.
@@ -8876,10 +8888,16 @@ function renderEpisodePromptBanner() {
   const ep = getEpisodePrompt();
   if (!ep || !ep.prompt) return "";
   const pos = `Q${Number(ep.index) + 1} of ${ep.total}`;
+  const labels = Array.isArray(ep.optionLabels) ? ep.optionLabels : [];
+  const keys = Array.isArray(ep.optionKeys) ? ep.optionKeys : [];
+  const optionsList = labels.length
+    ? `<ul class="ep-prompt-options">${labels.map((label, i) => `<li><strong>${escapeHtml(keys[i] || String(i + 1))}</strong> ${escapeHtml(label)}</li>`).join("")}</ul>`
+    : "";
   return `
     <section class="card ep-prompt-banner" data-episode-prompt="true">
       <p class="prejoin-kicker">${escapeHtml(ep.title ? `${ep.title} — ${pos}` : pos)} • ${escapeHtml(epKindLabel(ep.kind))}</p>
       <p class="ep-prompt-text">${escapeHtml(ep.prompt)}</p>
+      ${optionsList}
     </section>`;
 }
 
@@ -8982,7 +9000,16 @@ function episodeRunLoad(index) {
     try { const input = document.querySelector("#bingo-word"); if (input) input.value = word; } catch {}
   }
   // wendithapn needs no seeding (fixed Before/Never/After).
-  setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt }, true);
+  // Custom option labels ride the prompt broadcast so every screen lists
+  // them; keys use the live layout rule (ABXY in diamond ≤4, else numbers).
+  let optionLabels = null;
+  let optionKeys = null;
+  if (item.kind === "buttons" && Array.isArray(item.options) && item.options.length) {
+    optionLabels = item.options.map((s) => String(s || ""));
+    const layout = getSettings().choiceLayout || "diamond";
+    optionKeys = optionLabels.map((_, i) => (optionLabels.length <= 4 ? epOptionLabel(i + 1, layout) : String(i + 1)));
+  }
+  setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys }, true);
   episodeIndex = Number(index);
   render();
   return true;
@@ -11251,6 +11278,9 @@ function bindEvents() {
     cloudView = null;
     refreshCreator();
   });
+  delegate("click", "[data-ep-cloud-retry]", () => {
+    probeEpisodeCloud(true);
+  });
   delegate("click", "[data-ep-cloud-copy]", (e, btn) => {
     const code = btn.dataset.epCloudCopy || "";
     try {
@@ -11863,6 +11893,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       importErrors: creatorImportErrors,
       cloudEnabled: episodeCloudEnabled,
       cloud: cloudView,
+      cloudError: episodeCloudError,
       esc: escapeHtml,
     });
   }

@@ -37,7 +37,8 @@ function itemSummary(item) {
   switch (item.kind) {
     case "buttons": {
       const correct = Array.isArray(item.correctOptions) ? item.correctOptions.join(", ") : "—";
-      return `${item.optionCount || "?"} options • correct: ${correct || "none"}`;
+      const labeled = Array.isArray(item.options) && item.options.some((s) => String(s || "").trim());
+      return `${item.optionCount || "?"} options • correct: ${correct || "none"}${labeled ? " • named" : ""}`;
     }
     case "text":
       return item.correctAnswer ? `answer: ${item.correctAnswer}` : "no answer set";
@@ -90,13 +91,28 @@ function renderItemRows(ep, errors, esc) {
   }).join("") + `</ol>`;
 }
 
-function renderButtonsFields(item, esc) {
+// Mirrors optionButtonLabel() in main.js: diamond layout with ≤4 options
+// shows A/B/X/Y, everything else shows numbers. Values stay numeric —
+// only the display label changes. Exported: the runner reuses it for the
+// broadcast option keys.
+export function episodeOptionLabel(option, layout) {
+  if (layout !== "diamond") return String(option);
+  return { 1: "A", 2: "B", 3: "X", 4: "Y" }[option] || String(option);
+}
+
+function renderButtonsFields(item, esc, layout = "diamond") {
   const count = Number(item.optionCount) || 4;
   const correct = new Set((item.correctOptions || []).map(Number));
+  const useLetters = count <= 4;
   const boxes = Array.from({ length: count }, (_, k) => `
-    <label class="ep-check">
+    <label class="ep-check" title="Option ${k + 1}">
       <input type="checkbox" data-ep-harvest id="ep-correct-${k + 1}" value="${k + 1}" ${correct.has(k + 1) ? "checked" : ""} />
-      <span>${k + 1}</span>
+      <span>${esc(useLetters ? episodeOptionLabel(k + 1, layout) : String(k + 1))}</span>
+    </label>`).join("");
+  const labels = Array.isArray(item.options) ? item.options : [];
+  const labelInputs = Array.from({ length: count }, (_, k) => `
+    <label>${useLetters ? episodeOptionLabel(k + 1, layout) : `Option ${k + 1}`}
+      <input id="ep-optlabel-${k + 1}" type="text" maxlength="120" value="${esc(labels[k] || "")}" placeholder="Optional — shown on all screens" />
     </label>`).join("");
   return `
     <label>Options
@@ -104,6 +120,9 @@ function renderButtonsFields(item, esc) {
     </label>
     <fieldset class="ep-fieldset"><legend>Correct option${correct.size === 1 ? "" : "s"}</legend>
       <div class="ep-checks">${boxes}</div>
+    </fieldset>
+    <fieldset class="ep-fieldset"><legend>Option names <span class="muted">(optional — shown beside the question; blank = letters/numbers)</span></legend>
+      <div class="ep-grid2">${labelInputs}</div>
     </fieldset>`;
 }
 
@@ -236,11 +255,11 @@ function renderOverridesFields(item, esc) {
     </fieldset>`;
 }
 
-function renderEditForm(item, esc) {
+function renderEditForm(item, esc, layout = "diamond") {
   if (!item) return "";
   let kindFields = "";
   switch (item.kind) {
-    case "buttons": kindFields = renderButtonsFields(item, esc); break;
+    case "buttons": kindFields = renderButtonsFields(item, esc, layout); break;
     case "text": kindFields = renderTextFields(item, esc); break;
     case "fibbage": kindFields = renderFibbageFields(item, esc); break;
     case "disordat": kindFields = renderDisordatFields(item, esc); break;
@@ -324,9 +343,12 @@ function renderCloudPanel(cloud, esc) {
     </section>`;
 }
 
-export function renderCreatorScreen({ ep, selectedId, errors, importErrors, cloudEnabled, cloud = null, esc }) {
+export function renderCreatorScreen({ ep, selectedId, errors, importErrors, cloudEnabled, cloud = null, cloudError = null, esc }) {
   const d = ep.defaults || {};
   const selected = (ep.items || []).find((it) => it && it.id === selectedId) || null;
+  // Effective choice layout for the edited question (override → default →
+  // game default): drives ABXY vs numeric correct-option labels.
+  const editLayout = selected?.overrides?.choiceLayout || d.choiceLayout || "diamond";
   const valid = (errors || []).length === 0 && (importErrors || []).length === 0;
   return `
   <main class="prejoin-layout ep-layout">
@@ -345,10 +367,11 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
         <button type="button" data-ep-import-btn>Import JSON</button>
         <input type="file" id="ep-import-file" accept="application/json,.json" hidden />
         <button type="button" data-ep-export>Export JSON</button>
-        <button type="button" data-ep-cloud-save ${cloudEnabled ? "" : "disabled title=\"No episode server configured\""}>Save to cloud</button>
-        <button type="button" data-ep-cloud-load ${cloudEnabled ? "" : "disabled title=\"No episode server configured\""}>Load by code</button>
+        <button type="button" data-ep-cloud-save ${cloudEnabled ? "" : "disabled"}>Save to cloud</button>
+        <button type="button" data-ep-cloud-load ${cloudEnabled ? "" : "disabled"}>Load by code</button>
         <span class="ep-status ${valid ? "is-valid" : "is-invalid"}">${valid ? `Valid — ${ep.items.length} question${ep.items.length === 1 ? "" : "s"}` : "Needs fixes"}</span>
       </div>
+      ${!cloudEnabled && cloudError ? `<p class="muted ep-cloud-error">${esc(cloudError)} <button type="button" data-ep-cloud-retry>Retry</button></p>` : ""}
 
       ${renderErrorPanel(errors, importErrors, esc)}
       ${renderCloudPanel(cloud, esc)}
@@ -415,7 +438,7 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
         </div>
       </section>
 
-      ${renderEditForm(selected, esc)}
+      ${renderEditForm(selected, esc, editLayout)}
     </section>
   </main>`;
 }
@@ -479,6 +502,17 @@ export function harvestCreatorFields(root) {
         } catch {}
       }
       patch.correctOptions = picked;
+      // Option labels normalized to the selected count (trim on shrink, pad
+      // on grow); all-blank collapses to [] which validates as absent.
+      const labelCount = Number(patch.optionCount) || 0;
+      if (labelCount > 0) {
+        const names = [];
+        for (let k = 1; k <= labelCount; k++) {
+          if (!q(`#ep-optlabel-${k}`)) break;
+          names.push(String(val(`#ep-optlabel-${k}`) || "").trim());
+        }
+        if (names.length) patch.options = names.every((s) => !s) ? [] : names;
+      }
     }
     if (q("#ep-lietime")) patch.lieTimeSec = numOrRaw("#ep-lietime");
     if (q("#ep-votetime")) patch.voteTimeSec = numOrRaw("#ep-votetime");

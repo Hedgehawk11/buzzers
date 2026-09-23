@@ -20,7 +20,8 @@ No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — s
 - `src/snark.json` (~1475 lines) — `screen.group.key → {en,snark1,snark2}` with `{token}`. All player strings via `getSnark()`. **Vars are `escapeHtml`'d by `getSnark`** — pass raw values; pre-wrapped `<strong>` double-escapes in snark modes (off mode returns the fallback as-is, so keep its inline HTML).
 - `src/style.css` (~2.8k lines) — flat CSS, custom properties, no modules. Font stack is Segoe-first (`"Segoe UI", system-ui, …`) — Avenir was dropped (missing/ugly off-Mac). `body:has(...)` backgrounds are order-dependent: screw block is deliberately last (wins ties).
 - `index.html` — `<div id="app">` + `<div id="toast-layer">` + `src/main.js` + footer.
-- `vite.config.js` — `VitePWA` only. Workbox precaches `gif` (coop faces).
+- `vite.config.js` — `VitePWA` + dev-only `/api` proxy → episode server `:3001` (zero-config cloud in `dev`; Vercel prod serves same-origin `api/` functions, otherwise set `VITE_EPISODE_API_URL`). Workbox precaches `gif` (coop faces).
+- `server/` — episode share API: `core.js` is framework-free store ops (shared), `index.js` is the standalone Express wrapper (`npm run episode-server`), `db.js` is the Mongo adapter (connection cached for serverless, `__EPISODE_TEST_STORE__` seam for tests), `ratelimit.js`/`vercel.js` shared limiters + function helpers. `api/` holds only the three Vercel route handlers (every file there deploys — never put shared code inside).
 - `test-harness/` — node ESM harness stubbing PlayroomKit + DOM, drives real RPC handlers (`run.mjs`, `dom-stub.mjs`/`pk-stub.mjs`/`empty-style.mjs`, `hooks.mjs`).
 
 ## Architecture

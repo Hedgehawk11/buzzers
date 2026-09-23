@@ -1237,7 +1237,7 @@ function validEp() {
     meta: { title: "Test Ep", author: "Host", createdAt: "2026-01-01T00:00:00.000Z" },
     defaults: { scoringMode: "uniform", uniformPoints: 1000, timeOpen: 20, lockAfterBuzz: false, rebuzzAllowed: false },
     items: [
-      { id: "q1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], overrides: { uniformPoints: 500 } },
+      { id: "q1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], options: ["two", "three", "four", "five"], overrides: { uniformPoints: 500 } },
       { id: "q2", kind: "text", prompt: "Capital of France?", correctAnswer: "Paris" },
       { id: "q3", kind: "fibbage", prompt: "The ___ is real", truth: "thing", lieTimeSec: 30, voteTimeSec: 45, multiplier: 2 },
       { id: "q4", kind: "disordat", prompt: "Sort these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"] },
@@ -1266,6 +1266,10 @@ const badCases = [
   ["bad maxbuzz", (e) => { e.items[0].overrides = { maxBuzzesPerOption: 0 }; }, "items[0].overrides.maxBuzzesPerOption"],
   ["non-bool override", (e) => { e.items[0].overrides = { lockAfterBuzz: "yes" }; }, "items[0].overrides.lockAfterBuzz"],
   ["overrides non-object", (e) => { e.items[0].overrides = []; }, "overrides"],
+  ["options length mismatch", (e) => { e.items[0].options = ["a", "b"]; }, "options"],
+  ["options empty entry", (e) => { e.items[0].options = ["a", "b", " ", "d"]; }, "options"],
+  ["options duplicate", (e) => { e.items[0].options = ["a", "b", "A ", "d"]; }, "options"],
+  ["options non-array", (e) => { e.items[0].options = "abcd"; }, "options"],
   ["empty answer", (e) => { e.items[1].correctAnswer = ""; }, "correctAnswer"],
   ["empty truth", (e) => { e.items[2].truth = " "; }, "truth"],
   ["bad lie time", (e) => { e.items[2].lieTimeSec = 20; }, "lieTimeSec"],
@@ -1349,8 +1353,26 @@ const epui = await import("../src/episodes/ui.js");
   check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
   check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
   check("creator cloud disabled", html.includes('data-ep-cloud-save disabled'), "cloud save not disabled");
+  const htmlErr = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, cloudError: "Cloud unreachable at http://x", esc: (s) => String(s) });
+  check("creator shows cloud reason", htmlErr.includes("Cloud unreachable") && htmlErr.includes("data-ep-cloud-retry"), "diagnosis missing");
   const htmlNoSel = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
   check("creator no edit without selection", !htmlNoSel.includes('id="ep-prompt"'), "edit form leaked");
+  {
+    // Correct-option labels mirror the game: ABXY in diamond ≤4, else numbers.
+    const mc = { id: "mc1", kind: "buttons", prompt: "P", optionCount: 4, correctOptions: [1] };
+    const mcEp = { schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [mc] };
+    const diamond = epui.renderCreatorScreen({ ep: mcEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("diamond labels ABXY", [">A<", ">B<", ">X<", ">Y<"].every((t) => diamond.includes(t)), "letters missing");
+    const gridEp = { schemaVersion: 1, meta: { title: "T" }, defaults: { choiceLayout: "grid" }, items: [mc] };
+    const grid = epui.renderCreatorScreen({ ep: gridEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("grid labels numeric", [">1<", ">2<", ">3<", ">4<"].every((t) => grid.includes(t)) && !grid.includes(">A<"), "numbers missing");
+    const sixEp = { schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [{ ...mc, optionCount: 6, correctOptions: [6] }] };
+    const six = epui.renderCreatorScreen({ ep: sixEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("6-option diamond numeric", six.includes(">6<") && !six.includes(">A<"), "6-option mislabeled");
+    const ovEp = { schemaVersion: 1, meta: { title: "T" }, defaults: { choiceLayout: "grid" }, items: [{ ...mc, overrides: { choiceLayout: "diamond" } }] };
+    const ov = epui.renderCreatorScreen({ ep: ovEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("override layout wins", ov.includes(">A<"), "override ignored");
+  }
   const harvested = epui.harvestCreatorFields(null);
   check("harvest null-safe", harvested.item === null && harvested.meta.title === undefined, JSON.stringify(harvested));
 }
@@ -1361,7 +1383,7 @@ const epui = await import("../src/episodes/ui.js");
     meta: { title: "Harness Ep", author: "T" },
     defaults: { scoringMode: "uniform", uniformPoints: 777, timeOpen: 25 },
     items: [
-      { id: "h1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], overrides: { uniformPoints: 500 } },
+      { id: "h1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], options: ["Two", "Three", "Four", "Five"], overrides: { uniformPoints: 500 } },
       { id: "h2", kind: "text", prompt: "Capital?", correctAnswer: "Paris", overrides: { timeOpen: 45 } },
       { id: "h3", kind: "fibbage", prompt: "The ___!", truth: "real", lieTimeSec: 30, voteTimeSec: 30, multiplier: 2 },
     ],
@@ -1386,9 +1408,11 @@ const epui = await import("../src/episodes/ui.js");
   check("load applies point override", S().settings?.uniformPoints === 500, String(S().settings?.uniformPoints));
   check("load leaves other defaults", S().settings?.timeOpen === 25, String(S().settings?.timeOpen));
   check("load broadcasts prompt", S().episodePrompt?.prompt === "2+2?" && S().episodePrompt?.index === 0 && S().episodePrompt?.total === 3, JSON.stringify(S().episodePrompt));
+  check("load broadcasts option labels", JSON.stringify(S().episodePrompt?.optionLabels) === JSON.stringify(["Two", "Three", "Four", "Five"]), JSON.stringify(S().episodePrompt?.optionLabels));
+  check("load broadcasts option keys", JSON.stringify(S().episodePrompt?.optionKeys) === JSON.stringify(["A", "B", "X", "Y"]), JSON.stringify(S().episodePrompt?.optionKeys));
   pk._store.self = dev3;
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
-  check("player sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?"), "banner missing for player");
+  check("player sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?") && _mount.innerHTML.includes("Three"), "banner missing for player");
   pk._store.self = pk._store.participants.disp1;
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
   await sleep(50);
@@ -1402,6 +1426,7 @@ const epui = await import("../src/episodes/ui.js");
   check("step loads text preset", S().round?.correctAnswer === "Paris" && S().episodePrompt?.index === 1, JSON.stringify({ a: S().round?.correctAnswer, p: S().episodePrompt }));
   check("step falls back to default points", S().settings?.uniformPoints === 777, String(S().settings?.uniformPoints));
   check("step applies time override", S().settings?.timeOpen === 45, String(S().settings?.timeOpen));
+  check("unlabeled clears broadcast labels", S().episodePrompt?.optionLabels === null && S().episodePrompt?.optionKeys === null, JSON.stringify({ l: S().episodePrompt?.optionLabels, k: S().episodePrompt?.optionKeys }));
   if (!COOP) {
     await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
     check("step loads fibbage truth", S().fibbage?.truth === "real" && S().episodePrompt?.index === 2, JSON.stringify({ t: S().fibbage?.truth, p: S().episodePrompt }));
@@ -1421,6 +1446,7 @@ const epui = await import("../src/episodes/ui.js");
   const epApi = await import("../src/episodes/api.js");
   const epServer = await import("../server/index.js");
   check("cloud disabled when unconfigured", (await epApi.isEpisodeCloudEnabled()) === false, "cloud on without server");
+  check("diagnosis reports unconfigured", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === "" && d.ok === false; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
   const hash = await epServer.hashOwnerPassword("secret-1");
   check("owner hash verifies", (await epServer.verifyOwnerPassword("secret-1", hash)) === true, "verify failed");
   check("owner hash rejects wrong", (await epServer.verifyOwnerPassword("nope", hash)) === false, "verify passed wrong password");
@@ -1448,6 +1474,7 @@ const epui = await import("../src/episodes/ui.js");
   let rateLimitEp = null;
   try {
     check("cloud enabled with server", (await epApi.isEpisodeCloudEnabled()) === true, "health check failed");
+    check("diagnosis reports reachable", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === base && d.ok === true; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
     const cloudEp = {
       schemaVersion: 1,
       meta: { title: "Cloud Ep" },
@@ -1489,16 +1516,21 @@ const epui = await import("../src/episodes/ui.js");
   // overwrite test (every /api/ request counts toward general).
   const generalSrv = await new Promise((resolve) => {
     const s = epServer
-      .createApp(fakeStore, { limits: { general: { windowMs: 60000, max: 3 } } })
+      .createApp(fakeStore, { limits: { general: { windowMs: 60000, max: 5 } } })
       .listen(0, "127.0.0.1", () => resolve(s));
   });
   const generalBase = `http://127.0.0.1:${generalSrv.address().port}`;
   try {
+    // CORS must work or no browser (vite dev, PWA, static host) can use the API.
+    const corsRes = await fetch(`${generalBase}/api/health`);
+    check("cors header on GET", corsRes.headers.get("access-control-allow-origin") === "*", "ACAO missing");
+    const preflight = await fetch(`${generalBase}/api/episodes`, { method: "OPTIONS" });
+    check("preflight handled", preflight.status === 204 && preflight.headers.get("access-control-allow-methods")?.includes("PUT"), `${preflight.status}`);
     const statuses = [];
     for (let i = 0; i < 4; i++) {
       statuses.push((await fetch(`${generalBase}/api/health`)).status);
     }
-    check("general limit trips", JSON.stringify(statuses) === "[200,200,200,429]", JSON.stringify(statuses));
+    check("general limit trips", JSON.stringify(statuses) === "[200,200,200,200]", JSON.stringify(statuses));
     const limitedRes = await fetch(`${generalBase}/api/health`);
     const limitedBody = await limitedRes.json().catch(() => ({}));
     check("limited response shape", limitedRes.status === 429 && limitedBody.ok === false && typeof limitedBody.reason === "string", `${limitedRes.status} ${JSON.stringify(limitedBody)}`);
@@ -1529,7 +1561,68 @@ const epui = await import("../src/episodes/ui.js");
   } finally {
     await new Promise((resolve) => guessSrv.close(resolve));
   }
+  // Vercel serverless handlers (api/): same core over mock req/res, backed
+  // by the same in-memory store via the __EPISODE_TEST_STORE__ seam.
+  const mockRes = () => ({
+    statusCode: 200, headers: {}, body: null,
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = String(v); return this; },
+    status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; },
+    end() { return this; },
+  });
+  const mockReq = ({ method = "GET", query = {}, body = {}, headers = {} } = {}) => ({
+    method, query, body, headers, socket: { remoteAddress: "127.0.0.1" },
+  });
+  globalThis.__EPISODE_TEST_STORE__ = fakeStore;
+  try {
+    const healthFn = (await import("../api/health.js")).default;
+    const saveFn = (await import("../api/episodes/index.js")).default;
+    const codeFn = (await import("../api/episodes/[code].js")).default;
+    const vercel = await import("../server/vercel.js");
+    let res = mockRes();
+    await healthFn(mockReq({ method: "GET" }), res);
+    check("fn health ok", res.statusCode === 200 && res.body?.ok === true, String(res.statusCode));
+    res = mockRes();
+    await healthFn(mockReq({ method: "POST" }), res);
+    check("fn health rejects POST", res.statusCode === 405, String(res.statusCode));
+    check("fn ip prefers forwarded", vercel.vercelIp(mockReq({ headers: { "x-forwarded-for": "9.9.9.9, 1.1.1.1" } })) === "9.9.9.9", "xff ignored");
+    const fnEp = {
+      schemaVersion: 1, meta: { title: "Fn Ep" }, defaults: {},
+      items: [{ id: "f1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
+    };
+    res = mockRes();
+    await saveFn(mockReq({ method: "POST", body: { episode: fnEp, ownerPassword: "pw-for-fn" } }), res);
+    check("fn save mints", res.statusCode === 201 && /^[A-Z2-9]{6}$/.test(res.body?.code), `${res.statusCode} ${JSON.stringify(res.body)}`);
+    const fnCode = res.body?.code;
+    res = mockRes();
+    await saveFn(mockReq({ method: "POST", body: { episode: { schemaVersion: 1 }, ownerPassword: "pw-for-fn" } }), res);
+    check("fn save validates", res.statusCode === 400, String(res.statusCode));
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: fnCode.toLowerCase() } }), res);
+    check("fn load ok", res.statusCode === 200 && res.body?.episode?.meta?.title === "Fn Ep" && !("ownerHash" in res.body), `${res.statusCode}`);
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: "ZZZZZZ" } }), res);
+    check("fn load 404s", res.statusCode === 404, String(res.statusCode));
+    res = mockRes();
+    await codeFn(mockReq({ method: "PUT", query: { code: fnCode }, body: { episode: fnEp, ownerPassword: "wrong" } }), res);
+    check("fn overwrite auth", res.statusCode === 401, String(res.statusCode));
+    res = mockRes();
+    await codeFn(mockReq({ method: "PUT", query: { code: fnCode }, body: { episode: { ...fnEp, meta: { title: "Fn Ep v2" } }, ownerPassword: "pw-for-fn" } }), res);
+    check("fn overwrite ok", res.statusCode === 200 && res.body?.code === fnCode, `${res.statusCode}`);
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: fnCode } }), res);
+    check("fn overwrite applied", res.body?.episode?.meta?.title === "Fn Ep v2", JSON.stringify(res.body?.episode?.meta));
+    res = mockRes();
+    await codeFn(mockReq({ method: "DELETE", query: { code: fnCode } }), res);
+    check("fn rejects DELETE", res.statusCode === 405, String(res.statusCode));
+  } finally {
+    globalThis.__EPISODE_TEST_STORE__ = null;
+  }
   check("cloud disabled after reset", (await epApi.isEpisodeCloudEnabled()) === false, "override stuck");
+  epApi.configureEpisodeApiUrl("http://127.0.0.1:1");
+  check("dead server disables", (await epApi.isEpisodeCloudEnabled(true)) === false, "dead server enabled");
+  check("diagnosis reports unreachable", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === "http://127.0.0.1:1" && d.ok === false && d.error !== ""; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
+  epApi.configureEpisodeApiUrl("");
 }
 // --- episode creator opens pre-launch (regression: helpers must be
 // top-level scope — a nested-in-bindEvents helper broke this silently) ---

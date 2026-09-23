@@ -43,6 +43,8 @@ export const EPISODE_QUIXORT_BLOCK_SECS = [15, 20, 30, 45, 60];
 // Mirrors DIS_OR_DAT_QUESTION_COUNT.
 export const EPISODE_DISORDAT_COUNT = 7;
 export const EPISODE_DISORDAT_ANSWER_VALUES = ["dis", "dat", "both"];
+// Custom MC option labels share the 120ch convention for answer-ish strings.
+export const EPISODE_OPTION_LABEL_MAX = 120;
 // Bingo words are 5 letters (see startBingo validation in main.js).
 export const EPISODE_BINGO_WORD_LEN = 5;
 
@@ -172,6 +174,38 @@ function validateButtons(item, index) {
       seen.add(n);
     }
   }
+  // Custom option labels are optional (absent/empty = letters or numbers as
+  // today). When present they must cover every option exactly once — the
+  // banner lists them and players answer by letter.
+  if (item.options !== undefined && item.options !== null) {
+    if (!Array.isArray(item.options)) {
+      errors.push(err(index, item.id, "options", "Option labels must be an array, or omitted."));
+    } else if (item.options.length === 0) {
+      // Cleared in the editor = no custom labels. Valid, treated as absent.
+    } else {
+      if (maxOption !== null && item.options.length !== maxOption) {
+        errors.push(err(index, item.id, "options", `Provide exactly ${maxOption} option labels (one per option).`));
+      }
+      const seenLabels = new Set();
+      for (const label of item.options) {
+        const s = String(label ?? "").trim();
+        if (!s) {
+          errors.push(err(index, item.id, "options", "Option labels cannot be empty."));
+          break;
+        }
+        if (s.length > EPISODE_OPTION_LABEL_MAX) {
+          errors.push(err(index, item.id, "options", `Keep option labels under ${EPISODE_OPTION_LABEL_MAX} characters.`));
+          break;
+        }
+        const k = normCompare(s);
+        if (seenLabels.has(k)) {
+          errors.push(err(index, item.id, "options", "Option labels must all be different."));
+          break;
+        }
+        seenLabels.add(k);
+      }
+    }
+  }
   return errors;
 }
 
@@ -276,7 +310,7 @@ const ITEM_VALIDATORS = {
 };
 
 const ITEM_FIELDS = {
-  buttons: ["id", "kind", "prompt", "optionCount", "correctOptions", "overrides"],
+  buttons: ["id", "kind", "prompt", "optionCount", "correctOptions", "options", "overrides"],
   text: ["id", "kind", "prompt", "correctAnswer", "overrides"],
   fibbage: ["id", "kind", "prompt", "truth", "lieTimeSec", "voteTimeSec", "multiplier", "overrides"],
   disordat: ["id", "kind", "prompt", "disLabel", "datLabel", "answers", "overrides"],
@@ -352,6 +386,7 @@ export function normalizeEpisode(ep) {
           if (Array.isArray(next.answers)) next.answers = next.answers.map((a) => String(a ?? "").toLowerCase());
           if (Array.isArray(next.items)) next.items = next.items.map((s) => String(s ?? "").trim());
           if (Array.isArray(next.trash)) next.trash = next.trash.map((s) => String(s ?? "").trim());
+          if (Array.isArray(next.options)) next.options = next.options.map((s) => String(s ?? "").trim());
           if (next.overrides !== undefined) next.overrides = stripBlankSettings({ ...next.overrides });
           return next;
         })

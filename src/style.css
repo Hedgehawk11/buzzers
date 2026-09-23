@@ -2868,3 +2868,6 @@ body[data-ui-anims="off"] .credits-crawl {
 .ep-runner p { overflow-wrap: anywhere; }
 .ep-attach-row { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.75rem 0; }
 .ep-attach-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.ep-prompt-options { list-style: none; margin: 0.6rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.ep-prompt-options li { border: 1px solid var(--line, #2a3b4d); border-radius: 8px; padding: 0.3rem 0.6rem; overflow-wrap: anywhere; }
+.ep-prompt-options li strong { margin-right: 0.35rem; }
