@@ -6,6 +6,7 @@
 // =============================================================================
 
 import {
+  EPISODE_SCHEMA_VERSION,
   blankEpisode,
   blankItem,
   makeEpisodeItemId,
@@ -157,6 +158,60 @@ export function parseImportText(text) {
 
 export function exportText(ep) {
   return JSON.stringify(normalizeEpisode(ep), null, 2);
+}
+
+// Bulk import for cycling modes: lines of "prompt , letter", split on the
+// LAST comma so prompts may contain commas. kind is "bingo" (letter must be
+// in `word`) or "wendithapn" (B/N/A). Blank lines are skipped silently.
+// Returns { items, errors } with errors as [{ line (1-based), message }].
+// Items come back normalized with fresh ids, ready to append.
+export function parseBulkLines(text, kind, word = "") {
+  const errors = [];
+  const items = [];
+  if (kind !== "bingo" && kind !== "wendithapn") {
+    return { items, errors: [{ line: 0, message: "Bulk import only supports bingo and wendithapn." }] };
+  }
+  String(text ?? "").split(/\r?\n/).forEach((raw, i) => {
+    const lineNo = i + 1;
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return;
+    const cut = trimmed.lastIndexOf(",");
+    if (cut === -1) {
+      errors.push({ line: lineNo, message: "Missing comma — use: Question, B" });
+      return;
+    }
+    const base = blankItem(kind);
+    // Bulk lines are single-round questions (one letter each); multi-round
+    // collection questions are built in the editor's rounds list.
+    const prompt = trimmed.slice(0, cut).trim();
+    const answer = trimmed.slice(cut + 1).trim();
+    const normalized = normalizeEpisode({
+      schemaVersion: EPISODE_SCHEMA_VERSION,
+      meta: { title: "bulk" },
+      defaults: {},
+      items: [{
+        ...base,
+        prompt,
+        ...(kind === "bingo" ? { word: String(word || "") } : {}),
+        rounds: [{ prompt, answer }],
+      }],
+    }).items[0];
+    const check = validateEpisode({
+      schemaVersion: EPISODE_SCHEMA_VERSION,
+      meta: { title: "bulk" },
+      defaults: {},
+      items: [normalized],
+    });
+    const itemErrors = check.errors.filter((e) => e.index === 0);
+    if (!itemErrors.length) {
+      items.push(normalized);
+    } else {
+      for (const e of itemErrors) {
+        errors.push({ line: lineNo, message: `${e.field ? `${e.field}: ` : ""}${e.message}` });
+      }
+    }
+  });
+  return { items, errors };
 }
 
 export function exportFileName(ep) {

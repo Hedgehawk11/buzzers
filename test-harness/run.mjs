@@ -184,7 +184,7 @@ if (COOP) {
 }
 
 // --- bingo quick-ruling NaN path (slot key in coop, pid off-coop) ---
-queryMap["#bingo-word"] = { value: "HELLO" };
+queryMap["#bingo-word"] = { value: "BINGO" };
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, prod);
 check("bingo mode on", S().settings?.inputMode === "bingo", S().settings?.inputMode);
 await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
@@ -1242,8 +1242,8 @@ function validEp() {
       { id: "q3", kind: "fibbage", prompt: "The ___ is real", truth: "thing", lieTimeSec: 30, voteTimeSec: 45, multiplier: 2 },
       { id: "q4", kind: "disordat", prompt: "Sort these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"] },
       { id: "q5", kind: "quixort", prompt: "Sort oldest first", items: ["a", "b", "c", "d"], trash: ["zzz"], multiplier: 1, blockSec: 30 },
-      { id: "q6", kind: "bingo", prompt: "Letters", word: "HELLO" },
-      { id: "q7", kind: "wendithapn", prompt: "When?" },
+      { id: "q6", kind: "bingo", prompt: "Letters", word: "BINGO", rounds: [{ prompt: "Pick G", answer: "G" }] },
+      { id: "q7", kind: "wendithapn", prompt: "When?", rounds: [{ prompt: "W?", answer: "N" }] },
     ],
   };
 }
@@ -1280,6 +1280,16 @@ const badCases = [
   ["quixort dupes", (e) => { e.items[4].trash = ["A "]; }, "items"],
   ["quixort bad block", (e) => { e.items[4].blockSec = 25; }, "blockSec"],
   ["bingo short word", (e) => { e.items[5].word = "HI"; }, "word"],
+  ["bingo repeated letters", (e) => { e.items[5].word = "HELLO"; }, "word"],
+  ["bingo missing answer", (e) => { delete e.items[5].rounds; }, "rounds"],
+  ["bingo empty rounds", (e) => { e.items[5].rounds = []; }, "rounds"],
+  ["bingo too many rounds", (e) => { e.items[5].rounds = ["B", "I", "N", "G", "O", "X"].map((a) => ({ answer: a })); }, "rounds"],
+  ["bingo bad letter", (e) => { e.items[5].rounds = [{ answer: "7" }]; }, "rounds"],
+  ["bingo letter not in word", (e) => { e.items[5].rounds = [{ answer: "Z" }]; }, "rounds"],
+  ["bingo round unknown field", (e) => { e.items[5].rounds = [{ answer: "B", junk: 1 }]; }, "rounds"],
+  ["wen missing answer", (e) => { delete e.items[6].rounds; }, "rounds"],
+  ["wen bad answer", (e) => { e.items[6].rounds = [{ answer: "X" }]; }, "rounds"],
+  ["wen too many rounds", (e) => { e.items[6].rounds = [{ answer: "B" }, { answer: "N" }, { answer: "A" }, { answer: "B" }]; }, "rounds"],
   ["bad default key", (e) => { e.defaults.junk = 1; }, "defaults.junk"],
   ["bad scoring mode", (e) => { e.defaults.scoringMode = "chaos"; }, "defaults.scoringMode"],
 ];
@@ -1290,14 +1300,22 @@ for (const [name, mutate, field] of badCases) {
   check(`episode invalid: ${name}`, r.ok === false && r.errors.some((x) => x.field === field), JSON.stringify(r.errors));
 }
 {
+  // Repeat letters across rounds are allowed (fresh contest per round).
+  const rep = validEp();
+  rep.items[5].rounds = [{ prompt: "One?", answer: "B" }, { prompt: "Two?", answer: "b " }, { prompt: "Three?", answer: "N" }];
+  rep.items[6].rounds = [{ answer: "B" }, { answer: "B" }];
+  const rr = eps.validateEpisode(rep);
+  check("repeat rounds allowed", rr.ok === true, JSON.stringify(rr.errors));
+}
+{
   const messy = validEp();
   messy.items[0].correctOptions = [4, 1, 1];
   messy.items[3].answers = ["DIS", "DAT", "Both", "dis", "dat", "both", "dis"];
-  messy.items[5].word = "hello";
+  messy.items[5].word = "bingo";
   const n = eps.normalizeEpisode(messy);
   check("normalize sorts/dedupes options", JSON.stringify(n.items[0].correctOptions) === "[1,4]", JSON.stringify(n.items[0].correctOptions));
   check("normalize lowercases answers", n.items[3].answers[0] === "dis" && n.items[3].answers[2] === "both", JSON.stringify(n.items[3].answers));
-  check("normalize uppercases bingo", n.items[5].word === "HELLO", n.items[5].word);
+  check("normalize uppercases bingo", n.items[5].word === "BINGO", n.items[5].word);
   check("normalized messy passes", eps.validateEpisode(n).ok === true, JSON.stringify(eps.validateEpisode(n).errors));
   {
     const base = validEp();
@@ -1307,8 +1325,32 @@ for (const [name, mutate, field] of badCases) {
     check("gap falls back to default", gap.uniformPoints === 1000 && gap.scoringMode === "uniform", JSON.stringify(gap));
     check("absent keys omitted", !("jackMultiplier" in gap) && !("maxBuzzesPerOption" in gap) && !("choiceLayout" in gap) && !("closeBuzzersOnPointsGiven" in gap), JSON.stringify(gap));
   }
+  {
+    // Lowercase letters normalize up, then validate.
+    const lower = eps.normalizeEpisode(validEp());
+    lower.items[5].rounds = [{ prompt: "  pick g ", answer: "g" }];
+    lower.items[6].rounds = [{ answer: "n" }];
+    const fixed = eps.normalizeEpisode(lower);
+    check("answers uppercase", fixed.items[5].rounds[0].answer === "G" && fixed.items[6].rounds[0].answer === "N", JSON.stringify([fixed.items[5].rounds[0].answer, fixed.items[6].rounds[0].answer]));
+    check("round prompts trim", fixed.items[5].rounds[0].prompt === "pick g", JSON.stringify(fixed.items[5].rounds[0].prompt));
+    check("lowercase answers valid", eps.validateEpisode(fixed).ok === true, JSON.stringify(eps.validateEpisode(fixed).errors));
+  }
+  {
+    // Legacy single-answer episodes migrate to one round on normalize.
+    const legacy = eps.normalizeEpisode({
+      schemaVersion: 1,
+      meta: { title: "Old" },
+      defaults: {},
+      items: [
+        { id: "o1", kind: "bingo", prompt: "Old?", word: "bingo", answer: "b" },
+        { id: "o2", kind: "wendithapn", prompt: "Old wen?", answer: "a" },
+      ],
+    });
+    check("legacy migrates to rounds", Array.isArray(legacy.items[0].rounds) && legacy.items[0].rounds[0].answer === "B" && legacy.items[0].answer === undefined, JSON.stringify(legacy.items[0]));
+    check("legacy validates after migrate", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
+  }
 }
-check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "bingo" ? { word: "ABCDE" } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
 // --- episode editor ops (mode-independent, DOM-free) ---
 const eped = await import("../src/episodes/editor.js");
 const epui = await import("../src/episodes/ui.js");
@@ -1376,6 +1418,23 @@ const epui = await import("../src/episodes/ui.js");
   const harvested = epui.harvestCreatorFields(null);
   check("harvest null-safe", harvested.item === null && harvested.meta.title === undefined, JSON.stringify(harvested));
 }
+// --- episode bulk line import (cycling modes) ---
+{
+  const eped2 = await import("../src/episodes/editor.js");
+  const bingo = eped2.parseBulkLines("First?, B\nSecond, with comma?, I\n\n  \nThird?,o", "bingo", "BINGO");
+  check("bulk bingo valid", bingo.items.length === 3 && bingo.errors.length === 0, JSON.stringify({ n: bingo.items.length, e: bingo.errors }));
+  check("bulk prompts keep commas", bingo.items[1].prompt === "Second, with comma?" && bingo.items[1].rounds[0].answer === "I", JSON.stringify(bingo.items[1]));
+  check("bulk builds rounds", bingo.items[0].rounds.length === 1 && bingo.items[0].rounds[0].answer === "B", JSON.stringify(bingo.items[0].rounds));
+  check("bulk ids unique", new Set(bingo.items.map((i) => i.id)).size === 3, "dup ids");
+  const bad = eped2.parseBulkLines("No comma here\nEmpty?, \nNot in word?, Z\n, B", "bingo", "BINGO");
+  check("bulk bingo errors by line", bad.items.length === 0 && bad.errors.length === 4 && bad.errors[0].line === 1, JSON.stringify(bad.errors));
+  const wen = eped2.parseBulkLines("Happened before?, b\nNever?, N\nAfter?, a", "wendithapn");
+  check("bulk wen valid", wen.items.length === 3 && wen.errors.length === 0 && wen.items[0].rounds[0].answer === "B", JSON.stringify(wen));
+  const wenBad = eped2.parseBulkLines("Maybe?, X", "wendithapn");
+  check("bulk wen rejects letter", wenBad.items.length === 0 && wenBad.errors.length === 1 && wenBad.errors[0].line === 1, JSON.stringify(wenBad));
+  const wrongKind = eped2.parseBulkLines("Q?, A", "buttons");
+  check("bulk rejects other kinds", wrongKind.items.length === 0 && wrongKind.errors.length === 1, JSON.stringify(wrongKind));
+}
 // --- episode runner: attach + load + broadcast (driven via producer-action) ---
 {
   const testEp = {
@@ -1439,6 +1498,122 @@ const epui = await import("../src/episodes/ui.js");
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
   await sleep(50);
   check("banner gone after end", !_mount.innerHTML.includes("ep-prompt-banner"), "stale banner on display");
+  pk._store.self = pk._store.participants.host1;
+}
+// --- episode cycling modes: word+target seeding, start preserves it ---
+{
+  const cycleEp = {
+    schemaVersion: 1,
+    meta: { title: "Cycle Ep" },
+    defaults: {},
+    items: [
+      {
+        id: "c1", kind: "bingo", prompt: "Collect!", word: "GAMES",
+        rounds: [{ prompt: "First?", answer: "G" }, { prompt: "Second?", answer: "E" }],
+      },
+      { id: "c2", kind: "wendithapn", prompt: "When?", rounds: [{ prompt: "W?", answer: "N" }] },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [cycleEp] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("bingo load seeds word", S().bingo?.word === "GAMES" && S().bingo?.items?.join("") === "GAMES", JSON.stringify(S().bingo?.word));
+  check("bingo load seeds first target", S().bingo?.targetIndex === 0, String(S().bingo?.targetIndex));
+  check("bingo load resets play", S().bingo?.active === false && S().bingo?.winner === null, JSON.stringify({ a: S().bingo?.active, w: S().bingo?.winner }));
+  check("bingo prompt is round prompt", S().episodePrompt?.prompt === "First?" && S().episodePrompt?.roundIndex === 0 && S().episodePrompt?.roundTotal === 2, JSON.stringify(S().episodePrompt));
+  // startBingo reads the setup input headlessly via queryMap.
+  queryMap["#bingo-word"] = { value: "HELLO" };
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("live start rejects repeats", S().bingo?.active === false && S().bingo?.targetIndex === 0, JSON.stringify({ a: S().bingo?.active, t: S().bingo?.targetIndex }));
+  queryMap["#bingo-word"] = { value: "GAMES" };
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("start preserves seeded target", S().bingo?.active === true && S().bingo?.targetIndex === 0, JSON.stringify({ a: S().bingo?.active, t: S().bingo?.targetIndex }));
+  await pk._store.rpc["producer-action"]({ fn: "setBingoTarget", args: [4] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("mid-game restart resets target", S().bingo?.targetIndex === -1, String(S().bingo?.targetIndex));
+  // Reload to replay the collection flow below.
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "startBingoCycling", args: [] }, prod);
+  // dev1's roster was shrunk to 1 slot by an earlier test, so its track key
+  // collapses to the pid (same rule as getCoopScoreKey) — derive it live.
+  const dev1Slots = (S().coopRosters?.dev1?.slots || []).length;
+  const trackKey = COOP && dev1Slots > 1 ? "coop:dev1:0" : "dev1";
+  const bz1 = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 0 }, dev1);
+  check("collect first letter", bz1?.ok === true && (S().bingo?.playerItems?.[trackKey] || []).includes(0), JSON.stringify(bz1));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLetter", args: [1] }, prod);
+  check("letter nav moves target", S().bingo?.targetIndex === 3, String(S().bingo?.targetIndex));
+  check("letter nav switches prompt", S().episodePrompt?.prompt === "Second?" && S().episodePrompt?.roundIndex === 1, JSON.stringify(S().episodePrompt));
+  check("letter nav keeps collection", (S().bingo?.playerItems?.[trackKey] || []).includes(0), JSON.stringify(S().bingo?.playerItems?.[trackKey]));
+  check("letter nav clears per-target scores", Object.keys(S().bingo?.scoredTracks || {}).length === 0, JSON.stringify(S().bingo?.scoredTracks));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLetter", args: [1] }, prod);
+  check("letter nav stops at end", S().bingo?.targetIndex === 3 && S().episodePrompt?.roundIndex === 1, JSON.stringify({ t: S().bingo?.targetIndex }));
+  await pk._store.rpc["bingo-buzz"]({ litIndex: 3, litSlot: 0, coopSlot: 0 }, dev1);
+  check("collect second letter", (S().bingo?.playerItems?.[trackKey] || []).join(",") === "0,3", JSON.stringify(S().bingo?.playerItems?.[trackKey]));
+  // Audience view: pk-stub hardcodes isHost=true, so bingo-mode *player*
+  // screens always render the host panel headlessly — assert the banner on
+  // the display client instead (same component, no isHost involvement).
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(600);
+  check("banner shows letter position", _mount.innerHTML.includes("Second?") && _mount.innerHTML.includes("Letter 2 of 2"), "position missing");
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLetter", args: [-1] }, prod);
+  check("letter nav steps back", S().bingo?.targetIndex === 0 && S().episodePrompt?.prompt === "First?", JSON.stringify({ t: S().bingo?.targetIndex, p: S().episodePrompt?.prompt }));
+  await pk._store.rpc["producer-action"]({ fn: "endBingo", args: [] }, prod);
+  delete queryMap["#bingo-word"];
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [1] }, prod);
+  check("wen load seeds target", S().bingo?.targetIndex === 1 && S().bingo?.items?.join(",") === "Before,Never,After", JSON.stringify({ t: S().bingo?.targetIndex, i: S().bingo?.items }));
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("wen start keeps target", S().bingo?.active === true && S().bingo?.targetIndex === 1, String(S().bingo?.targetIndex));
+  await pk._store.rpc["producer-action"]({ fn: "endBingo", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  pk._store.self = pk._store.participants.host1;
+}
+// --- episode setting locks: refuse managed, allow the rest, relock, unlock ---
+{
+  const lockEp = {
+    schemaVersion: 1,
+    meta: { title: "Lock Ep" },
+    defaults: { scoringMode: "uniform", uniformPoints: 600, timeOpen: 22, lockAfterBuzz: true },
+    items: [
+      { id: "k1", kind: "buttons", prompt: "Q1?", optionCount: 4, correctOptions: [1], overrides: { uniformPoints: 650 } },
+      { id: "k2", kind: "text", prompt: "Q2?", correctAnswer: "A" },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [lockEp] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("load applies override points", S().settings?.uniformPoints === 650, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["uniformPoints", 999] }, prod);
+  check("locked points refused", S().settings?.uniformPoints === 650, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 99] }, prod);
+  check("locked buzz time refused", S().settings?.timeOpen === 22, String(S().settings?.timeOpen));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  check("locked toggle refused", S().settings?.lockAfterBuzz === true, String(S().settings?.lockAfterBuzz));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "grid"] }, prod);
+  check("unlocked setting allowed", S().settings?.choiceLayout === "grid", String(S().settings?.choiceLayout));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "diamond"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  {
+    const html = _mount.innerHTML;
+    check("runner shows lock note", html.includes("Locked by episode") && html.includes("Points"), "lock note missing");
+    check("locked select disabled", /data-setting="uniformPoints"\s+disabled/.test(html), "points select enabled");
+    check("locked input disabled", /data-setting="timeOpen"\s+disabled/.test(html), "time input enabled");
+    check("locked toggle disabled", /data-toggle-setting="lockAfterBuzz"[^>]*disabled/.test(html), "lock toggle enabled");
+    check("unlocked select enabled", !/data-setting="choiceLayout"\s+disabled/.test(html), "layout select disabled");
+  }
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+  check("step falls back to default points", S().settings?.uniformPoints === 600, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["uniformPoints", 999] }, prod);
+  check("default-managed stays locked", S().settings?.uniformPoints === 600, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["uniformPoints", 999] }, prod);
+  check("end unlocks settings", S().settings?.uniformPoints === 999, String(S().settings?.uniformPoints));
   pk._store.self = pk._store.participants.host1;
 }
 // --- episode cloud: API server + client over real HTTP (in-memory store) ---
@@ -1650,6 +1825,108 @@ const epui = await import("../src/episodes/ui.js");
   } finally {
     console.warn = origWarn2;
   }
+}
+// --- episode checkbox gate on the host prejoin form ---
+{
+  const fireClick = async (selector, dataset = {}) => {
+    const t = { dataset, closest: (s) => (s === selector ? t : null) };
+    for (const fn of mount._listeners.click || []) await fn({ target: t, preventDefault() {} });
+    await sleep(200);
+  };
+  const fireSubmitHost = async () => {
+    const fakeHost = {
+      dataset: { prejoinForm: "host" },
+      closest: (s) => (s === "[data-prejoin-form]" ? fakeHost : null),
+      querySelector: () => ({ disabled: false }),
+    };
+    for (const fn of mount._listeners.submit || []) await fn({ preventDefault() {}, target: fakeHost });
+    await sleep(700);
+  };
+  queryMap["#prejoin-name"] = { value: "Host" };
+  queryMap["#prejoin-team-mode"] = { value: "off" };
+  queryMap["#prejoin-coop"] = { checked: false };
+  // Checked with nothing attached (pendingEpisode starts null) → error, no attach.
+  queryMap["#prejoin-episode"] = { checked: true };
+  await fireSubmitHost();
+  check("episode box without attach errors", _mount.innerHTML.includes("Attach an episode"), "gate missing");
+  check("failed gate attaches nothing", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
+  // Unchecked → success path, still nothing attached.
+  queryMap["#prejoin-episode"] = { checked: false };
+  await fireSubmitHost();
+  check("unchecked box attaches nothing", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
+  // Full path: save to cloud → load by code on the host form → submit →
+  // hostTick consumes the attach and seeds lobby defaults.
+  const epApi2 = await import("../src/episodes/api.js");
+  const epServer2 = await import("../server/index.js");
+  const lobbyMem = new Map();
+  const lobbyStore = {
+    async findOne({ code }) { return lobbyMem.get(code) || null; },
+    async insertOne(doc) {
+      if (lobbyMem.has(doc.code)) { const e = new Error("duplicate key"); e.code = 11000; throw e; }
+      lobbyMem.set(doc.code, { ...doc });
+      return { insertedId: doc.code };
+    },
+    async updateOne({ code }, { $set }) {
+      const cur = lobbyMem.get(code);
+      if (cur) lobbyMem.set(code, { ...cur, ...$set });
+      return { modifiedCount: cur ? 1 : 0 };
+    },
+  };
+  const lobbySrv = await new Promise((resolve) => {
+    const s = epServer2.createApp(lobbyStore).listen(0, "127.0.0.1", () => resolve(s));
+  });
+  epApi2.configureEpisodeApiUrl(`http://127.0.0.1:${lobbySrv.address().port}`);
+  try {
+    const lobbyEp = {
+      schemaVersion: 1,
+      meta: { title: "Lobby Path Ep" },
+      defaults: { scoringMode: "uniform", uniformPoints: 1750 },
+      items: [{ id: "l1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
+    };
+    const savedLobby = await epApi2.saveEpisode(lobbyEp, "lobby-pw");
+    // Entering creator runs the probe, which enables the cloud row.
+    const opener = { dataset: { prejoinOpen: "creator" }, closest: (s) => (s === "[data-prejoin-open]" ? opener : null) };
+    for (const fn of mount._listeners.click || []) await fn({ target: opener, preventDefault() {} });
+    await sleep(700);
+    queryMap["#ep-attach-code"] = { value: savedLobby.code };
+    await fireClick("[data-ep-attach-cloud]");
+    queryMap["#prejoin-episode"] = { checked: true };
+    await fireSubmitHost();
+    check("cloud-attached episode passes gate", !_mount.innerHTML.includes("Attach an episode"), "gate blocked a valid attach");
+    await sleep(1600);
+    check("lobby seeded cloud defaults", S().settings?.uniformPoints === 1750, String(S().settings?.uniformPoints));
+  } finally {
+    epApi2.configureEpisodeApiUrl("");
+    queryMap["#prejoin-episode"] = { checked: false };
+    delete queryMap["#ep-attach-code"];
+    await new Promise((resolve) => lobbySrv.close(resolve));
+  }
+}
+// --- host form renders the episode checkbox + cloud retry ---
+{
+  // Empty name forces the validation-error render of the host form.
+  queryMap["#prejoin-name"] = { value: "" };
+  const badName = {
+    dataset: { prejoinForm: "host" },
+    closest: (s) => (s === "[data-prejoin-form]" ? badName : null),
+    querySelector: () => ({ disabled: false }),
+  };
+  for (const fn of mount._listeners.submit || []) await fn({ preventDefault() {}, target: badName });
+  await sleep(700);
+  check("host form has episode checkbox", _mount.innerHTML.includes('id="prejoin-episode"'), "checkbox missing");
+  check("host form hides picker hook", _mount.innerHTML.includes("ep-attach-options"), "options block missing");
+  queryMap["#prejoin-name"] = { value: "Host" };
+  // Force the cloud state back to disabled (a prior test's probe enabled it),
+  // then re-render the form: the retry affordance must appear.
+  const retry = { dataset: {}, closest: (s) => (s === "[data-ep-attach-cloud-retry]" ? retry : null) };
+  for (const fn of mount._listeners.click || []) await fn({ target: retry, preventDefault() {} });
+  await sleep(300);
+  queryMap["#prejoin-name"] = { value: "" };
+  for (const fn of mount._listeners.submit || []) await fn({ preventDefault() {}, target: badName });
+  await sleep(700);
+  check("host form has cloud retry", _mount.innerHTML.includes("data-ep-attach-cloud-retry"), "retry missing");
+  check("cloud retry re-renders hint", _mount.innerHTML.includes("Cloud codes need the episode server"), "hint text missing");
+  queryMap["#prejoin-name"] = { value: "Host" };
 }
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;

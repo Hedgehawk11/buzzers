@@ -6,6 +6,7 @@
 // =============================================================================
 
 import {
+  EPISODE_BINGO_MAX_ROUNDS,
   EPISODE_DISORDAT_ANSWER_VALUES,
   EPISODE_DISORDAT_COUNT,
   EPISODE_FIBBAGE_LIE_TIMES,
@@ -13,6 +14,9 @@ import {
   EPISODE_KINDS,
   EPISODE_OPTION_COUNTS,
   EPISODE_QUIXORT_BLOCK_SECS,
+  EPISODE_WEN_ANSWERS,
+  EPISODE_WEN_LABELS,
+  EPISODE_WEN_MAX_ROUNDS,
 } from "./schema.js";
 
 export const EPISODE_KIND_LABELS = {
@@ -50,10 +54,16 @@ function itemSummary(item) {
       const n = Array.isArray(item.items) ? item.items.filter((s) => String(s || "").trim()).length : 0;
       return `${n} items`;
     }
-    case "bingo":
-      return item.word ? `word: ${item.word}` : "no word set";
-    case "wendithapn":
-      return "Before / Never / After";
+    case "bingo": {
+      const rounds = Array.isArray(item.rounds) ? item.rounds : [];
+      const letters = rounds.map((r) => r?.answer).filter(Boolean).join(", ");
+      return `${item.word ? `word: ${item.word} • ` : ""}${rounds.length} round${rounds.length === 1 ? "" : "s"}${letters ? ` (${letters})` : ""}`;
+    }
+    case "wendithapn": {
+      const rounds = Array.isArray(item.rounds) ? item.rounds : [];
+      const letters = rounds.map((r) => r?.answer).filter(Boolean).join(", ");
+      return `${rounds.length} round${rounds.length === 1 ? "" : "s"}${letters ? ` (${letters})` : ""}`;
+    }
     default:
       return "";
   }
@@ -203,9 +213,44 @@ function renderQuixortFields(item, esc) {
 
 function renderBingoFields(item, esc) {
   return `
-    <label>Word <span class="muted">(5 letters, A–Z)</span>
+    <label>Word <span class="muted">(5 letters, A–Z, no repeats)</span>
       <input id="ep-word" type="text" maxlength="5" value="${esc(item.word || "")}" placeholder="BINGO" />
-    </label>`;
+    </label>
+    ${renderRoundsList(item, esc)}`;
+}
+
+function renderWenFields(item, esc) {
+  return `
+    <p class="muted">Wen Dit Happn always uses Before / Never / After — each round below collects one of them. Letters stay collected across rounds.</p>
+    ${renderRoundsList(item, esc)}`;
+}
+
+// Answer-round list shared by cycling modes. Each round is one collected
+// target; collection progress persists across rounds within the question.
+function renderRoundsList(item, esc) {
+  const max = item.kind === "bingo" ? EPISODE_BINGO_MAX_ROUNDS : EPISODE_WEN_MAX_ROUNDS;
+  const rounds = Array.isArray(item.rounds) && item.rounds.length ? item.rounds : [{ prompt: "", answer: "" }];
+  const rows = rounds.map((round, i) => {
+    const r = round && typeof round === "object" ? round : {};
+    const answerInput = item.kind === "bingo"
+      ? `<input id="ep-rd-answer-${i}" type="text" maxlength="1" value="${esc(r.answer || "")}" placeholder="B" aria-label="Round ${i + 1} letter" />`
+      : `<select data-ep-harvest id="ep-rd-answer-${i}" aria-label="Round ${i + 1} answer">
+          <option value="" ${!r.answer ? "selected" : ""}>Pick</option>
+          ${EPISODE_WEN_ANSWERS.map((a) => `<option value="${a}" ${r.answer === a ? "selected" : ""}>${a} — ${esc(EPISODE_WEN_LABELS[a])}</option>`).join("")}
+        </select>`;
+    return `<div class="ep-round-row">
+      <input id="ep-rd-prompt-${i}" type="text" maxlength="300" value="${esc(r.prompt || "")}" placeholder="Round ${i + 1} prompt (optional)" aria-label="Round ${i + 1} prompt" />
+      ${answerInput}
+      <button type="button" data-ep-round-del="${i}" ${rounds.length <= 1 ? "disabled" : ""} aria-label="Remove round ${i + 1}">×</button>
+    </div>`;
+  }).join("");
+  return `
+    <fieldset class="ep-fieldset"><legend>Answer rounds (${rounds.length}/${max}) — letters stay collected across rounds</legend>
+      <div class="ep-rounds">${rows}</div>
+      <div class="ep-toolbar">
+        <button type="button" data-ep-round-add ${rounds.length >= max ? "disabled" : ""}>Add round</button>
+      </div>
+    </fieldset>`;
 }
 
 function triState(current) {
@@ -265,7 +310,7 @@ function renderEditForm(item, esc, layout = "diamond") {
     case "disordat": kindFields = renderDisordatFields(item, esc); break;
     case "quixort": kindFields = renderQuixortFields(item, esc); break;
     case "bingo": kindFields = renderBingoFields(item, esc); break;
-    case "wendithapn": kindFields = `<p class="muted">Wen Dit Happn always uses Before / Never / After — just write the prompt.</p>`; break;
+    case "wendithapn": kindFields = renderWenFields(item, esc); break;
     default: kindFields = "";
   }
   return `
@@ -436,6 +481,27 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
           </select>
           <button type="button" data-ep-add>Add question</button>
         </div>
+        <details class="ep-bulk">
+          <summary>Bulk add bingo / Wen questions</summary>
+          <p class="muted">One per line: <code>Question, B</code> — letter must be in the word (bingo) or B/N/A for Before/Never/After (Wen). Prompts may contain commas; the last one splits the letter.</p>
+          <div class="ep-grid2">
+            <label>Type
+              <select id="ep-bulk-kind">
+                <option value="bingo">Bingo</option>
+                <option value="wendithapn">Wen Dit Happn</option>
+              </select>
+            </label>
+            <label>Word <span class="muted">(bingo only)</span>
+              <input id="ep-bulk-word" type="text" maxlength="5" placeholder="BINGO" />
+            </label>
+          </div>
+          <label>Questions
+            <textarea id="ep-bulk-text" rows="4" placeholder="When did it happen?, B&#10;Never happened?, N"></textarea>
+          </label>
+          <div class="ep-toolbar">
+            <button type="button" data-ep-bulk-add>Add lines</button>
+          </div>
+        </details>
       </section>
 
       ${renderEditForm(selected, esc, editLayout)}
@@ -486,6 +552,19 @@ export function harvestCreatorFields(root) {
     if (truth !== null) patch.truth = truth;
     const word = val("#ep-word");
     if (word !== null) patch.word = word;
+    // Answer rounds: read every rendered row (validator flags blanks).
+    if (q("#ep-rd-answer-0") || q("#ep-rd-prompt-0")) {
+      const rounds = [];
+      for (let k = 0; ; k++) {
+        if (!q(`#ep-rd-answer-${k}`) && !q(`#ep-rd-prompt-${k}`)) break;
+        rounds.push({
+          prompt: val(`#ep-rd-prompt-${k}`) || "",
+          answer: val(`#ep-rd-answer-${k}`) || "",
+        });
+        if (k > 8) break;
+      }
+      patch.rounds = rounds;
+    }
     const dis = val("#ep-dislabel");
     if (dis !== null) patch.disLabel = dis;
     const dat = val("#ep-datlabel");

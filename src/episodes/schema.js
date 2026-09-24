@@ -47,6 +47,12 @@ export const EPISODE_DISORDAT_ANSWER_VALUES = ["dis", "dat", "both"];
 export const EPISODE_OPTION_LABEL_MAX = 120;
 // Bingo words are 5 letters (see startBingo validation in main.js).
 export const EPISODE_BINGO_WORD_LEN = 5;
+// Max answer rounds per cycling question (bounded by the items themselves).
+export const EPISODE_BINGO_MAX_ROUNDS = 5;
+export const EPISODE_WEN_MAX_ROUNDS = 3;
+// Wen Dit Happn answers: B(efore) / N(ever) / A(fter), indices 0/1/2.
+export const EPISODE_WEN_ANSWERS = ["B", "N", "A"];
+export const EPISODE_WEN_LABELS = { B: "Before", N: "Never", A: "After" };
 
 // Settings an episode can manage, at the episode level (defaults) and per
 // question (overrides). Deliberately game-flow only: safe to flip between
@@ -104,9 +110,9 @@ export function blankItem(kind) {
     case "quixort":
       return { ...base, items: ["", "", "", ""], trash: [], multiplier: 1, blockSec: 30 };
     case "bingo":
-      return { ...base, word: "" };
+      return { ...base, word: "", rounds: [{ prompt: "", answer: "" }] };
     case "wendithapn":
-      return { ...base };
+      return { ...base, rounds: [{ prompt: "", answer: "" }] };
     default:
       return { ...base, kind: "buttons", optionCount: 4, correctOptions: [] };
   }
@@ -293,9 +299,68 @@ function validateQuixort(item, index) {
 function validateBingo(item, index) {
   const errors = checkPrompt(item, index);
   const word = String(item.word ?? "").trim().toUpperCase();
-  if (word.length !== EPISODE_BINGO_WORD_LEN || !/^[A-Z]{5}$/.test(word)) {
+  const wordOk = word.length === EPISODE_BINGO_WORD_LEN && /^[A-Z]{5}$/.test(word);
+  if (!wordOk) {
     errors.push(err(index, item.id, "word", "Enter a 5-letter word (A–Z)."));
+  } else if (new Set(word).size !== word.length) {
+    errors.push(err(index, item.id, "word", "Bingo words cannot repeat letters."));
   }
+  errors.push(...validateRounds(item, index, {
+    kind: "bingo",
+    max: EPISODE_BINGO_MAX_ROUNDS,
+    checkAnswer: (answer) => {
+      if (!/^[A-Z]$/.test(answer)) return "Enter the correct letter (A–Z).";
+      if (wordOk && !word.includes(answer)) return `Letter ${answer} is not in "${word}".`;
+      return null;
+    },
+  }));
+  return errors;
+}
+
+function validateWenDitHapn(item, index) {
+  const errors = checkPrompt(item, index);
+  errors.push(...validateRounds(item, index, {
+    kind: "wendithapn",
+    max: EPISODE_WEN_MAX_ROUNDS,
+    checkAnswer: (answer) => (
+      EPISODE_WEN_ANSWERS.includes(answer) ? null : "Answer must be B (Before), N (Never), or A (After)."
+    ),
+  }));
+  return errors;
+}
+
+// Shared answer-round validation for cycling modes. Repeats across rounds
+// are allowed (each round is a fresh contest for that letter — per-target
+// scores reset on letter nav, and other tracks can still collect it).
+function validateRounds(item, index, { max, checkAnswer }) {
+  const errors = [];
+  if (!Array.isArray(item.rounds) || item.rounds.length === 0) {
+    errors.push(err(index, item.id, "rounds", "Add at least one answer round."));
+    return errors;
+  }
+  if (item.rounds.length > max) {
+    errors.push(err(index, item.id, "rounds", `At most ${max} answer rounds.`));
+  }
+  item.rounds.forEach((round, r) => {
+    const tag = `Round ${r + 1}`;
+    if (!isPlainObject(round)) {
+      errors.push(err(index, item.id, "rounds", `${tag} must be an object.`));
+      return;
+    }
+    for (const key of Object.keys(round)) {
+      if (!["prompt", "answer"].includes(key)) {
+        errors.push(err(index, item.id, "rounds", `${tag}: unknown field "${key}".`));
+      }
+    }
+    if (round.prompt !== undefined && round.prompt !== null && String(round.prompt).trim().length > EPISODE_PROMPT_MAX) {
+      errors.push(err(index, item.id, "rounds", `${tag}: prompt must be ${EPISODE_PROMPT_MAX} characters or fewer.`));
+    }
+    const answer = String(round.answer ?? "").trim().toUpperCase();
+    const problem = checkAnswer(answer);
+    if (problem) {
+      errors.push(err(index, item.id, "rounds", `${tag} — ${problem}`));
+    }
+  });
   return errors;
 }
 
@@ -306,7 +371,7 @@ const ITEM_VALIDATORS = {
   disordat: validateDisordat,
   quixort: validateQuixort,
   bingo: validateBingo,
-  wendithapn: (item, index) => checkPrompt(item, index),
+  wendithapn: validateWenDitHapn,
 };
 
 const ITEM_FIELDS = {
@@ -315,8 +380,8 @@ const ITEM_FIELDS = {
   fibbage: ["id", "kind", "prompt", "truth", "lieTimeSec", "voteTimeSec", "multiplier", "overrides"],
   disordat: ["id", "kind", "prompt", "disLabel", "datLabel", "answers", "overrides"],
   quixort: ["id", "kind", "prompt", "items", "trash", "multiplier", "blockSec", "overrides"],
-  bingo: ["id", "kind", "prompt", "word", "overrides"],
-  wendithapn: ["id", "kind", "prompt", "overrides"],
+  bingo: ["id", "kind", "prompt", "word", "rounds", "overrides"],
+  wendithapn: ["id", "kind", "prompt", "rounds", "overrides"],
 };
 
 // Shared validation for episode defaults and per-question overrides.
@@ -378,6 +443,23 @@ export function normalizeEpisode(ep) {
           if (typeof next.truth === "string") next.truth = next.truth.trim();
           if (typeof next.correctAnswer === "string") next.correctAnswer = next.correctAnswer.trim();
           if (typeof next.word === "string") next.word = next.word.trim().toUpperCase();
+          if (Array.isArray(next.rounds)) {
+            next.rounds = next.rounds.map((r) => {
+              if (!isPlainObject(r)) return r;
+              const out = { ...r };
+              if (typeof out.prompt === "string") out.prompt = out.prompt.trim();
+              if (typeof out.answer === "string") out.answer = out.answer.trim().toUpperCase();
+              return out;
+            });
+          }
+          // Migrate pre-rounds episodes (single `answer`): fold it into one
+          // round so older drafts/files keep validating.
+          if ((next.kind === "bingo" || next.kind === "wendithapn") && next.rounds === undefined && typeof next.answer === "string" && next.answer.trim()) {
+            next.rounds = [{ answer: next.answer.trim().toUpperCase() }];
+          }
+          if (next.answer !== undefined && (next.kind === "bingo" || next.kind === "wendithapn")) {
+            delete next.answer;
+          }
           if (typeof next.disLabel === "string") next.disLabel = next.disLabel.trim();
           if (typeof next.datLabel === "string") next.datLabel = next.datLabel.trim();
           if (Array.isArray(next.correctOptions)) {

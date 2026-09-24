@@ -15,6 +15,7 @@ import {
   loadDraft as epLoadDraft,
   moveItem as epMoveItem,
   newDraft as epNewDraft,
+  parseBulkLines as epParseBulkLines,
   parseImportText as epParseImportText,
   persistDraft as epPersistDraft,
   updateDefaults as epUpdateDefaults,
@@ -123,6 +124,7 @@ let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
 let hostPrejoinCoopSetting = false;
+let hostPrejoinEpisodeEnabled = false;
 // Episode creator is pre-launch and local-only: the draft never enters
 // PlayroomKit state, so one screen's editing never mirrors to another.
 let episodeDraft = null;
@@ -139,6 +141,16 @@ let pendingEpisode = null;
 let attachedEpisode = null;
 let activeEpisode = null;
 let episodeIndex = 0;
+// Sub-position inside a cycling question's answer rounds (letter collection).
+// Reset on every load/step/attach/end; the letter nav below moves it without
+// wiping collected progress.
+let episodeLetterIndex = 0;
+// Episode setting locks (host-local, never mirrored): keys currently managed
+// by the loaded question (episode defaults + its overrides). Set on load,
+// cleared on end/attach. setHostSetting refuses locked keys unless the
+// runner itself is applying (episodeSettingsBypass).
+let episodeLockedKeys = [];
+let episodeSettingsBypass = false;
 let bingoCycleInterval = null;
 let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
@@ -2934,16 +2946,32 @@ function startBingo() {
       render();
       return;
     }
+    if (new Set(draftWord).size !== draftWord.length) {
+      setBuzzNotice("Bingo words cannot repeat letters.");
+      render();
+      return;
+    }
     word = draftWord;
     items = word.split("");
   }
   const itemStates = items.map(() => ({ collectedBy: null }));
+  // Preserve a pre-seeded target (episode runner) when starting fresh on the
+  // same word — otherwise loading a question would lose its answer the
+  // moment the host presses Start. Mid-game re-starts (active) still reset
+  // the target, exactly as before.
+  let targetIndex = -1;
+  try {
+    const prev = getBingo();
+    if (!prev.active && prev.word === word && Number.isInteger(prev.targetIndex) && prev.targetIndex >= 0 && prev.targetIndex < items.length) {
+      targetIndex = prev.targetIndex;
+    }
+  } catch {}
   setState("bingo", {
     active: true,
     word,
     items,
     itemStates,
-    targetIndex: -1,
+    targetIndex,
     cycling: false,
     currentLitIndex: -1,
     currentLitSlot: 0,
@@ -5059,6 +5087,14 @@ function setHostSetting(key, value) {
     if (isProducer()) RPC.call("producer-action", { fn: "setHostSetting", args: [key, value] }, RPC.Mode.HOST);
     return;
   }
+  // Episode locks: settings currently managed by a loaded question refuse
+  // manual changes (host UI and producer relay alike — both funnel through
+  // here). The runner itself applies under episodeSettingsBypass.
+  if (!episodeSettingsBypass && activeEpisode && Array.isArray(episodeLockedKeys) && episodeLockedKeys.includes(key)) {
+    setBuzzNotice("That setting is locked by the episode — end the episode to change it.");
+    render();
+    return;
+  }
   const settings = getSettings();
   const next = { ...settings, [key]: value };
   if (key === "jackMultiplier") {
@@ -5868,6 +5904,8 @@ function ensureHostInit() {
     applyEpisodeSettings(attachedEpisode.defaults);
     activeEpisode = attachedEpisode;
     episodeIndex = 0;
+    episodeLetterIndex = 0;
+    episodeLockedKeys = [];
     attachedEpisode = null;
   }
   // Prompt broadcast backfill for rooms created before episodes existed.
@@ -8827,6 +8865,7 @@ function probeEpisodeCloud(force = false) {
         ? "Cloud is off — set VITE_EPISODE_API_URL and restart dev."
         : ok ? "" : `Cloud unreachable at ${d.url} — is the episode server running?`;
       if (prejoinMode === "creator") renderPrejoinScreen("creator");
+      refreshAttachCloudRow();
     });
   } catch {
     episodeCloudEnabled = false;
@@ -8855,6 +8894,21 @@ function harvestIntoDraft() {
   epPersistDraft(episodeDraft);
 }
 function refreshCreator() { renderPrejoinScreen("creator"); }
+// Patch the host form's cloud row without re-rendering (a re-render would
+// wipe the typed host name). Top-level: probeEpisodeCloud calls it.
+// No-ops when the host form isn't showing.
+  function refreshAttachCloudRow() {
+    try {
+      const input = document.querySelector("#ep-attach-code");
+      const btn = document.querySelector("[data-ep-attach-cloud]");
+      const hint = document.querySelector("#ep-attach-cloud-hint");
+      if (input) input.disabled = !episodeCloudEnabled;
+      if (btn) btn.disabled = !episodeCloudEnabled;
+      // Static strings only (no user data) — innerHTML is safe here, and the
+      // delegated Retry handler survives the swap.
+      if (hint) hint.innerHTML = episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-attach-cloud-retry type="button">Retry</button>`;
+    } catch {}
+  }
 function downloadEpisodeJson() {
   harvestIntoDraft();
   const { ok, errors } = epValidateEpisode(episodeDraft);
@@ -8884,10 +8938,61 @@ function getEpisodePrompt() {
   return getSafeState("episodePrompt", null);
 }
 
+// Answer rounds for a cycling question, with legacy single-answer fallback
+// (pre-rounds episodes stored `answer`). Always an array (possibly empty).
+function getEpisodeRounds(item) {
+  if (!item) return [];
+  if (Array.isArray(item.rounds) && item.rounds.length) return item.rounds;
+  if ((item.kind === "bingo" || item.kind === "wendithapn") && typeof item.answer === "string" && item.answer.trim()) {
+    return [{ answer: item.answer.trim().toUpperCase() }];
+  }
+  return [];
+}
+
+// A round's prompt, falling back to the question title when blank.
+function episodeRoundPrompt(item, round) {
+  const p = String(round?.prompt || "").trim();
+  return p || String(item?.prompt || "");
+}
+
+function bingoTargetForAnswer(items, answer) {
+  return Math.max(0, items.indexOf(String(answer || "").toUpperCase()));
+}
+
+// Per-control disabled flag for episode-locked settings (host panel).
+// Returns "" for unmanaged keys, so shared markup is unaffected.
+function episodeLockAttr(key) {
+  try {
+    if (activeEpisode && Array.isArray(episodeLockedKeys) && episodeLockedKeys.includes(key)) return "disabled";
+  } catch {}
+  return "";
+}
+
+const EPISODE_LOCK_LABELS = {
+  scoringMode: "Scoring",
+  uniformPoints: "Points",
+  jackMultiplier: "JACK mult",
+  timeOpen: "Buzz time",
+  lockAfterBuzz: "Lock",
+  rebuzzAllowed: "Rebuzz",
+  maxBuzzesPerOption: "Max buzzes",
+  closeBuzzersOnPointsGiven: "Close on points",
+  choiceLayout: "Layout",
+};
+
+function episodeLockNote() {
+  if (!activeEpisode || !Array.isArray(episodeLockedKeys) || !episodeLockedKeys.length) return "";
+  const names = episodeLockedKeys.map((k) => EPISODE_LOCK_LABELS[k] || k).join(", ");
+  return `<p class="muted">Locked by episode: ${escapeHtml(names)}</p>`;
+}
+
 function renderEpisodePromptBanner() {
   const ep = getEpisodePrompt();
   if (!ep || !ep.prompt) return "";
   const pos = `Q${Number(ep.index) + 1} of ${ep.total}`;
+  const letter = Number.isInteger(ep.roundIndex) && Number.isInteger(ep.roundTotal) && ep.roundTotal > 1
+    ? ` · Letter ${ep.roundIndex + 1} of ${ep.roundTotal}`
+    : "";
   const labels = Array.isArray(ep.optionLabels) ? ep.optionLabels : [];
   const keys = Array.isArray(ep.optionKeys) ? ep.optionKeys : [];
   const optionsList = labels.length
@@ -8895,7 +9000,7 @@ function renderEpisodePromptBanner() {
     : "";
   return `
     <section class="card ep-prompt-banner" data-episode-prompt="true">
-      <p class="prejoin-kicker">${escapeHtml(ep.title ? `${ep.title} — ${pos}` : pos)} • ${escapeHtml(epKindLabel(ep.kind))}</p>
+      <p class="prejoin-kicker">${escapeHtml(ep.title ? `${ep.title} — ${pos}` : pos)}${escapeHtml(letter)} • ${escapeHtml(epKindLabel(ep.kind))}</p>
       <p class="ep-prompt-text">${escapeHtml(ep.prompt)}</p>
       ${optionsList}
     </section>`;
@@ -8907,25 +9012,30 @@ function renderEpisodePromptBanner() {
 // re-buzz) are skipped silently — the runner already verified the mode.
 function applyEpisodeSettings(source) {
   if (!source || typeof source !== "object") return;
-  const settings = getSettings();
-  const coop = isCoopMode(settings);
-  const setIfDiff = (key, value) => {
-    if (value === undefined) return;
-    if (settings[key] === value) return;
-    setHostSetting(key, value);
-  };
-  if (source.scoringMode !== undefined && source.scoringMode !== settings.scoringMode) {
-    if (!(coop && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
-  }
-  setIfDiff("uniformPoints", source.uniformPoints !== undefined ? Number(source.uniformPoints) : undefined);
-  setIfDiff("jackMultiplier", source.jackMultiplier !== undefined ? Number(source.jackMultiplier) : undefined);
-  setIfDiff("timeOpen", source.timeOpen !== undefined ? Number(source.timeOpen) : undefined);
-  setIfDiff("maxBuzzesPerOption", source.maxBuzzesPerOption !== undefined ? Number(source.maxBuzzesPerOption) : undefined);
-  setIfDiff("choiceLayout", source.choiceLayout);
-  setIfDiff("lockAfterBuzz", source.lockAfterBuzz);
-  setIfDiff("closeBuzzersOnPointsGiven", source.closeBuzzersOnPointsGiven);
-  if (source.rebuzzAllowed !== undefined && !(coop && source.rebuzzAllowed === true)) {
-    setIfDiff("rebuzzAllowed", source.rebuzzAllowed);
+  episodeSettingsBypass = true;
+  try {
+    const settings = getSettings();
+    const coop = isCoopMode(settings);
+    const setIfDiff = (key, value) => {
+      if (value === undefined) return;
+      if (settings[key] === value) return;
+      setHostSetting(key, value);
+    };
+    if (source.scoringMode !== undefined && source.scoringMode !== settings.scoringMode) {
+      if (!(coop && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
+    }
+    setIfDiff("uniformPoints", source.uniformPoints !== undefined ? Number(source.uniformPoints) : undefined);
+    setIfDiff("jackMultiplier", source.jackMultiplier !== undefined ? Number(source.jackMultiplier) : undefined);
+    setIfDiff("timeOpen", source.timeOpen !== undefined ? Number(source.timeOpen) : undefined);
+    setIfDiff("maxBuzzesPerOption", source.maxBuzzesPerOption !== undefined ? Number(source.maxBuzzesPerOption) : undefined);
+    setIfDiff("choiceLayout", source.choiceLayout);
+    setIfDiff("lockAfterBuzz", source.lockAfterBuzz);
+    setIfDiff("closeBuzzersOnPointsGiven", source.closeBuzzersOnPointsGiven);
+    if (source.rebuzzAllowed !== undefined && !(coop && source.rebuzzAllowed === true)) {
+      setIfDiff("rebuzzAllowed", source.rebuzzAllowed);
+    }
+  } finally {
+    episodeSettingsBypass = false;
   }
 }
 
@@ -8944,6 +9054,8 @@ function attachEpisode(episode) {
   }
   activeEpisode = episode;
   episodeIndex = 0;
+  episodeLetterIndex = 0;
+  episodeLockedKeys = [];
   try { setState("episodePrompt", null, true); } catch {}
   // Apply episode defaults immediately on explicit attach (same merge as the
   // pre-launch path in ensureHostInit).
@@ -8980,6 +9092,8 @@ function episodeRunLoad(index) {
   // Episode defaults merged with this question's overrides (overrides win,
   // gaps fall back to defaults, absent keys leave the game setting alone).
   applyEpisodeSettings(epEffectiveSettings(ep, item));
+  // Lock what the episode now manages; stepping re-locks to the new mix.
+  episodeLockedKeys = Object.keys(epEffectiveSettings(ep, item));
   if (item.kind === "buttons") {
     if (Number(item.optionCount) !== Number(getSettings().optionCount)) setHostSetting("optionCount", item.optionCount);
     const r = getRound();
@@ -8993,15 +9107,64 @@ function episodeRunLoad(index) {
     setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers] }, true);
   } else if (item.kind === "quixort") {
     setState("quixort", { ...getQuixort(), items: [...item.items], trash: [...(item.trash || [])], multiplier: item.multiplier, blockSec: item.blockSec }, true);
-  } else if (item.kind === "bingo") {
-    const word = String(item.word || "").toUpperCase();
-    setState("bingo", { ...getBingo(), word, items: word.split("") }, true);
+  } else if (item.kind === "bingo" || item.kind === "wendithapn") {
+    // Fresh question state: reset per-question play (a stale active game
+    // from the previous question must not leak in), seed the word + the
+    // first round's target. Letter nav below advances rounds without this
+    // reset, so collection progress persists. The host still presses Start —
+    // startBingo preserves an inactive pre-seeded target for the same word.
+    const rounds = getEpisodeRounds(item);
+    if (!rounds.length) {
+      setBuzzNotice("That question has no answer rounds.");
+      render();
+      return false;
+    }
+    const isWen = item.kind === "wendithapn";
+    const word = isWen ? "" : String(item.word || "").toUpperCase();
+    const items = isWen ? [...WEN_DIT_HAPN_ITEMS] : word.split("");
+    const first = rounds[0];
+    const target = isWen
+      ? Math.max(0, ["B", "N", "A"].indexOf(String(first.answer || "").toUpperCase()))
+      : bingoTargetForAnswer(items, first.answer);
+    setState("bingo", {
+      ...getBingo(),
+      active: false,
+      word,
+      items,
+      itemStates: items.map(() => ({ collectedBy: null })),
+      targetIndex: target,
+      cycling: false,
+      currentLitIndex: -1,
+      currentLitSlot: 0,
+      currentLitTs: 0,
+      collectedCounts: {},
+      winner: null,
+      playerItems: {},
+      scoredTracks: {},
+      coopLockout: {},
+    }, true);
     // startBingo reads the setup input, so keep it in sync when visible.
     try { const input = document.querySelector("#bingo-word"); if (input) input.value = word; } catch {}
+    episodeLetterIndex = 0;
+    setState("episodePrompt", {
+      index: Number(index),
+      total: ep.items.length,
+      title: ep.meta?.title || "",
+      kind: item.kind,
+      prompt: episodeRoundPrompt(item, first),
+      optionLabels: null,
+      optionKeys: null,
+      roundIndex: 0,
+      roundTotal: rounds.length,
+    }, true);
+    episodeIndex = Number(index);
+    render();
+    return true;
   }
-  // wendithapn needs no seeding (fixed Before/Never/After).
   // Custom option labels ride the prompt broadcast so every screen lists
   // them; keys use the live layout rule (ABXY in diamond ≤4, else numbers).
+  // Non-cycling kinds carry no letter position (null-invariant: keys always
+  // present, null when absent — same rule as the round null-invariant).
   let optionLabels = null;
   let optionKeys = null;
   if (item.kind === "buttons" && Array.isArray(item.options) && item.options.length) {
@@ -9009,7 +9172,7 @@ function episodeRunLoad(index) {
     const layout = getSettings().choiceLayout || "diamond";
     optionKeys = optionLabels.map((_, i) => (optionLabels.length <= 4 ? epOptionLabel(i + 1, layout) : String(i + 1)));
   }
-  setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys }, true);
+  setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys, roundIndex: null, roundTotal: null }, true);
   episodeIndex = Number(index);
   render();
   return true;
@@ -9035,6 +9198,62 @@ function episodeRunStep(dir) {
   return episodeRunLoad(next);
 }
 
+// Advance within a cycling question's answer rounds (letter collection).
+// Unlike a fresh load this is a setBingoTarget-style transition: the target
+// changes but collected progress (playerItems/collectedCounts/itemStates)
+// persists, so letters accumulate across rounds.
+function episodeRunLetter(dir) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunLetter", args: [dir] }, RPC.Mode.HOST);
+    return false;
+  }
+  const ep = activeEpisode;
+  const item = ep?.items?.[episodeIndex];
+  if (!ep || !item || (item.kind !== "bingo" && item.kind !== "wendithapn")) {
+    setBuzzNotice("No cycling question loaded.");
+    render();
+    return false;
+  }
+  const rounds = getEpisodeRounds(item);
+  const next = episodeLetterIndex + (Number(dir) >= 0 ? 1 : -1);
+  if (next < 0 || next >= rounds.length) {
+    setBuzzNotice(next < 0 ? "Already at the first letter." : "That was the last letter — step to the next question.");
+    render();
+    return false;
+  }
+  const isWen = item.kind === "wendithapn";
+  const bingo = getBingo();
+  const liveItems = Array.isArray(bingo.items) && bingo.items.length
+    ? bingo.items
+    : (isWen ? [...WEN_DIT_HAPN_ITEMS] : String(item.word || "").toUpperCase().split(""));
+  const target = isWen
+    ? Math.max(0, ["B", "N", "A"].indexOf(String(rounds[next].answer || "").toUpperCase()))
+    : bingoTargetForAnswer(liveItems, rounds[next].answer);
+  setState("bingo", {
+    ...bingo,
+    items: liveItems,
+    targetIndex: target,
+    currentLitIndex: -1,
+    currentLitSlot: 0,
+    coopLockout: {},
+    scoredTracks: {},
+  }, true);
+  episodeLetterIndex = next;
+  setState("episodePrompt", {
+    index: episodeIndex,
+    total: ep.items.length,
+    title: ep.meta?.title || "",
+    kind: item.kind,
+    prompt: episodeRoundPrompt(item, rounds[next]),
+    optionLabels: null,
+    optionKeys: null,
+    roundIndex: next,
+    roundTotal: rounds.length,
+  }, true);
+  render();
+  return true;
+}
+
 function episodeRunEnd() {
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "episodeRunEnd", args: [] }, RPC.Mode.HOST);
@@ -9042,8 +9261,11 @@ function episodeRunEnd() {
   }
   activeEpisode = null;
   episodeIndex = 0;
+  episodeLetterIndex = 0;
+  const hadLocks = Array.isArray(episodeLockedKeys) && episodeLockedKeys.length > 0;
+  episodeLockedKeys = [];
   try { setState("episodePrompt", null, true); } catch {}
-  setBuzzNotice("Episode ended.");
+  setBuzzNotice(hadLocks ? "Episode ended — episode settings unlocked." : "Episode ended.");
   render();
 }
 
@@ -9055,6 +9277,7 @@ function renderEpisodeRunnerCard() {
   const idx = ep.items.indexOf(item);
   const round = getRound();
   const roundBusy = round.status !== ROUND_STATUSES.IDLE && round.status !== ROUND_STATUSES.CLOSED;
+  const rounds = (item.kind === "bingo" || item.kind === "wendithapn") ? getEpisodeRounds(item) : [];
   return `
     <section class="card ep-runner">
       <div class="ep-edit-head">
@@ -9062,12 +9285,18 @@ function renderEpisodeRunnerCard() {
         <button type="button" data-ep-run-end>End episode</button>
       </div>
       <p><span class="ep-badge">${escapeHtml(epKindLabel(item.kind))}</span> ${escapeHtml(item.prompt || "")}</p>
+      ${episodeLockNote()}
       ${roundBusy ? `<p class="muted">Reset the round to load a question.</p>` : ""}
       <div class="ep-toolbar">
         <button type="button" data-ep-run-step="-1" ${idx <= 0 ? "disabled" : ""}>← Prev</button>
         <button type="button" class="primary-action" data-ep-run-load="${idx}" ${roundBusy ? "disabled" : ""}>Load Q${idx + 1}</button>
         <button type="button" data-ep-run-step="1" ${idx >= ep.items.length - 1 ? "disabled" : ""}>Next →</button>
       </div>
+      ${rounds.length > 1 ? `<div class="ep-toolbar">
+        <button type="button" data-ep-run-letter="-1" ${episodeLetterIndex <= 0 ? "disabled" : ""}>← Letter</button>
+        <span class="muted">Letter ${episodeLetterIndex + 1}/${rounds.length}</span>
+        <button type="button" data-ep-run-letter="1" ${episodeLetterIndex >= rounds.length - 1 ? "disabled" : ""}>Letter →</button>
+      </div>` : ""}
     </section>`;
 }
 
@@ -9626,8 +9855,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     const onCls = isOn ? "is-active" : "";
     const offCls = !isOn ? "is-active is-off-val" : "";
     return `<div class="toggle-switch">
-      <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="${setting}" data-value="true" ${settingDisabledAttr}>${labelOn}</button>
-      <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="${setting}" data-value="false" ${settingDisabledAttr}>${labelOff}</button>
+      <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="${setting}" data-value="true" ${settingDisabledAttr} ${episodeLockAttr(setting)}>${labelOn}</button>
+      <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="${setting}" data-value="false" ${settingDisabledAttr} ${episodeLockAttr(setting)}>${labelOff}</button>
     </div>`;
   };
 
@@ -9643,7 +9872,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Time open
-                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} />
+                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} ${episodeLockAttr("timeOpen")} />
                 <p class="setting-helper">How many seconds buzzers stay open each round.</p>
               </label>
               <label>
@@ -9671,7 +9900,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 settings.rebuzzAllowed
                   ? `<label>
                       Max buzzes per option
-                      <input type="number" min="1" max="50" step="1" value="${settings.maxBuzzesPerOption}" data-setting="maxBuzzesPerOption" ${settingDisabledAttr} />
+                      <input type="number" min="1" max="50" step="1" value="${settings.maxBuzzesPerOption}" data-setting="maxBuzzesPerOption" ${settingDisabledAttr} ${episodeLockAttr("maxBuzzesPerOption")} />
                       <p class="setting-helper">How many times a player can buzz the same choice while re-buzz is on.</p>
                     </label>`
                   : ""
@@ -9715,7 +9944,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   ? ""
                   : `<label>
                       Choice layout
-                      <select data-setting="choiceLayout" ${settingDisabledAttr}>
+                      <select data-setting="choiceLayout" ${settingDisabledAttr} ${episodeLockAttr("choiceLayout")}>
                         <option value="diamond" ${settings.choiceLayout === "diamond" ? "selected" : ""}>Diamond (A/B/X/Y)</option>
                         <option value="grid" ${settings.choiceLayout === "grid" ? "selected" : ""}>Grid (1–4)</option>
                         <option value="list" ${settings.choiceLayout === "list" ? "selected" : ""}>List (1–4)</option>
@@ -9738,7 +9967,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Scoring mode
-                <select data-setting="scoringMode" ${settingDisabledAttr}>
+                <select data-setting="scoringMode" ${settingDisabledAttr} ${episodeLockAttr("scoringMode")}>
                   <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
                   ${isCoopMode(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
                   <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Pick-a-value (player-determined)</option>
@@ -9749,7 +9978,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 settings.scoringMode === "uniform"
                   ? `<label>
                       Uniform points
-                      <select data-setting="uniformPoints" ${settingDisabledAttr}>
+                      <select data-setting="uniformPoints" ${settingDisabledAttr} ${episodeLockAttr("uniformPoints")}>
                         ${VALUE_OPTIONS.map((value) => `<option value="${value}" ${settings.uniformPoints === value ? "selected" : ""}>${value}</option>`).join("")}
                       </select>
                       <p class="setting-helper">Every correct answer is worth this many points.</p>
@@ -9757,7 +9986,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   : settings.scoringMode === "jack"
                     ? `<label>
                         JACK multiplier
-                      <select data-setting="jackMultiplier" ${settingDisabledAttr}>
+                      <select data-setting="jackMultiplier" ${settingDisabledAttr} ${episodeLockAttr("jackMultiplier")}>
                         <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
                         <option value="1.5" ${settings.jackMultiplier === 1.5 ? "selected" : ""}>1.5x</option>
                         <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
@@ -11111,6 +11340,9 @@ function bindEvents() {
     const next = btn.dataset.prejoinOpen || "landing";
     if (next === "creator") { enterEpisodeCreator(); return; }
     renderPrejoinScreen(next);
+    // Fire-and-forget: enables the host form's cloud row in place (no
+    // re-render, so typed input survives).
+    if (next === "host") probeEpisodeCloud(false);
   });
   delegate("click", "[data-prejoin-switch]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinSwitch || "landing"));
   delegate("click", "[data-prejoin-back]", () => renderPrejoinScreen());
@@ -11125,9 +11357,57 @@ function bindEvents() {
     epPersistDraft(episodeDraft);
     refreshCreator();
   });
+  delegate("click", "[data-ep-bulk-add]", () => {
+    harvestIntoDraft();
+    let kind = "bingo";
+    let word = "";
+    let text = "";
+    try {
+      kind = document.querySelector("#ep-bulk-kind")?.value || "bingo";
+      word = String(document.querySelector("#ep-bulk-word")?.value || "");
+      text = String(document.querySelector("#ep-bulk-text")?.value || "");
+    } catch {}
+    const { items, errors } = epParseBulkLines(text, kind, word);
+    if (items.length) {
+      episodeDraft = { ...episodeDraft, items: [...episodeDraft.items, ...items] };
+      creatorSelectedId = items[items.length - 1]?.id || creatorSelectedId;
+      epPersistDraft(episodeDraft);
+    }
+    creatorImportErrors = errors.slice(0, 12).map((e) => ({
+      index: -1,
+      itemId: null,
+      field: e.line > 0 ? `Line ${e.line}` : "Bulk import",
+      message: e.message,
+    }));
+    refreshCreator();
+    showToast(items.length
+      ? `Added ${items.length} question${items.length === 1 ? "" : "s"}${errors.length ? ` (${errors.length} line${errors.length === 1 ? "" : "s"} skipped)` : ""}.`
+      : "No valid lines — nothing added.", { variant: items.length ? "info" : "error" });
+  });
   delegate("click", "[data-ep-edit]", (e, btn) => {
     harvestIntoDraft();
     creatorSelectedId = btn.dataset.epEdit || null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-round-add]", () => {
+    harvestIntoDraft();
+    const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+    if (!sel || (sel.kind !== "bingo" && sel.kind !== "wendithapn")) return;
+    const rounds = Array.isArray(sel.rounds) ? sel.rounds : [];
+    const max = sel.kind === "bingo" ? 5 : 3;
+    if (rounds.length >= max) return;
+    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, { prompt: "", answer: "" }] });
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-round-del]", (e, btn) => {
+    harvestIntoDraft();
+    const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+    if (!sel || !Array.isArray(sel.rounds) || sel.rounds.length <= 1) return;
+    const at = Number(btn.dataset.epRoundDel);
+    if (!Number.isInteger(at) || at < 0 || at >= sel.rounds.length) return;
+    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: sel.rounds.filter((_, i) => i !== at) });
+    epPersistDraft(episodeDraft);
     refreshCreator();
   });
   delegate("click", "[data-ep-close-edit]", () => {
@@ -11214,6 +11494,9 @@ function bindEvents() {
   delegate("click", "[data-ep-run-step]", (e, btn) => {
     episodeRunStep(Number(btn.dataset.epRunStep) || 0);
   });
+  delegate("click", "[data-ep-run-letter]", (e, btn) => {
+    episodeRunLetter(Number(btn.dataset.epRunLetter) || 0);
+  });
   delegate("click", "[data-ep-run-end]", () => {
     episodeRunEnd();
   });
@@ -11242,6 +11525,33 @@ function bindEvents() {
   delegate("click", "[data-ep-attach-clear]", () => {
     pendingEpisode = null;
     refreshAttachLabel();
+  });
+  // Manual re-probe from the host form (server started after the form
+  // opened). Patched in place — no re-render, typed input survives.
+  delegate("click", "[data-ep-attach-cloud-retry]", () => {
+    probeEpisodeCloud(true);
+  });
+  // Ticking the episode box re-probes too: the row enables itself if the
+  // server has come up since the form opened. Cached probe = no extra fetch.
+  delegate("change", "#prejoin-episode", (e, input) => {
+    if (input?.checked) probeEpisodeCloud(false);
+  });
+  delegate("click", "[data-ep-attach-cloud]", async () => {
+    if (!episodeCloudEnabled) return;
+    let code = "";
+    try { code = String(document.querySelector("#ep-attach-code")?.value || "").trim().toUpperCase(); } catch {}
+    if (!code) { showToast("Enter a cloud share code first.", { variant: "error" }); return; }
+    try {
+      const { episode } = await epCloudLoad(code);
+      const check = epValidateEpisode(episode);
+      if (!check.ok) throw new Error("That episode failed validation.");
+      pendingEpisode = episode;
+      try { const input = document.querySelector("#ep-attach-code"); if (input) input.value = ""; } catch {}
+      refreshAttachLabel();
+      showToast(`Attached "${episode.meta?.title || "episode"}" (${episode.items.length} questions).`);
+    } catch (e) {
+      showToast(e?.message || "Load failed.", { variant: "error" });
+    }
   });
   delegate("change", "#ep-attach-file", (e, input) => {
     const file = input?.files?.[0];
@@ -11371,7 +11681,10 @@ function bindEvents() {
       const selectedTeamSetting = String(teamModeInput?.value || "off");
       hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
       hostPrejoinCoopSetting = mount.querySelector("#prejoin-coop")?.checked === true;
-      attachedEpisode = pendingEpisode;
+      const episodeChecked = mount.querySelector("#prejoin-episode")?.checked === true;
+      hostPrejoinEpisodeEnabled = episodeChecked;
+      if (episodeChecked && !pendingEpisode) { renderPrejoinScreen("host", "Attach an episode file, use the creator draft, or load one by code — or uncheck the episode box."); return; }
+      attachedEpisode = episodeChecked ? pendingEpisode : null;
       pendingEpisode = null;
     }
     const submitButton = form.querySelector("button[type='submit']");
@@ -11663,6 +11976,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
     const isAlliance = hostPrejoinTeamSetting === "alliance";
     const isShared = hostPrejoinTeamSetting === "shared";
     const isCoop = hostPrejoinCoopSetting === true;
+    const isEpisode = hostPrejoinEpisodeEnabled === true;
     prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-host">
@@ -11695,14 +12009,24 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <span>Coopertition mode (up to 3 players per device)</span>
             </label>
 
-            <div class="ep-attach-row">
-              <span class="muted">Episode (optional): <strong id="ep-attach-label">none</strong></span>
+            <label class="prejoin-check">
+              <input data-prejoin-input id="prejoin-episode" type="checkbox" ${isEpisode ? "checked" : ""} />
+              <span>Run an episode (question playlist)</span>
+            </label>
+
+            <div class="ep-attach-options">
+              <span class="muted">Attached: <strong id="ep-attach-label">none</strong></span>
               <div class="ep-attach-actions">
                 <button class="secondary-action" data-ep-attach-btn type="button">Attach JSON file</button>
                 <input type="file" id="ep-attach-file" accept="application/json,.json" hidden />
                 <button class="secondary-action" data-ep-attach-draft type="button">Use creator draft</button>
                 <button class="secondary-action" data-ep-attach-clear type="button">Clear</button>
               </div>
+              <div class="ep-attach-actions">
+                <input id="ep-attach-code" type="text" maxlength="12" placeholder="Cloud code (ABC123)" ${episodeCloudEnabled ? "" : "disabled"} />
+                <button class="secondary-action" data-ep-attach-cloud type="button" ${episodeCloudEnabled ? "" : "disabled"}>Load by code</button>
+              </div>
+              <p class="muted" id="ep-attach-cloud-hint">${episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-attach-cloud-retry type="button">Retry</button>`}</p>
             </div>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
@@ -12139,7 +12463,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
     startQuixort, endQuixort, resetQuixort, exitQuixort,
     startAnalyticsSpotlight, endAnalyticsSpotlight,
-    attachEpisode, episodeRunLoad, episodeRunStep, episodeRunEnd,
+    attachEpisode, episodeRunLoad, episodeRunStep, episodeRunLetter, episodeRunEnd,
   };
   RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };
