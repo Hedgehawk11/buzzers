@@ -12,13 +12,17 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:harness": "node test-harness/run.mjs",
-    "test:harness:all": "HARNESS_COOP=on node test-harness/run.mjs && HARNESS_COOP=off node test-harness/run.mjs"
+    "test:harness:all": "HARNESS_COOP=on node test-harness/run.mjs && HARNESS_COOP=off node test-harness/run.mjs",
+    "episode-server": "node server/index.js"
   },
   "devDependencies": {
     "vite": "^8.0.0",
     "vite-plugin-pwa": "^1.3.0"
   },
   "dependencies": {
+    "dotenv": "^18.0.3",
+    "express": "^5.2.1",
+    "mongodb": "^7.6.0",
     "playroomkit": "^0.0.95"
   }
 }

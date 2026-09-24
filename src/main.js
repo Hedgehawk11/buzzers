@@ -6,6 +6,25 @@ import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
 import { scheduleRender, renderImmediate, initRenderer, delegate, getApp, computeAudienceTimerFrozenCs, showToast, trackScoreSnapshot, applyScoreDeltas, startSmoothTimer, transitionMount } from "./render.js";
+import {
+  addItem as epAddItem,
+  deleteItem as epDeleteItem,
+  duplicateItem as epDuplicateItem,
+  exportFileName as epExportFileName,
+  exportText as epExportText,
+  isBlankEpisode as epIsBlankEpisode,
+  loadDraft as epLoadDraft,
+  moveItem as epMoveItem,
+  newDraft as epNewDraft,
+  parseImportText as epParseImportText,
+  persistDraft as epPersistDraft,
+  updateDefaults as epUpdateDefaults,
+  updateItem as epUpdateItem,
+  updateMeta as epUpdateMeta,
+} from "./episodes/editor.js";
+import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
+import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
+import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -84,8 +103,7 @@ const QUIXORT_MAX_ITEMS = 9;
 const QUIXORT_MAX_TRASH = 3;
 const QUIXORT_MAX_TEXT = 120;
 const QUIXORT_POINTS_EXACT = 1000;
-const QUIXORT_POINTS_ADJ1 = 500;
-const QUIXORT_POINTS_ADJ2 = 250;
+const QUIXORT_PENALTY_MISCLASS = 500;
 const QUIXORT_BONUS_CLEAN = 1500;
 const QUIXORT_MAX_MULT = 5;
 const QUIXORT_BLOCK_SECONDS_OPTIONS = [15, 20, 30, 45, 60];
@@ -105,6 +123,33 @@ let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
 let hostPrejoinTeamSetting = "off";
 let hostPrejoinCoopSetting = false;
+let hostPrejoinEpisodeEnabled = false;
+// Episode creator is pre-launch and local-only: the draft never enters
+// PlayroomKit state, so one screen's editing never mirrors to another.
+let episodeDraft = null;
+let creatorSelectedId = null;
+let creatorImportErrors = [];
+let episodeCloudEnabled = false;
+let episodeCloudError = "";
+let cloudView = null;
+// Episode runtime (host-local only, never mirrored): pendingEpisode is picked
+// on the host prejoin form, attachedEpisode is consumed once by
+// ensureHostInit, activeEpisode/episodeIndex drive the host runner card. The
+// loaded prompt is the only part that goes shared (episodePrompt broadcast).
+let pendingEpisode = null;
+let attachedEpisode = null;
+let activeEpisode = null;
+let episodeIndex = 0;
+// Sub-position inside a cycling question's answer rounds (letter collection).
+// Reset on every load/step/attach/end; the letter nav below moves it without
+// wiping collected progress.
+let episodeLetterIndex = 0;
+// Episode setting locks (host-local, never mirrored): keys currently managed
+// by the loaded question (episode defaults + its overrides). Set on load,
+// cleared on end/attach. setHostSetting refuses locked keys unless the
+// runner itself is applying (episodeSettingsBypass).
+let episodeLockedKeys = [];
+let episodeSettingsBypass = false;
 let bingoCycleInterval = null;
 let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
@@ -1506,6 +1551,10 @@ showScoresToPlayers: settings.showScoresToPlayers,
     // Analytics mirror broadcast — audience screens only re-render the card
     // when this flips (their tick otherwise only patches timers).
     analyticsSpotlight: getSafeState("analyticsSpotlight", null),
+    // Episode prompt broadcast — player/audience screens only re-render the
+    // question banner when this flips (their tick otherwise only patches
+    // timers). Small bounded object (one prompt), never a list.
+    episodePrompt: getSafeState("episodePrompt", null),
     disordat: getDisOrDat(),
     fibbage: getFibbage(),
     quixort: (() => {
@@ -2896,16 +2945,32 @@ function startBingo() {
       render();
       return;
     }
+    if (new Set(draftWord).size !== draftWord.length) {
+      setBuzzNotice("Bingo words cannot repeat letters.");
+      render();
+      return;
+    }
     word = draftWord;
     items = word.split("");
   }
   const itemStates = items.map(() => ({ collectedBy: null }));
+  // Preserve a pre-seeded target (episode runner) when starting fresh on the
+  // same word — otherwise loading a question would lose its answer the
+  // moment the host presses Start. Mid-game re-starts (active) still reset
+  // the target, exactly as before.
+  let targetIndex = -1;
+  try {
+    const prev = getBingo();
+    if (!prev.active && prev.word === word && Number.isInteger(prev.targetIndex) && prev.targetIndex >= 0 && prev.targetIndex < items.length) {
+      targetIndex = prev.targetIndex;
+    }
+  } catch {}
   setState("bingo", {
     active: true,
     word,
     items,
     itemStates,
-    targetIndex: -1,
+    targetIndex,
     cycling: false,
     currentLitIndex: -1,
     currentLitSlot: 0,
@@ -3590,9 +3655,10 @@ function handleDisOrDatTick() {
 // Quixort — host enters an ordered list (4-9) + optional trash (0-3). Every
 // track plays simultaneously from its own shuffled deck, one block at a time,
 // inserting each block into a growing row (or trashing it). Shared-team tracks
-// rotate members per block. Scored once at the end by position distance:
-// exact 1000 / off-by-one 500 / off-by-two 250 / else 0 (x multiplier), plus a
-// 1500 x mult bonus for a perfect run. Per-block timer voids+passes on expiry.
+// rotate members per block. Scored once at the end, pairwise: each
+// correctly-ordered pair +W, each inverted pair -W (W scales so perfect order
+// is ~N*1000), trash +1000 / misclass -500, 1500 x mult bonus for a perfect
+// run. Per-block timer voids+passes on expiry.
 // Banned in coopertition mode (no coop model, like fibbage/disordat).
 // =============================================================================
 function normalizeQuixortMultiplier(v) {
@@ -3666,8 +3732,16 @@ function getQuixortRunTimeLeftCs(run, qx) {
   if (typeof run.blockEndsAt !== "number") return normalizeQuixortBlockSec(qx?.blockSec) * 100;
   return Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
 }
-// End scoring for one run. Voided blocks are excluded entirely (neighbors
-// close the gap); placed trash scores 0 and occupies its row slot.
+// End scoring for one run (pairwise / Kendall style). Every correctly-ordered
+// pair of real items earns +W, every inverted pair costs -W, where
+// W = round(N*1000 / P) scales with list length so a perfect order is always
+// worth ~N*1000 (same economy as the old exact-based scoring). Pairs with a
+// missing member (voided on timeout, or a real wrongly trashed) score 0 — the
+// lost opportunity is the penalty. Trash correctly trashed is +1000 each;
+// each misclass (real trashed, trash placed in the row) is -500. Placed trash
+// is excluded from pair order. Run total is floored at 0, then x multiplier;
+// a perfect run (all pairs concordant, all trash right, nothing voided or
+// misclassed) adds the clean bonus.
 function scoreQuixortRun(qx, run) {
   const mult = normalizeQuixortMultiplier(qx.multiplier);
   const items = getQuixortItems(qx);
@@ -3676,22 +3750,43 @@ function scoreQuixortRun(qx, run) {
   const trashed = Array.isArray(run?.trashed) ? run.trashed : [];
   const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
   const placedReals = row.filter((e) => e && e.t === "item");
-  let base = 0;
+  const n = items.length;
+  const totalPairs = (n * (n - 1)) / 2;
+  const pairWeight = totalPairs > 0 ? Math.max(1, Math.round((n * QUIXORT_POINTS_EXACT) / totalPairs)) : 0;
+  // Position of each placed real ref in the filtered row (trash excluded).
+  const posByRef = new Map();
+  placedReals.forEach((entry, pos) => {
+    const ref = Number(entry.ref);
+    if (Number.isInteger(ref) && !posByRef.has(ref)) posByRef.set(ref, pos);
+  });
+  let concordant = 0;
+  let discordant = 0;
+  for (let a = 0; a < n; a++) {
+    if (!posByRef.has(a)) continue;
+    for (let b = a + 1; b < n; b++) {
+      if (!posByRef.has(b)) continue;
+      if (posByRef.get(a) < posByRef.get(b)) concordant++;
+      else discordant++;
+    }
+  }
   let exactCount = 0;
   placedReals.forEach((entry, pos) => {
-    const dist = Math.abs(pos - Number(entry.ref));
-    if (dist === 0) { base += QUIXORT_POINTS_EXACT; exactCount++; }
-    else if (dist === 1) base += QUIXORT_POINTS_ADJ1;
-    else if (dist === 2) base += QUIXORT_POINTS_ADJ2;
+    if (pos === Number(entry.ref)) exactCount++;
   });
   const trashCorrect = trashed.filter((e) => e && e.t === "trash").length;
-  base += trashCorrect * QUIXORT_POINTS_EXACT;
+  const trashedReals = trashed.filter((e) => e && e.t === "item").length;
   const placedTrash = row.filter((e) => e && e.t === "trash").length;
-  const clean = voided === 0 && placedTrash === 0
-    && placedReals.length === items.length && exactCount === items.length
+  const misclass = trashedReals + placedTrash;
+  const orderPoints = (concordant - discordant) * pairWeight;
+  const base = Math.max(
+    0,
+    orderPoints + trashCorrect * QUIXORT_POINTS_EXACT - misclass * QUIXORT_PENALTY_MISCLASS,
+  );
+  const clean = voided === 0 && misclass === 0
+    && placedReals.length === n && concordant === totalPairs && totalPairs > 0
     && trashCorrect === trash.length;
   const total = (base + (clean ? QUIXORT_BONUS_CLEAN : 0)) * mult;
-  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, clean };
+  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, misclass, concordant, discordant, totalPairs, pairWeight, clean };
 }
 function formatQuixortEstimate(totalSeconds) {
   const s = Math.max(0, Math.round(Number(totalSeconds) || 0));
@@ -3958,7 +4053,7 @@ function finalizeQuixort() {
       scoreKey,
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${isTeamTrack ? track : getPlayerTeamColor(rep?.id, assignments)}` : trackDisplayName,
       option: null,
-      answerText: `Quixort: ${scored.exactCount} exact, ${scored.placedCount} placed, ${scored.trashCorrect} trash${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = ${scored.total}`,
+      answerText: `Quixort: ${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = ${scored.total}`,
       timeLeftCs: 0,
       scoringMode: "uniform",
       jackMultiplier: settings.jackMultiplier,
@@ -5021,6 +5116,14 @@ function setHostSetting(key, value) {
     if (isProducer()) RPC.call("producer-action", { fn: "setHostSetting", args: [key, value] }, RPC.Mode.HOST);
     return;
   }
+  // Episode locks: settings currently managed by a loaded question refuse
+  // manual changes (host UI and producer relay alike — both funnel through
+  // here). The runner itself applies under episodeSettingsBypass.
+  if (!episodeSettingsBypass && activeEpisode && Array.isArray(episodeLockedKeys) && episodeLockedKeys.includes(key)) {
+    setBuzzNotice("That setting is locked by the episode — end the episode to change it.");
+    render();
+    return;
+  }
   const settings = getSettings();
   const next = { ...settings, [key]: value };
   if (key === "jackMultiplier") {
@@ -5822,6 +5925,21 @@ function ensureHostInit() {
       },
       true,
     );
+  }
+  // Episode attach (host prejoin): seed episode defaults once, then stash the
+  // playlist host-local for the runner card. Consumed once — the 1s hostTick
+  // re-entry must neither re-apply defaults nor wipe runner progress.
+  if (attachedEpisode) {
+    applyEpisodeSettings(attachedEpisode.defaults);
+    activeEpisode = attachedEpisode;
+    episodeIndex = 0;
+    episodeLetterIndex = 0;
+    episodeLockedKeys = [];
+    attachedEpisode = null;
+  }
+  // Prompt broadcast backfill for rooms created before episodes existed.
+  if (getState("episodePrompt") === undefined) {
+    try { setState("episodePrompt", null, true); } catch {}
   }
   // Coop + shared-team scoring can never coexist (alliances only).
   try {
@@ -6879,7 +6997,7 @@ function renderQuixortHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Quixort Setup</h2>
-        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Exact 1000, off-by-one 500, off-by-two 250 (x multiplier), clean-run bonus ${QUIXORT_BONUS_CLEAN} x multiplier.</p>
+        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Correctly-ordered pairs score +W, inverted pairs −W (perfect order ≈ items × 1000), trash +1000, wrong trash calls −500 (x multiplier), clean-run bonus ${QUIXORT_BONUS_CLEAN} x multiplier.</p>
         <div class="control-grid">
           <label>Multiplier
             <select id="quixort-mult">${multOpts}</select>
@@ -6920,7 +7038,7 @@ function renderQuixortHostPanel(settings, players) {
   const remainingMax = trackRows.reduce((m, r) => Math.max(m, r.run.finished ? 0 : r.remaining), 0);
   const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }) => {
     const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
-    const scoreTxt = scored ? ` — <strong>${scored.total}</strong> pts (${scored.exactCount} exact, ${scored.trashCorrect} trash${scored.bonus ? ` + ${scored.bonus} bonus` : ""})` : "";
+    const scoreTxt = scored ? ` — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})` : "";
     return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span>${scoreTxt}</li>`;
   }).join("");
   if (qx.phase === "results") {
@@ -6972,7 +7090,7 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
       <section class="card player-card">
         <h2>Quixort ${teamPill}</h2>
         <h3>${getSnark("player.quixort.resultsTitle", "Results")}</h3>
-        <p class="muted">${getSnark("player.quixort.exactCount", `${scored.exactCount} exact placements`, { exact: scored.exactCount })}, ${scored.trashCorrect} trash sorted${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
+        <p class="muted">${getSnark("player.quixort.pairsCount", `${scored.concordant}/${scored.totalPairs} pairs in order`, { good: scored.concordant, pairs: scored.totalPairs })}, ${scored.trashCorrect} trash sorted${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
         <p class="muted">${getSnark("player.quixort.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </section>`;
   }
@@ -7027,7 +7145,7 @@ function renderQuixortAudienceDisplay(settings, players) {
   const standings = tracks.map(({ track, run, scored }) => {
     const deckLen = (run.deck || []).length;
     const detail = qx.phase === "results" && scored
-      ? `${scored.exactCount} exact, ${scored.trashCorrect} trash = ${scored.total} pts`
+      ? `${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash = ${scored.total} pts`
       : `${Number(run.deckPos) || 0}/${deckLen} blocks`;
     return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${detail}</li>`;
   }).join("");
@@ -8752,6 +8870,465 @@ function renderAnalyticsCard(audience = false) {
 // producer-accessible (relays through producer-action when clicked by a
 // producer) and hides in minigame views (analytics covers Buttons/Text only).
 // Returns "" when no row is visible (e.g. producers in minigame views).
+// =============================================================================
+// Episode creator helpers (pre-launch, local-only draft). Top-level on
+// purpose: renderPrejoinScreen and the bindEvents delegates share them.
+// =============================================================================
+function ensureEpisodeDraft() {
+  if (!episodeDraft) episodeDraft = epLoadDraft();
+  return episodeDraft;
+}
+function enterEpisodeCreator() {
+  ensureEpisodeDraft();
+  renderPrejoinScreen("creator");
+  probeEpisodeCloud(false);
+}
+// Re-probe cloud availability and refresh the creator if it is still open.
+// force=true skips the 60s cache (Retry button after starting the server).
+function probeEpisodeCloud(force = false) {
+  try {
+    isEpisodeCloudEnabled(force).then((ok) => {
+      episodeCloudEnabled = ok;
+      const d = epCloudDiagnosis();
+      episodeCloudError = !d.url
+        ? "Cloud is off — set VITE_EPISODE_API_URL and restart dev."
+        : ok ? "" : `Cloud unreachable at ${d.url} — is the episode server running?`;
+      if (prejoinMode === "creator") renderPrejoinScreen("creator");
+      refreshAttachCloudRow();
+    });
+  } catch {
+    episodeCloudEnabled = false;
+    episodeCloudError = "Cloud check failed.";
+    if (prejoinMode === "creator") renderPrejoinScreen("creator");
+  }
+}
+// Harvest visible creator fields into the draft before any structural
+// action, so switching questions never drops typed-but-uncommitted edits.
+function harvestIntoDraft() {
+  ensureEpisodeDraft();
+  let harvested = null;
+  try { harvested = harvestCreatorFields(getApp() || app); } catch { harvested = null; }
+  if (!harvested) return;
+  if (harvested.meta && Object.keys(harvested.meta).length) episodeDraft = epUpdateMeta(episodeDraft, harvested.meta);
+  if (harvested.defaults && Object.keys(harvested.defaults).length) episodeDraft = epUpdateDefaults(episodeDraft, harvested.defaults);
+  if (harvested.item && creatorSelectedId) {
+    const patch = { ...harvested.item };
+    const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+    const count = Number(patch.optionCount ?? sel?.optionCount) || 0;
+    if (Array.isArray(patch.correctOptions) && count > 0) {
+      patch.correctOptions = patch.correctOptions.filter((n) => Number.isInteger(n) && n >= 1 && n <= count);
+    }
+    episodeDraft = epUpdateItem(episodeDraft, creatorSelectedId, patch);
+  }
+  epPersistDraft(episodeDraft);
+}
+function refreshCreator() { renderPrejoinScreen("creator"); }
+// Patch the host form's cloud row without re-rendering (a re-render would
+// wipe the typed host name). Top-level: probeEpisodeCloud calls it.
+// No-ops when the host form isn't showing.
+  function refreshAttachCloudRow() {
+    try {
+      const input = document.querySelector("#ep-attach-code");
+      const btn = document.querySelector("[data-ep-attach-cloud]");
+      const hint = document.querySelector("#ep-attach-cloud-hint");
+      if (input) input.disabled = !episodeCloudEnabled;
+      if (btn) btn.disabled = !episodeCloudEnabled;
+      // Static strings only (no user data) — innerHTML is safe here, and the
+      // delegated Retry handler survives the swap.
+      if (hint) hint.innerHTML = episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-attach-cloud-retry type="button">Retry</button>`;
+    } catch {}
+  }
+function downloadEpisodeJson() {
+  harvestIntoDraft();
+  const { ok, errors } = epValidateEpisode(episodeDraft);
+  try {
+    const blob = new Blob([epExportText(episodeDraft)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = epExportFileName(episodeDraft);
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
+  } catch {
+    showToast("Export failed in this browser.", { variant: "error" });
+    return;
+  }
+  showToast(ok ? `Exported ${episodeDraft.items.length} question${episodeDraft.items.length === 1 ? "" : "s"}.` : `Exported with ${errors.length} validation problem${errors.length === 1 ? "" : "s"} — fix before running.`, { variant: ok ? "info" : "error" });
+}
+
+// =============================================================================
+// Episode runner — ordered playlist loaded from the creator (host-local
+// activeEpisode/episodeIndex; only the current prompt is shared state).
+// "Load" switches inputMode first (which resets per-mode setup), then seeds
+// the question's presets. The host then runs the question normally.
+// =============================================================================
+function getEpisodePrompt() {
+  return getSafeState("episodePrompt", null);
+}
+
+// Answer rounds for a cycling question, with legacy single-answer fallback
+// (pre-rounds episodes stored `answer`). Always an array (possibly empty).
+function getEpisodeRounds(item) {
+  if (!item) return [];
+  if (Array.isArray(item.rounds) && item.rounds.length) return item.rounds;
+  if ((item.kind === "bingo" || item.kind === "wendithapn") && typeof item.answer === "string" && item.answer.trim()) {
+    return [{ answer: item.answer.trim().toUpperCase() }];
+  }
+  return [];
+}
+
+// A round's prompt, falling back to the question title when blank.
+function episodeRoundPrompt(item, round) {
+  const p = String(round?.prompt || "").trim();
+  return p || String(item?.prompt || "");
+}
+
+function bingoTargetForAnswer(items, answer) {
+  return Math.max(0, items.indexOf(String(answer || "").toUpperCase()));
+}
+
+// Per-control disabled flag for episode-locked settings (host panel).
+// Returns "" for unmanaged keys, so shared markup is unaffected.
+function episodeLockAttr(key) {
+  try {
+    if (activeEpisode && Array.isArray(episodeLockedKeys) && episodeLockedKeys.includes(key)) return "disabled";
+  } catch {}
+  return "";
+}
+
+const EPISODE_LOCK_LABELS = {
+  scoringMode: "Scoring",
+  uniformPoints: "Points",
+  jackMultiplier: "JACK mult",
+  timeOpen: "Buzz time",
+  lockAfterBuzz: "Lock",
+  rebuzzAllowed: "Rebuzz",
+  maxBuzzesPerOption: "Max buzzes",
+  closeBuzzersOnPointsGiven: "Close on points",
+  choiceLayout: "Layout",
+};
+
+function episodeLockNote() {
+  if (!activeEpisode || !Array.isArray(episodeLockedKeys) || !episodeLockedKeys.length) return "";
+  const names = episodeLockedKeys.map((k) => EPISODE_LOCK_LABELS[k] || k).join(", ");
+  return `<p class="muted">Locked by episode: ${escapeHtml(names)}</p>`;
+}
+
+function renderEpisodePromptBanner() {
+  const ep = getEpisodePrompt();
+  if (!ep || !ep.prompt) return "";
+  const pos = `Q${Number(ep.index) + 1} of ${ep.total}`;
+  const letter = Number.isInteger(ep.roundIndex) && Number.isInteger(ep.roundTotal) && ep.roundTotal > 1
+    ? ` · Letter ${ep.roundIndex + 1} of ${ep.roundTotal}`
+    : "";
+  const labels = Array.isArray(ep.optionLabels) ? ep.optionLabels : [];
+  const keys = Array.isArray(ep.optionKeys) ? ep.optionKeys : [];
+  const optionsList = labels.length
+    ? `<ul class="ep-prompt-options">${labels.map((label, i) => `<li><strong>${escapeHtml(keys[i] || String(i + 1))}</strong> ${escapeHtml(label)}</li>`).join("")}</ul>`
+    : "";
+  return `
+    <section class="card ep-prompt-banner" data-episode-prompt="true">
+      <p class="prejoin-kicker">${escapeHtml(ep.title ? `${ep.title} — ${pos}` : pos)}${escapeHtml(letter)} • ${escapeHtml(epKindLabel(ep.kind))}</p>
+      <p class="ep-prompt-text">${escapeHtml(ep.prompt)}</p>
+      ${optionsList}
+    </section>`;
+}
+
+// Apply a settings-like object (episode defaults, or defaults merged with a
+// question's overrides) through setHostSetting so live-game validation runs.
+// Only touches keys that actually differ. Coop-gated values (JACK scoring,
+// re-buzz) are skipped silently — the runner already verified the mode.
+function applyEpisodeSettings(source) {
+  if (!source || typeof source !== "object") return;
+  episodeSettingsBypass = true;
+  try {
+    const settings = getSettings();
+    const coop = isCoopMode(settings);
+    const setIfDiff = (key, value) => {
+      if (value === undefined) return;
+      if (settings[key] === value) return;
+      setHostSetting(key, value);
+    };
+    if (source.scoringMode !== undefined && source.scoringMode !== settings.scoringMode) {
+      if (!(coop && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
+    }
+    setIfDiff("uniformPoints", source.uniformPoints !== undefined ? Number(source.uniformPoints) : undefined);
+    setIfDiff("jackMultiplier", source.jackMultiplier !== undefined ? Number(source.jackMultiplier) : undefined);
+    setIfDiff("timeOpen", source.timeOpen !== undefined ? Number(source.timeOpen) : undefined);
+    setIfDiff("maxBuzzesPerOption", source.maxBuzzesPerOption !== undefined ? Number(source.maxBuzzesPerOption) : undefined);
+    setIfDiff("choiceLayout", source.choiceLayout);
+    setIfDiff("lockAfterBuzz", source.lockAfterBuzz);
+    setIfDiff("closeBuzzersOnPointsGiven", source.closeBuzzersOnPointsGiven);
+    if (source.rebuzzAllowed !== undefined && !(coop && source.rebuzzAllowed === true)) {
+      setIfDiff("rebuzzAllowed", source.rebuzzAllowed);
+    }
+  } finally {
+    episodeSettingsBypass = false;
+  }
+}
+
+// Attach a validated episode as the runner playlist. Usable pre-launch (via
+// attachedEpisode) and live (host panel / producer action).
+function attachEpisode(episode) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "attachEpisode", args: [episode] }, RPC.Mode.HOST);
+    return { ok: false, reason: "Not host." };
+  }
+  const check = epValidateEpisode(episode);
+  if (!check.ok) {
+    setBuzzNotice(`Episode has ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} — fix it in the creator first.`);
+    render();
+    return { ok: false, reason: "Invalid episode." };
+  }
+  activeEpisode = episode;
+  episodeIndex = 0;
+  episodeLetterIndex = 0;
+  episodeLockedKeys = [];
+  try { setState("episodePrompt", null, true); } catch {}
+  // Apply episode defaults immediately on explicit attach (same merge as the
+  // pre-launch path in ensureHostInit).
+  applyEpisodeSettings(episode.defaults);
+  render();
+  return { ok: true };
+}
+
+function episodeRunLoad(index) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunLoad", args: [index] }, RPC.Mode.HOST);
+    return false;
+  }
+  const ep = activeEpisode;
+  if (!ep || !Array.isArray(ep.items)) {
+    setBuzzNotice("No episode attached.");
+    render();
+    return false;
+  }
+  const item = ep.items[Number(index)];
+  if (!item) return false;
+  const round = getRound();
+  if (round.status !== ROUND_STATUSES.IDLE && round.status !== ROUND_STATUSES.CLOSED) {
+    setBuzzNotice("Reset the round before loading the next question.");
+    render();
+    return false;
+  }
+  setHostSetting("inputMode", item.kind);
+  if (getSettings().inputMode !== item.kind) {
+    setBuzzNotice(`${epKindLabel(item.kind)} is not available right now (coopertition limits special modes).`);
+    render();
+    return false;
+  }
+  // Episode defaults merged with this question's overrides (overrides win,
+  // gaps fall back to defaults, absent keys leave the game setting alone).
+  applyEpisodeSettings(epEffectiveSettings(ep, item));
+  // Lock what the episode now manages; stepping re-locks to the new mix.
+  episodeLockedKeys = Object.keys(epEffectiveSettings(ep, item));
+  if (item.kind === "buttons") {
+    if (Number(item.optionCount) !== Number(getSettings().optionCount)) setHostSetting("optionCount", item.optionCount);
+    const r = getRound();
+    setState("round", { ...r, correctOptions: [...(item.correctOptions || [])].map(Number).sort((a, b) => a - b), correctAnswer: null }, true);
+  } else if (item.kind === "text") {
+    const r = getRound();
+    setState("round", { ...r, correctAnswer: item.correctAnswer, correctOptions: null }, true);
+  } else if (item.kind === "fibbage") {
+    setState("fibbage", { ...getFibbage(), truth: item.truth, lieTimeSec: item.lieTimeSec, voteTimeSec: item.voteTimeSec, multiplier: item.multiplier }, true);
+  } else if (item.kind === "disordat") {
+    setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers] }, true);
+  } else if (item.kind === "quixort") {
+    setState("quixort", { ...getQuixort(), items: [...item.items], trash: [...(item.trash || [])], multiplier: item.multiplier, blockSec: item.blockSec }, true);
+  } else if (item.kind === "bingo" || item.kind === "wendithapn") {
+    // Fresh question state: reset per-question play (a stale active game
+    // from the previous question must not leak in), seed the word + the
+    // first round's target. Letter nav below advances rounds without this
+    // reset, so collection progress persists. The host still presses Start —
+    // startBingo preserves an inactive pre-seeded target for the same word.
+    const rounds = getEpisodeRounds(item);
+    if (!rounds.length) {
+      setBuzzNotice("That question has no answer rounds.");
+      render();
+      return false;
+    }
+    const isWen = item.kind === "wendithapn";
+    const word = isWen ? "" : String(item.word || "").toUpperCase();
+    const items = isWen ? [...WEN_DIT_HAPN_ITEMS] : word.split("");
+    const first = rounds[0];
+    const target = isWen
+      ? Math.max(0, ["B", "N", "A"].indexOf(String(first.answer || "").toUpperCase()))
+      : bingoTargetForAnswer(items, first.answer);
+    setState("bingo", {
+      ...getBingo(),
+      active: false,
+      word,
+      items,
+      itemStates: items.map(() => ({ collectedBy: null })),
+      targetIndex: target,
+      cycling: false,
+      currentLitIndex: -1,
+      currentLitSlot: 0,
+      currentLitTs: 0,
+      collectedCounts: {},
+      winner: null,
+      playerItems: {},
+      scoredTracks: {},
+      coopLockout: {},
+    }, true);
+    // startBingo reads the setup input, so keep it in sync when visible.
+    try { const input = document.querySelector("#bingo-word"); if (input) input.value = word; } catch {}
+    episodeLetterIndex = 0;
+    setState("episodePrompt", {
+      index: Number(index),
+      total: ep.items.length,
+      title: ep.meta?.title || "",
+      kind: item.kind,
+      prompt: episodeRoundPrompt(item, first),
+      optionLabels: null,
+      optionKeys: null,
+      roundIndex: 0,
+      roundTotal: rounds.length,
+    }, true);
+    episodeIndex = Number(index);
+    render();
+    return true;
+  }
+  // Custom option labels ride the prompt broadcast so every screen lists
+  // them; keys use the live layout rule (ABXY in diamond ≤4, else numbers).
+  // Non-cycling kinds carry no letter position (null-invariant: keys always
+  // present, null when absent — same rule as the round null-invariant).
+  let optionLabels = null;
+  let optionKeys = null;
+  if (item.kind === "buttons" && Array.isArray(item.options) && item.options.length) {
+    optionLabels = item.options.map((s) => String(s || ""));
+    const layout = getSettings().choiceLayout || "diamond";
+    optionKeys = optionLabels.map((_, i) => (optionLabels.length <= 4 ? epOptionLabel(i + 1, layout) : String(i + 1)));
+  }
+  setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys, roundIndex: null, roundTotal: null }, true);
+  episodeIndex = Number(index);
+  render();
+  return true;
+}
+
+function episodeRunStep(dir) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunStep", args: [dir] }, RPC.Mode.HOST);
+    return false;
+  }
+  const ep = activeEpisode;
+  if (!ep || !Array.isArray(ep.items) || !ep.items.length) {
+    setBuzzNotice("No episode attached.");
+    render();
+    return false;
+  }
+  const next = episodeIndex + (Number(dir) >= 0 ? 1 : -1);
+  if (next < 0 || next >= ep.items.length) {
+    setBuzzNotice(next < 0 ? "Already at the first question." : "That was the last question.");
+    render();
+    return false;
+  }
+  return episodeRunLoad(next);
+}
+
+// Advance within a cycling question's answer rounds (letter collection).
+// Unlike a fresh load this is a setBingoTarget-style transition: the target
+// changes but collected progress (playerItems/collectedCounts/itemStates)
+// persists, so letters accumulate across rounds.
+function episodeRunLetter(dir) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunLetter", args: [dir] }, RPC.Mode.HOST);
+    return false;
+  }
+  const ep = activeEpisode;
+  const item = ep?.items?.[episodeIndex];
+  if (!ep || !item || (item.kind !== "bingo" && item.kind !== "wendithapn")) {
+    setBuzzNotice("No cycling question loaded.");
+    render();
+    return false;
+  }
+  const rounds = getEpisodeRounds(item);
+  const next = episodeLetterIndex + (Number(dir) >= 0 ? 1 : -1);
+  if (next < 0 || next >= rounds.length) {
+    setBuzzNotice(next < 0 ? "Already at the first letter." : "That was the last letter — step to the next question.");
+    render();
+    return false;
+  }
+  const isWen = item.kind === "wendithapn";
+  const bingo = getBingo();
+  const liveItems = Array.isArray(bingo.items) && bingo.items.length
+    ? bingo.items
+    : (isWen ? [...WEN_DIT_HAPN_ITEMS] : String(item.word || "").toUpperCase().split(""));
+  const target = isWen
+    ? Math.max(0, ["B", "N", "A"].indexOf(String(rounds[next].answer || "").toUpperCase()))
+    : bingoTargetForAnswer(liveItems, rounds[next].answer);
+  setState("bingo", {
+    ...bingo,
+    items: liveItems,
+    targetIndex: target,
+    currentLitIndex: -1,
+    currentLitSlot: 0,
+    coopLockout: {},
+    scoredTracks: {},
+  }, true);
+  episodeLetterIndex = next;
+  setState("episodePrompt", {
+    index: episodeIndex,
+    total: ep.items.length,
+    title: ep.meta?.title || "",
+    kind: item.kind,
+    prompt: episodeRoundPrompt(item, rounds[next]),
+    optionLabels: null,
+    optionKeys: null,
+    roundIndex: next,
+    roundTotal: rounds.length,
+  }, true);
+  render();
+  return true;
+}
+
+function episodeRunEnd() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "episodeRunEnd", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  activeEpisode = null;
+  episodeIndex = 0;
+  episodeLetterIndex = 0;
+  const hadLocks = Array.isArray(episodeLockedKeys) && episodeLockedKeys.length > 0;
+  episodeLockedKeys = [];
+  try { setState("episodePrompt", null, true); } catch {}
+  setBuzzNotice(hadLocks ? "Episode ended — episode settings unlocked." : "Episode ended.");
+  render();
+}
+
+function renderEpisodeRunnerCard() {
+  const ep = activeEpisode;
+  if (!ep || !Array.isArray(ep.items) || !ep.items.length) return "";
+  if (!hasHostPrivileges()) return "";
+  const item = ep.items[episodeIndex] || ep.items[0];
+  const idx = ep.items.indexOf(item);
+  const round = getRound();
+  const roundBusy = round.status !== ROUND_STATUSES.IDLE && round.status !== ROUND_STATUSES.CLOSED;
+  const rounds = (item.kind === "bingo" || item.kind === "wendithapn") ? getEpisodeRounds(item) : [];
+  return `
+    <section class="card ep-runner">
+      <div class="ep-edit-head">
+        <h2>Episode: ${escapeHtml(ep.meta?.title || "Untitled")} (Q${idx + 1}/${ep.items.length})</h2>
+        <button type="button" data-ep-run-end>End episode</button>
+      </div>
+      <p><span class="ep-badge">${escapeHtml(epKindLabel(item.kind))}</span> ${escapeHtml(item.prompt || "")}</p>
+      ${episodeLockNote()}
+      ${roundBusy ? `<p class="muted">Reset the round to load a question.</p>` : ""}
+      <div class="ep-toolbar">
+        <button type="button" data-ep-run-step="-1" ${idx <= 0 ? "disabled" : ""}>← Prev</button>
+        <button type="button" class="primary-action" data-ep-run-load="${idx}" ${roundBusy ? "disabled" : ""}>Load Q${idx + 1}</button>
+        <button type="button" data-ep-run-step="1" ${idx >= ep.items.length - 1 ? "disabled" : ""}>Next →</button>
+      </div>
+      ${rounds.length > 1 ? `<div class="ep-toolbar">
+        <button type="button" data-ep-run-letter="-1" ${episodeLetterIndex <= 0 ? "disabled" : ""}>← Letter</button>
+        <span class="muted">Letter ${episodeLetterIndex + 1}/${rounds.length}</span>
+        <button type="button" data-ep-run-letter="1" ${episodeLetterIndex >= rounds.length - 1 ? "disabled" : ""}>Letter →</button>
+      </div>` : ""}
+    </section>`;
+}
+
 function renderBroadcastHostCard() {
   const rows = [];
   if (isHost()) {
@@ -8974,11 +9551,11 @@ function mountView(mount, html, modeKey) {
 }
 
 function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pendingEntry) {
-  if (isTeamSelectActive()) return renderTeamSelectAudienceDisplay(settings, players);
-  if (isBingoMode()) return renderBingoAudienceDisplay(settings, players);
-  if (isDisOrDatMode()) return renderDisOrDatAudienceDisplay(settings, players);
-  if (isFibbageMode()) return renderFibbageAudienceDisplay(settings, players);
-  if (isQuixortMode()) return renderQuixortAudienceDisplay(settings, players);
+  if (isTeamSelectActive()) return renderEpisodePromptBanner() + renderTeamSelectAudienceDisplay(settings, players);
+  if (isBingoMode()) return renderEpisodePromptBanner() + renderBingoAudienceDisplay(settings, players);
+  if (isDisOrDatMode()) return renderEpisodePromptBanner() + renderDisOrDatAudienceDisplay(settings, players);
+  if (isFibbageMode()) return renderEpisodePromptBanner() + renderFibbageAudienceDisplay(settings, players);
+  if (isQuixortMode()) return renderEpisodePromptBanner() + renderQuixortAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const showScrews = Boolean(settings.allowScrewing);
   const mainColumns = showScores || showScrews ? "audience-grid" : "audience-grid audience-grid-single";
@@ -9014,6 +9591,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
         </div>
       </header>
 
+      ${renderEpisodePromptBanner()}
       <section class="${mainColumns}">
         ${primaryPanel}
         ${showScores ? renderScores(players, scores) : ""}
@@ -9306,8 +9884,8 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
     const onCls = isOn ? "is-active" : "";
     const offCls = !isOn ? "is-active is-off-val" : "";
     return `<div class="toggle-switch">
-      <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="${setting}" data-value="true" ${settingDisabledAttr}>${labelOn}</button>
-      <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="${setting}" data-value="false" ${settingDisabledAttr}>${labelOff}</button>
+      <button type="button" class="toggle-switch-btn ${onCls}" data-toggle-setting="${setting}" data-value="true" ${settingDisabledAttr} ${episodeLockAttr(setting)}>${labelOn}</button>
+      <button type="button" class="toggle-switch-btn ${offCls}" data-toggle-setting="${setting}" data-value="false" ${settingDisabledAttr} ${episodeLockAttr(setting)}>${labelOff}</button>
     </div>`;
   };
 
@@ -9323,7 +9901,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Time open
-                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} />
+                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} ${episodeLockAttr("timeOpen")} />
                 <p class="setting-helper">How many seconds buzzers stay open each round.</p>
               </label>
               <label>
@@ -9351,7 +9929,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 settings.rebuzzAllowed
                   ? `<label>
                       Max buzzes per option
-                      <input type="number" min="1" max="50" step="1" value="${settings.maxBuzzesPerOption}" data-setting="maxBuzzesPerOption" ${settingDisabledAttr} />
+                      <input type="number" min="1" max="50" step="1" value="${settings.maxBuzzesPerOption}" data-setting="maxBuzzesPerOption" ${settingDisabledAttr} ${episodeLockAttr("maxBuzzesPerOption")} />
                       <p class="setting-helper">How many times a player can buzz the same choice while re-buzz is on.</p>
                     </label>`
                   : ""
@@ -9395,7 +9973,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   ? ""
                   : `<label>
                       Choice layout
-                      <select data-setting="choiceLayout" ${settingDisabledAttr}>
+                      <select data-setting="choiceLayout" ${settingDisabledAttr} ${episodeLockAttr("choiceLayout")}>
                         <option value="diamond" ${settings.choiceLayout === "diamond" ? "selected" : ""}>Diamond (A/B/X/Y)</option>
                         <option value="grid" ${settings.choiceLayout === "grid" ? "selected" : ""}>Grid (1–4)</option>
                         <option value="list" ${settings.choiceLayout === "list" ? "selected" : ""}>List (1–4)</option>
@@ -9418,7 +9996,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Scoring mode
-                <select data-setting="scoringMode" ${settingDisabledAttr}>
+                <select data-setting="scoringMode" ${settingDisabledAttr} ${episodeLockAttr("scoringMode")}>
                   <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
                   ${isCoopMode(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
                   <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Pick-a-value (player-determined)</option>
@@ -9429,7 +10007,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 settings.scoringMode === "uniform"
                   ? `<label>
                       Uniform points
-                      <select data-setting="uniformPoints" ${settingDisabledAttr}>
+                      <select data-setting="uniformPoints" ${settingDisabledAttr} ${episodeLockAttr("uniformPoints")}>
                         ${VALUE_OPTIONS.map((value) => `<option value="${value}" ${settings.uniformPoints === value ? "selected" : ""}>${value}</option>`).join("")}
                       </select>
                       <p class="setting-helper">Every correct answer is worth this many points.</p>
@@ -9437,7 +10015,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                   : settings.scoringMode === "jack"
                     ? `<label>
                         JACK multiplier
-                      <select data-setting="jackMultiplier" ${settingDisabledAttr}>
+                      <select data-setting="jackMultiplier" ${settingDisabledAttr} ${episodeLockAttr("jackMultiplier")}>
                         <option value="1" ${settings.jackMultiplier === 1 ? "selected" : ""}>1x</option>
                         <option value="1.5" ${settings.jackMultiplier === 1.5 ? "selected" : ""}>1.5x</option>
                         <option value="2" ${settings.jackMultiplier === 2 ? "selected" : ""}>2x</option>
@@ -9636,7 +10214,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="quixort" ${settingDisabledAttr} ${settings.inputMode === "quixort" || isCoopMode(settings) ? "disabled" : ""}>Quixort</button>
-                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end by position: exact 1000, off-by-one 500, off-by-two 250 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +1000, wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort"
@@ -10135,6 +10713,7 @@ function render() {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -10172,11 +10751,13 @@ function render() {
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
@@ -10206,11 +10787,13 @@ function render() {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
       </section>` ;
@@ -10243,11 +10826,13 @@ function render() {
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${fibScoresHost}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${fibScoresPlayer}
       </section>` ;
@@ -10279,11 +10864,13 @@ function render() {
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid">
         ${qxScoresHost}
       </section>
       ${renderLog(gameLog, settings)}` : `
       <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${qxScoresPlayer}
       </section>` ;
@@ -10327,7 +10914,9 @@ function render() {
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
+      ${renderEpisodeRunnerCard()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
+        ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores, showAdminData ? "score-card-host" : "")
@@ -10776,9 +11365,314 @@ function bindEvents() {
   // Also keep old per-render pointerdown for buzz still uses delegate above.
 
   // Prejoin delegated (once) — keeps prejoin screen also resilient
-  delegate("click", "[data-prejoin-open]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinOpen || "landing"));
+  delegate("click", "[data-prejoin-open]", (e, btn) => {
+    const next = btn.dataset.prejoinOpen || "landing";
+    if (next === "creator") { enterEpisodeCreator(); return; }
+    renderPrejoinScreen(next);
+    // Fire-and-forget: enables the host form's cloud row in place (no
+    // re-render, so typed input survives).
+    if (next === "host") probeEpisodeCloud(false);
+  });
   delegate("click", "[data-prejoin-switch]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinSwitch || "landing"));
   delegate("click", "[data-prejoin-back]", () => renderPrejoinScreen());
+
+  delegate("click", "[data-ep-add]", () => {
+    harvestIntoDraft();
+    let kind = "buttons";
+    try { kind = document.querySelector("#ep-add-kind")?.value || "buttons"; } catch {}
+    episodeDraft = epAddItem(episodeDraft, EP_CREATOR_KINDS.includes(kind) ? kind : "buttons");
+    creatorSelectedId = episodeDraft.items[episodeDraft.items.length - 1]?.id || null;
+    creatorImportErrors = [];
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-edit]", (e, btn) => {
+    harvestIntoDraft();
+    creatorSelectedId = btn.dataset.epEdit || null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-round-add]", () => {
+    harvestIntoDraft();
+    const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+    if (!sel || (sel.kind !== "bingo" && sel.kind !== "wendithapn")) return;
+    const rounds = Array.isArray(sel.rounds) ? sel.rounds : [];
+    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : EP_MAX_WEN_ROUNDS;
+    if (rounds.length >= max) return;
+    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, { prompt: "", answer: "" }] });
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-round-del]", (e, btn) => {
+    harvestIntoDraft();
+    const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
+    if (!sel || !Array.isArray(sel.rounds) || sel.rounds.length <= 1) return;
+    const at = Number(btn.dataset.epRoundDel);
+    if (!Number.isInteger(at) || at < 0 || at >= sel.rounds.length) return;
+    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: sel.rounds.filter((_, i) => i !== at) });
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-close-edit]", () => {
+    harvestIntoDraft();
+    creatorSelectedId = null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-del]", (e, btn) => {
+    harvestIntoDraft();
+    const id = btn.dataset.epDel;
+    const target = episodeDraft.items.find((it) => it && it.id === id);
+    const excerpt = String(target?.prompt || "").trim().slice(0, 60);
+    let confirmed = true;
+    try { confirmed = window.confirm(excerpt ? `Delete "${excerpt}"? This cannot be undone.` : "Delete this question? This cannot be undone."); } catch {}
+    if (!confirmed) return;
+    episodeDraft = epDeleteItem(episodeDraft, id);
+    if (creatorSelectedId === id) creatorSelectedId = null;
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-dup]", (e, btn) => {
+    harvestIntoDraft();
+    episodeDraft = epDuplicateItem(episodeDraft, btn.dataset.epDup);
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-move]", (e, btn) => {
+    harvestIntoDraft();
+    episodeDraft = epMoveItem(episodeDraft, btn.dataset.epMove, Number(btn.dataset.dir) || 0);
+    epPersistDraft(episodeDraft);
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-new]", () => {
+    harvestIntoDraft();
+    let confirmed = true;
+    try { confirmed = window.confirm("Start a new episode? Unsaved work is kept only in the exported file."); } catch {}
+    if (!confirmed) return;
+    episodeDraft = epNewDraft();
+    creatorSelectedId = null;
+    creatorImportErrors = [];
+    refreshCreator();
+    showToast("Started a new episode.");
+  });
+  delegate("click", "[data-ep-export]", () => downloadEpisodeJson());
+  delegate("click", "[data-ep-import-btn]", () => {
+    harvestIntoDraft();
+    try { document.querySelector("#ep-import-file")?.click(); } catch {}
+  });
+  delegate("change", "#ep-import-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = epParseImportText(String(reader.result || ""));
+      if (result.ok && result.episode) {
+        if (!epIsBlankEpisode(episodeDraft)) {
+          let confirmed = true;
+          try { confirmed = window.confirm(`Replace the current episode with "${result.episode.meta?.title || "episode"}"? Unsaved work is lost unless exported.`); } catch {}
+          if (!confirmed) { try { input.value = ""; } catch {} return; }
+        }
+        episodeDraft = result.episode;
+        creatorSelectedId = null;
+        creatorImportErrors = [];
+        epPersistDraft(episodeDraft);
+        showToast(`Imported "${episodeDraft.meta?.title || "episode"}" (${episodeDraft.items.length} questions).`);
+      } else {
+        creatorImportErrors = (result.errors || []).slice(0, 12).map((er) => ({
+          index: -1,
+          itemId: null,
+          field: er.index >= 0 ? `Q${er.index + 1}${er.field ? ` (${er.field})` : ""}` : er.field,
+          message: er.message,
+        }));
+        if (!creatorImportErrors.length) {
+          creatorImportErrors = [{ index: -1, itemId: null, field: "", message: result.errorMessage || "Import failed." }];
+        }
+        showToast(result.errorMessage || "Import failed.", { variant: "error" });
+      }
+      try { input.value = ""; } catch {}
+      refreshCreator();
+    };
+    reader.onerror = () => showToast("Could not read that file.", { variant: "error" });
+    try { reader.readAsText(file); } catch { showToast("Could not read that file.", { variant: "error" }); }
+  });
+  // Selects/checkboxes commit immediately; text fields harvest on actions.
+  delegate("change", "[data-ep-harvest]", () => {
+    if (prejoinMode !== "creator") return;
+    harvestIntoDraft();
+    refreshCreator();
+  });
+
+  // --- Episode runner (host + producer via producer-action relay) ---
+  delegate("click", "[data-ep-run-load]", (e, btn) => {
+    episodeRunLoad(Number(btn.dataset.epRunLoad));
+  });
+  delegate("click", "[data-ep-run-step]", (e, btn) => {
+    episodeRunStep(Number(btn.dataset.epRunStep) || 0);
+  });
+  delegate("click", "[data-ep-run-letter]", (e, btn) => {
+    episodeRunLetter(Number(btn.dataset.epRunLetter) || 0);
+  });
+  delegate("click", "[data-ep-run-end]", () => {
+    episodeRunEnd();
+  });
+
+  // --- Episode attach on the host prejoin form ---
+  function refreshAttachLabel() {
+    try {
+      const label = document.querySelector("#ep-attach-label");
+      if (label) label.textContent = pendingEpisode ? `${pendingEpisode.meta?.title || "Untitled"} (${pendingEpisode.items.length})` : "none";
+    } catch {}
+  }
+  delegate("click", "[data-ep-attach-btn]", () => {
+    try { document.querySelector("#ep-attach-file")?.click(); } catch {}
+  });
+  delegate("click", "[data-ep-attach-draft]", () => {
+    const draft = epLoadDraft();
+    const check = epValidateEpisode(draft);
+    if (!check.ok) {
+      showToast(`Creator draft has ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} — fix it in the creator first.`, { variant: "error" });
+      return;
+    }
+    pendingEpisode = draft;
+    refreshAttachLabel();
+    showToast(`Attached "${draft.meta?.title || "Untitled"}".`);
+  });
+  delegate("click", "[data-ep-attach-clear]", () => {
+    pendingEpisode = null;
+    refreshAttachLabel();
+  });
+  // Manual re-probe from the host form (server started after the form
+  // opened). Patched in place — no re-render, typed input survives.
+  delegate("click", "[data-ep-attach-cloud-retry]", () => {
+    probeEpisodeCloud(true);
+  });
+  // Ticking the episode box re-probes too: the row enables itself if the
+  // server has come up since the form opened. Cached probe = no extra fetch.
+  delegate("change", "#prejoin-episode", (e, input) => {
+    if (input?.checked) probeEpisodeCloud(false);
+  });
+  delegate("click", "[data-ep-attach-cloud]", async () => {
+    if (!episodeCloudEnabled) return;
+    let code = "";
+    try { code = String(document.querySelector("#ep-attach-code")?.value || "").trim().toUpperCase(); } catch {}
+    if (!code) { showToast("Enter a cloud share code first.", { variant: "error" }); return; }
+    try {
+      const { episode } = await epCloudLoad(code);
+      const check = epValidateEpisode(episode);
+      if (!check.ok) throw new Error("That episode failed validation.");
+      pendingEpisode = episode;
+      try { const input = document.querySelector("#ep-attach-code"); if (input) input.value = ""; } catch {}
+      refreshAttachLabel();
+      showToast(`Attached "${episode.meta?.title || "episode"}" (${episode.items.length} questions).`);
+    } catch (e) {
+      showToast(e?.message || "Load failed.", { variant: "error" });
+    }
+  });
+  delegate("change", "#ep-attach-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = epParseImportText(String(reader.result || ""));
+      if (result.ok && result.episode) {
+        pendingEpisode = result.episode;
+        showToast(`Attached "${result.episode.meta?.title || "episode"}" (${result.episode.items.length} questions).`);
+      } else {
+        showToast(result.errorMessage || "Could not attach that file.", { variant: "error" });
+      }
+      try { input.value = ""; } catch {}
+      refreshAttachLabel();
+    };
+    reader.onerror = () => showToast("Could not read that file.", { variant: "error" });
+    try { reader.readAsText(file); } catch { showToast("Could not read that file.", { variant: "error" }); }
+  });
+
+  // --- Episode cloud save/load (creator toolbar; buttons disabled unless
+  // a server is configured — see isEpisodeCloudEnabled) ---
+  delegate("click", "[data-ep-cloud-save]", () => {
+    if (!episodeCloudEnabled) return;
+    cloudView = { mode: "save" };
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-load]", () => {
+    if (!episodeCloudEnabled) return;
+    cloudView = { mode: "load" };
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-cancel]", () => {
+    cloudView = null;
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-retry]", () => {
+    probeEpisodeCloud(true);
+  });
+  delegate("click", "[data-ep-cloud-copy]", (e, btn) => {
+    const code = btn.dataset.epCloudCopy || "";
+    try {
+      if (navigator?.clipboard?.writeText) {
+        navigator.clipboard.writeText(code).then(
+          () => showToast("Code copied."),
+          () => showToast("Copy failed — write it down.", { variant: "error" }),
+        );
+      } else {
+        showToast("Copy not available — write it down.");
+      }
+    } catch { showToast("Copy failed — write it down.", { variant: "error" }); }
+  });
+  delegate("click", "[data-ep-cloud-save-confirm]", async () => {
+    harvestIntoDraft();
+    let password = "";
+    let code = "";
+    try {
+      password = String(document.querySelector("#ep-cloud-password")?.value || "");
+      code = String(document.querySelector("#ep-cloud-code")?.value || "").trim().toUpperCase();
+    } catch {}
+    const check = epValidateEpisode(episodeDraft);
+    if (!check.ok) {
+      cloudView = { mode: "save", error: `Fix ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} before saving.` };
+      refreshCreator();
+      return;
+    }
+    try {
+      const result = code
+        ? await epCloudOverwrite(code, password, episodeDraft)
+        : await epCloudSave(episodeDraft, password);
+      cloudView = { mode: "saved", code: result.code };
+      showToast(code ? `Overwrote ${result.code}.` : `Saved — code ${result.code}.`);
+    } catch (e) {
+      cloudView = { mode: "save", error: e?.message || "Save failed." };
+      showToast(e?.message || "Save failed.", { variant: "error" });
+    }
+    refreshCreator();
+  });
+  delegate("click", "[data-ep-cloud-load-confirm]", async () => {
+    harvestIntoDraft();
+    let code = "";
+    try { code = String(document.querySelector("#ep-cloud-load-code")?.value || "").trim().toUpperCase(); } catch {}
+    if (!code) {
+      cloudView = { mode: "load", error: "Enter a share code." };
+      refreshCreator();
+      return;
+    }
+    try {
+      const { episode } = await epCloudLoad(code);
+      const check = epValidateEpisode(episode);
+      if (!check.ok) throw new Error("That episode failed validation.");
+      if (!epIsBlankEpisode(episodeDraft)) {
+        let confirmed = true;
+        try { confirmed = window.confirm(`Replace the current episode with "${episode.meta?.title || "episode"}"? Unsaved work is lost unless exported.`); } catch {}
+        if (!confirmed) return;
+      }
+      episodeDraft = episode;
+      creatorSelectedId = null;
+      creatorImportErrors = [];
+      cloudView = null;
+      epPersistDraft(episodeDraft);
+      showToast(`Loaded "${episode.meta?.title || "episode"}" (${episode.items.length} questions).`);
+    } catch (e) {
+      cloudView = { mode: "load", code, error: e?.message || "Load failed." };
+      showToast(e?.message || "Load failed.", { variant: "error" });
+    }
+    refreshCreator();
+  });
   delegate("input", "#prejoin-room-code", (e) => {
     const upper = e.target.value.toUpperCase();
     if (e.target.value !== upper) e.target.value = upper;
@@ -10806,6 +11700,11 @@ function bindEvents() {
       const selectedTeamSetting = String(teamModeInput?.value || "off");
       hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
       hostPrejoinCoopSetting = mount.querySelector("#prejoin-coop")?.checked === true;
+      const episodeChecked = mount.querySelector("#prejoin-episode")?.checked === true;
+      hostPrejoinEpisodeEnabled = episodeChecked;
+      if (episodeChecked && !pendingEpisode) { renderPrejoinScreen("host", "Attach an episode file, use the creator draft, or load one by code — or uncheck the episode box."); return; }
+      attachedEpisode = episodeChecked ? pendingEpisode : null;
+      pendingEpisode = null;
     }
     const submitButton = form.querySelector("button[type='submit']");
     if (submitButton instanceof HTMLButtonElement) submitButton.disabled = true;
@@ -11096,6 +11995,7 @@ function renderPrejoinScreen(mode = "landing", error = "") {
     const isAlliance = hostPrejoinTeamSetting === "alliance";
     const isShared = hostPrejoinTeamSetting === "shared";
     const isCoop = hostPrejoinCoopSetting === true;
+    const isEpisode = hostPrejoinEpisodeEnabled === true;
     prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-host">
@@ -11127,6 +12027,26 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <input data-prejoin-input id="prejoin-coop" type="checkbox" ${isCoop ? "checked" : ""} />
               <span>Coopertition mode (up to 3 players per device)</span>
             </label>
+
+            <label class="prejoin-check">
+              <input data-prejoin-input id="prejoin-episode" type="checkbox" ${isEpisode ? "checked" : ""} />
+              <span>Run an episode (question playlist)</span>
+            </label>
+
+            <div class="ep-attach-options">
+              <span class="muted">Attached: <strong id="ep-attach-label">none</strong></span>
+              <div class="ep-attach-actions">
+                <button class="secondary-action" data-ep-attach-btn type="button">Attach JSON file</button>
+                <input type="file" id="ep-attach-file" accept="application/json,.json" hidden />
+                <button class="secondary-action" data-ep-attach-draft type="button">Use creator draft</button>
+                <button class="secondary-action" data-ep-attach-clear type="button">Clear</button>
+              </div>
+              <div class="ep-attach-actions">
+                <input id="ep-attach-code" type="text" maxlength="12" placeholder="Cloud code (ABC123)" ${episodeCloudEnabled ? "" : "disabled"} />
+                <button class="secondary-action" data-ep-attach-cloud type="button" ${episodeCloudEnabled ? "" : "disabled"}>Load by code</button>
+              </div>
+              <p class="muted" id="ep-attach-cloud-hint">${episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-attach-cloud-retry type="button">Retry</button>`}</p>
+            </div>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
 
@@ -11297,10 +12217,28 @@ function renderPrejoinScreen(mode = "landing", error = "") {
               <span class="prejoin-choice-label">Audience display</span>
               <span class="muted">Show the live buzzer board beside a slide deck.</span>
             </button>
+            <button class="prejoin-choice" data-prejoin-open="creator" type="button">
+              <span class="prejoin-choice-label">Episode creator</span>
+              <span class="muted">Build a question playlist to run when hosting.</span>
+            </button>
           </div>
         </section>
       </main>
     `;
+  }
+  if (mode === "creator") {
+    ensureEpisodeDraft();
+    const creatorCheck = epValidateEpisode(episodeDraft);
+    prejoinHtml = renderCreatorScreen({
+      ep: episodeDraft,
+      selectedId: creatorSelectedId,
+      errors: creatorCheck.errors,
+      importErrors: creatorImportErrors,
+      cloudEnabled: episodeCloudEnabled,
+      cloud: cloudView,
+      cloudError: episodeCloudError,
+      esc: escapeHtml,
+    });
   }
   const mount = getApp() || app;
   const prejoinKey = `prejoin-${mode}` + (error ? "-error" : "");
@@ -11544,6 +12482,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     setQuixortItem, setQuixortTrashItem, setQuixortMultiplier, setQuixortBlockSec,
     startQuixort, endQuixort, resetQuixort, exitQuixort,
     startAnalyticsSpotlight, endAnalyticsSpotlight,
+    attachEpisode, episodeRunLoad, episodeRunStep, episodeRunLetter, episodeRunEnd,
   };
   RPC.register("producer-action", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false };

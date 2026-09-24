@@ -2,6 +2,15 @@ import { defineConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // Dev-only: forward same-origin /api to the episode server so the creator's
+  // cloud buttons work under `npm run dev` with zero env config (the client
+  // defaults to same-origin /api — see episodeApiUrl). No equivalent in
+  // builds: prod needs its own /api route or VITE_EPISODE_API_URL.
+  server: {
+    proxy: {
+      '/api': { target: 'http://localhost:3001', changeOrigin: true },
+    },
+  },
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',

@@ -184,7 +184,7 @@ if (COOP) {
 }
 
 // --- bingo quick-ruling NaN path (slot key in coop, pid off-coop) ---
-queryMap["#bingo-word"] = { value: "HELLO" };
+queryMap["#bingo-word"] = { value: "BINGO" };
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, prod);
 check("bingo mode on", S().settings?.inputMode === "bingo", S().settings?.inputMode);
 await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
@@ -656,10 +656,41 @@ await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
 check("quixort finalized", S().quixort?.phase === "results", S().quixort?.phase);
 check(
   "quixort clean bonus scored at mult 2",
-  (S().scores?.dev1 || 0) - qxBefore === (4 * 1000 + 1000 + 1500) * 2,
+  // pairwise: N=4 -> P=6 pairs, W=round(4000/6)=667; perfect = 6*667 order
+  // + 1000 trash + 1500 clean bonus, x2 mult = 13004
+  (S().scores?.dev1 || 0) - qxBefore === (6 * 667 + 1000 + 1500) * 2,
   `before=${qxBefore} after=${S().scores?.dev1}`,
 );
 check("quixort log entry", S().gameLog.filter((e) => e.type === "quixort").some((e) => e.awardedDelta > 0), "no quixort log");
+check("quixort log uses pairs text", S().gameLog.filter((e) => e.type === "quixort").some((e) => /6\/6 pairs/.test(e.answerText || "")), JSON.stringify(S().gameLog.filter((e) => e.type === "quixort").map((e) => e.answerText)));
+// misclass penalty: trash one real, sort the rest + trash the trash.
+// 3 concordant pairs (3*667) + 1000 trash - 500 misclass, no bonus, x2 = 5002
+await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+const qxBeforeMis = S().scores?.dev1 || 0;
+let qxMisTrashedReal = false;
+let qxMisGuard = 0;
+while (S().quixort?.runs?.dev1 && !S().quixort.runs.dev1.finished && qxMisGuard++ < 12) {
+  const run = S().quixort.runs.dev1;
+  const entry = run.deck[run.deckPos];
+  if (entry.t === "trash" || !qxMisTrashedReal && entry.t === "item") {
+    if (entry.t === "item") qxMisTrashedReal = true;
+    await pk._store.rpc["quixort-place"]({ trash: true }, dev1);
+  } else {
+    let pos = 0;
+    for (const e of run.row) if (e.t === "item" && e.ref < entry.ref) pos++;
+    const res = await pk._store.rpc["quixort-place"]({ insertIndex: pos }, dev1);
+    if (!res?.ok) break;
+  }
+}
+check("quixort misclass run trashed a real", qxMisTrashedReal === true, JSON.stringify(qxMisTrashedReal));
+await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
+check(
+  "quixort misclass penalized at mult 2",
+  (S().scores?.dev1 || 0) - qxBeforeMis === (3 * 667 + 1000 - 500) * 2,
+  `before=${qxBeforeMis} after=${S().scores?.dev1}`,
+);
+check("quixort misclass logged", S().gameLog.filter((e) => e.type === "quixort").some((e) => /1 misclass/.test(e.answerText || "")), "no misclass log");
 // shared-team rotation: teammates rotate per block, off-turn rejected
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);
@@ -1228,6 +1259,742 @@ await sleep(50);
 {
   const html = _mount.innerHTML;
   check("new round shows waiting analytics", html.includes("data-analytics-card") && html.includes("still open") && !html.includes("67%"), "stale percentages lingered");
+}
+// --- episode schema v1: validator (mode-independent) ---
+const eps = await import("../src/episodes/schema.js");
+function validEp() {
+  return {
+    schemaVersion: 1,
+    meta: { title: "Test Ep", author: "Host", createdAt: "2026-01-01T00:00:00.000Z" },
+    defaults: { scoringMode: "uniform", uniformPoints: 1000, timeOpen: 20, lockAfterBuzz: false, rebuzzAllowed: false },
+    items: [
+      { id: "q1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], options: ["two", "three", "four", "five"], overrides: { uniformPoints: 500 } },
+      { id: "q2", kind: "text", prompt: "Capital of France?", correctAnswer: "Paris" },
+      { id: "q3", kind: "fibbage", prompt: "The ___ is real", truth: "thing", lieTimeSec: 30, voteTimeSec: 45, multiplier: 2 },
+      { id: "q4", kind: "disordat", prompt: "Sort these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"] },
+      { id: "q5", kind: "quixort", prompt: "Sort oldest first", items: ["a", "b", "c", "d"], trash: ["zzz"], multiplier: 1, blockSec: 30 },
+      { id: "q6", kind: "bingo", prompt: "Letters", word: "BINGO", rounds: [{ prompt: "Pick G", answer: "G" }] },
+      { id: "q7", kind: "wendithapn", prompt: "When?", rounds: [{ prompt: "W?", answer: "N" }] },
+    ],
+  };
+}
+check("episode valid passes", eps.validateEpisode(validEp()).ok === true, JSON.stringify(eps.validateEpisode(validEp()).errors));
+const badCases = [
+  ["empty title", (e) => { e.meta.title = "  "; }, "meta.title"],
+  ["bad schema", (e) => { e.schemaVersion = 2; }, "schemaVersion"],
+  ["unknown top key", (e) => { e.junk = 1; }, "junk"],
+  ["no items", (e) => { e.items = []; }, "items"],
+  ["dup ids", (e) => { e.items[1].id = "q1"; }, "id"],
+  ["bad kind", (e) => { e.items[0].kind = "bounce"; }, "kind"],
+  ["empty prompt", (e) => { e.items[0].prompt = ""; }, "prompt"],
+  ["bad optionCount", (e) => { e.items[0].optionCount = 3; }, "optionCount"],
+  ["no correct options", (e) => { e.items[0].correctOptions = []; }, "correctOptions"],
+  ["option out of range", (e) => { e.items[0].correctOptions = [5]; }, "correctOptions"],
+  ["bad points", (e) => { e.items[0].overrides = { uniformPoints: -5 }; }, "items[0].overrides.uniformPoints"],
+  ["bad override key", (e) => { e.items[0].overrides = { noSuchKey: 1 }; }, "items[0].overrides.noSuchKey"],
+  ["bad jack", (e) => { e.items[0].overrides = { jackMultiplier: 9 }; }, "items[0].overrides.jackMultiplier"],
+  ["bad layout", (e) => { e.items[0].overrides = { choiceLayout: "circle" }; }, "items[0].overrides.choiceLayout"],
+  ["bad maxbuzz", (e) => { e.items[0].overrides = { maxBuzzesPerOption: 0 }; }, "items[0].overrides.maxBuzzesPerOption"],
+  ["non-bool override", (e) => { e.items[0].overrides = { lockAfterBuzz: "yes" }; }, "items[0].overrides.lockAfterBuzz"],
+  ["overrides non-object", (e) => { e.items[0].overrides = []; }, "overrides"],
+  ["options length mismatch", (e) => { e.items[0].options = ["a", "b"]; }, "options"],
+  ["options empty entry", (e) => { e.items[0].options = ["a", "b", " ", "d"]; }, "options"],
+  ["options duplicate", (e) => { e.items[0].options = ["a", "b", "A ", "d"]; }, "options"],
+  ["options non-array", (e) => { e.items[0].options = "abcd"; }, "options"],
+  ["empty answer", (e) => { e.items[1].correctAnswer = ""; }, "correctAnswer"],
+  ["empty truth", (e) => { e.items[2].truth = " "; }, "truth"],
+  ["bad lie time", (e) => { e.items[2].lieTimeSec = 20; }, "lieTimeSec"],
+  ["bad fibbage mult", (e) => { e.items[2].multiplier = 9; }, "multiplier"],
+  ["disordat short", (e) => { e.items[3].answers = ["dis"]; }, "answers"],
+  ["disordat bad value", (e) => { e.items[3].answers[0] = "maybe"; }, "answers"],
+  ["quixort few items", (e) => { e.items[4].items = ["a", "b"]; }, "items"],
+  ["quixort dupes", (e) => { e.items[4].trash = ["A "]; }, "items"],
+  ["quixort bad block", (e) => { e.items[4].blockSec = 25; }, "blockSec"],
+  ["bingo short word", (e) => { e.items[5].word = "HI"; }, "word"],
+  ["bingo repeated letters", (e) => { e.items[5].word = "HELLO"; }, "word"],
+  ["bingo missing answer", (e) => { delete e.items[5].rounds; }, "rounds"],
+  ["bingo empty rounds", (e) => { e.items[5].rounds = []; }, "rounds"],
+  ["bingo too many rounds", (e) => { e.items[5].rounds = Array.from({ length: 13 }, (_, i) => ({ answer: "BINGO"[i % 5] })); }, "rounds"],
+  ["bingo bad letter", (e) => { e.items[5].rounds = [{ answer: "7" }]; }, "rounds"],
+  ["bingo letter not in word", (e) => { e.items[5].rounds = [{ answer: "Z" }]; }, "rounds"],
+  ["bingo round unknown field", (e) => { e.items[5].rounds = [{ answer: "B", junk: 1 }]; }, "rounds"],
+  ["wen missing answer", (e) => { delete e.items[6].rounds; }, "rounds"],
+  ["wen bad answer", (e) => { e.items[6].rounds = [{ answer: "X" }]; }, "rounds"],
+  ["wen too many rounds", (e) => { e.items[6].rounds = Array.from({ length: 13 }, (_, i) => ({ answer: ["B", "N", "A"][i % 3] })); }, "rounds"],
+  ["bad default key", (e) => { e.defaults.junk = 1; }, "defaults.junk"],
+  ["bad scoring mode", (e) => { e.defaults.scoringMode = "chaos"; }, "defaults.scoringMode"],
+];
+for (const [name, mutate, field] of badCases) {
+  const e = validEp();
+  mutate(e);
+  const r = eps.validateEpisode(e);
+  check(`episode invalid: ${name}`, r.ok === false && r.errors.some((x) => x.field === field), JSON.stringify(r.errors));
+}
+{
+  // Repeat letters across rounds are allowed (fresh contest per round).
+  const rep = validEp();
+  rep.items[5].rounds = [{ prompt: "One?", answer: "B" }, { prompt: "Two?", answer: "b " }, { prompt: "Three?", answer: "N" }];
+  rep.items[6].rounds = [{ answer: "B" }, { answer: "B" }];
+  const rr = eps.validateEpisode(rep);
+  check("repeat rounds allowed", rr.ok === true, JSON.stringify(rr.errors));
+}
+{
+  // Raised caps: 12 rounds validate; 13 do not (covered in badCases).
+  const cap = validEp();
+  cap.items[5].rounds = Array.from({ length: 12 }, (_, i) => ({ prompt: `R${i + 1}`, answer: "BINGO"[i % 5] }));
+  cap.items[6].rounds = Array.from({ length: 12 }, (_, i) => ({ answer: ["B", "N", "A"][i % 3] }));
+  check("twelve rounds allowed", eps.validateEpisode(cap).ok === true, JSON.stringify(eps.validateEpisode(cap).errors));
+}
+{
+  // Legacy `points` migrates to overrides.uniformPoints on normalize.
+  const legacyPts = eps.normalizeEpisode({
+    schemaVersion: 1,
+    meta: { title: "Old pts" },
+    defaults: {},
+    items: [
+      { id: "p1", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1], points: 500 },
+      { id: "p2", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1], points: 500, overrides: { uniformPoints: 700, timeOpen: 20 } },
+      { id: "p3", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1], points: -5 },
+      { id: "p4", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1] },
+    ],
+  });
+  check("points migrates", legacyPts.items[0].overrides?.uniformPoints === 500 && legacyPts.items[0].points === undefined, JSON.stringify(legacyPts.items[0]));
+  check("explicit override wins", legacyPts.items[1].overrides?.uniformPoints === 700, JSON.stringify(legacyPts.items[1].overrides));
+  check("bad points dropped", legacyPts.items[2].points === undefined && legacyPts.items[2].overrides === undefined, JSON.stringify(legacyPts.items[2]));
+  check("absent stays absent", legacyPts.items[3].overrides === undefined, JSON.stringify(legacyPts.items[3]));
+  check("migrated validates", eps.validateEpisode(legacyPts).ok === true, JSON.stringify(eps.validateEpisode(legacyPts).errors));
+}
+{
+  const messy = validEp();
+  messy.items[0].correctOptions = [4, 1, 1];
+  messy.items[3].answers = ["DIS", "DAT", "Both", "dis", "dat", "both", "dis"];
+  messy.items[5].word = "bingo";
+  const n = eps.normalizeEpisode(messy);
+  check("normalize sorts/dedupes options", JSON.stringify(n.items[0].correctOptions) === "[1,4]", JSON.stringify(n.items[0].correctOptions));
+  check("normalize lowercases answers", n.items[3].answers[0] === "dis" && n.items[3].answers[2] === "both", JSON.stringify(n.items[3].answers));
+  check("normalize uppercases bingo", n.items[5].word === "BINGO", n.items[5].word);
+  check("normalized messy passes", eps.validateEpisode(n).ok === true, JSON.stringify(eps.validateEpisode(n).errors));
+  {
+    const base = validEp();
+    const merged = eps.effectiveItemSettings(base, base.items[0]);
+    check("override wins over default", merged.uniformPoints === 500, JSON.stringify(merged));
+    const gap = eps.effectiveItemSettings(base, base.items[1]);
+    check("gap falls back to default", gap.uniformPoints === 1000 && gap.scoringMode === "uniform", JSON.stringify(gap));
+    check("absent keys omitted", !("jackMultiplier" in gap) && !("maxBuzzesPerOption" in gap) && !("choiceLayout" in gap) && !("closeBuzzersOnPointsGiven" in gap), JSON.stringify(gap));
+  }
+  {
+    // Lowercase letters normalize up, then validate.
+    const lower = eps.normalizeEpisode(validEp());
+    lower.items[5].rounds = [{ prompt: "  pick g ", answer: "g" }];
+    lower.items[6].rounds = [{ answer: "n" }];
+    const fixed = eps.normalizeEpisode(lower);
+    check("answers uppercase", fixed.items[5].rounds[0].answer === "G" && fixed.items[6].rounds[0].answer === "N", JSON.stringify([fixed.items[5].rounds[0].answer, fixed.items[6].rounds[0].answer]));
+    check("round prompts trim", fixed.items[5].rounds[0].prompt === "pick g", JSON.stringify(fixed.items[5].rounds[0].prompt));
+    check("lowercase answers valid", eps.validateEpisode(fixed).ok === true, JSON.stringify(eps.validateEpisode(fixed).errors));
+  }
+  {
+    // Legacy single-answer episodes migrate to one round on normalize.
+    const legacy = eps.normalizeEpisode({
+      schemaVersion: 1,
+      meta: { title: "Old" },
+      defaults: {},
+      items: [
+        { id: "o1", kind: "bingo", prompt: "Old?", word: "bingo", answer: "b" },
+        { id: "o2", kind: "wendithapn", prompt: "Old wen?", answer: "a" },
+      ],
+    });
+    check("legacy migrates to rounds", Array.isArray(legacy.items[0].rounds) && legacy.items[0].rounds[0].answer === "B" && legacy.items[0].answer === undefined, JSON.stringify(legacy.items[0]));
+    check("legacy validates after migrate", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
+  }
+}
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
+// --- episode editor ops (mode-independent, DOM-free) ---
+const eped = await import("../src/episodes/editor.js");
+const epui = await import("../src/episodes/ui.js");
+{
+  let ep = eped.loadDraft();
+  check("draft starts blank", Array.isArray(ep.items) && ep.items.length === 0, JSON.stringify(ep.items?.length));
+  ep = eped.addItem(ep, "buttons");
+  ep = eped.addItem(ep, "text");
+  ep = eped.addItem(ep, "quixort");
+  check("add items", ep.items.length === 3, String(ep.items.length));
+  const firstId = ep.items[0].id;
+  ep = eped.updateItem(ep, firstId, { prompt: "2+2?", optionCount: 4, correctOptions: [4] });
+  check("update item", ep.items[0].prompt === "2+2?", ep.items[0].prompt);
+  ep = eped.updateItem(ep, "missing-id", { prompt: "x" });
+  check("update missing no-op", ep.items.length === 3, String(ep.items.length));
+  ep = eped.moveItem(ep, firstId, 1);
+  check("move item", ep.items[1].id === firstId, ep.items.map((i) => i.id).join(","));
+  ep = eped.moveItem(ep, firstId, -1);
+  check("move back", ep.items[0].id === firstId, ep.items.map((i) => i.id).join(","));
+  ep = eped.duplicateItem(ep, firstId);
+  check("duplicate item", ep.items.length === 4 && ep.items[1].prompt === "2+2?" && ep.items[1].id !== firstId, String(ep.items.length));
+  const dupId = ep.items[1].id;
+  ep = eped.deleteItem(ep, dupId);
+  check("delete item", ep.items.length === 3 && ep.items.every((i) => i.id !== dupId), String(ep.items.length));
+  ep = eped.updateMeta(ep, { title: "Night", author: "H", junk: "drop" });
+  check("update meta", ep.meta.title === "Night" && ep.meta.junk === undefined, JSON.stringify(ep.meta));
+  ep = eped.updateDefaults(ep, { scoringMode: "uniform", uniformPoints: 500, timeOpen: "" });
+  check("update defaults", ep.defaults.scoringMode === "uniform" && ep.defaults.uniformPoints === 500 && !("timeOpen" in ep.defaults), JSON.stringify(ep.defaults));
+  const textId = ep.items.find((i) => i.kind === "text").id;
+  const qxId = ep.items.find((i) => i.kind === "quixort").id;
+  ep = eped.updateItem(ep, textId, { prompt: "Capital?", correctAnswer: "Paris" });
+  ep = eped.updateItem(ep, qxId, { prompt: "Order these", items: ["a", "b", "c", "d"], trash: [] });
+  const text = eped.exportText(ep);
+  const rt = eped.parseImportText(text);
+  check("export/parse round-trip", rt.ok === true && rt.episode.items.length === 3, rt.errorMessage || JSON.stringify(rt.errors));
+  const badJson = eped.parseImportText("{nope");
+  check("import rejects non-json", badJson.ok === false, JSON.stringify(badJson));
+  const badEp = eped.parseImportText(JSON.stringify({ schemaVersion: 1, meta: {}, defaults: {}, items: [] }));
+  check("import rejects invalid episode", badEp.ok === false && badEp.errors.length > 0, JSON.stringify(badEp));
+  check("export filename slugs title", eped.exportFileName(ep) === "night.episode.json", eped.exportFileName(ep));
+  check("fresh blank", eped.isBlankEpisode({ schemaVersion: 1, meta: { title: "", author: "", createdAt: "" }, defaults: {}, items: [] }) === true, "fresh flagged dirty");
+  check("blank null-safe", eped.isBlankEpisode(null) === true && eped.isBlankEpisode(undefined) === true && eped.isBlankEpisode("x") === true, "null unsafe");
+  check("title dirties", eped.isBlankEpisode({ schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [] }) === false, "title missed");
+  check("author dirties", eped.isBlankEpisode({ schemaVersion: 1, meta: { title: "", author: "A" }, defaults: {}, items: [] }) === false, "author missed");
+  check("defaults dirty", eped.isBlankEpisode({ schemaVersion: 1, meta: {}, defaults: { timeOpen: 20 }, items: [] }) === false, "defaults missed");
+  check("items dirty", eped.isBlankEpisode({ schemaVersion: 1, meta: {}, defaults: {}, items: [{ id: "1" }] }) === false, "items missed");
+  const html = epui.renderCreatorScreen({ ep, selectedId: firstId, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+  check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
+  check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
+  check("creator cloud disabled", html.includes('data-ep-cloud-save disabled'), "cloud save not disabled");
+  const htmlErr = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, cloudError: "Cloud unreachable at http://x", esc: (s) => String(s) });
+  check("creator shows cloud reason", htmlErr.includes("Cloud unreachable") && htmlErr.includes("data-ep-cloud-retry"), "diagnosis missing");
+  const htmlNoSel = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+  check("creator no edit without selection", !htmlNoSel.includes('id="ep-prompt"'), "edit form leaked");
+  {
+    // Override visibility: buttons sees all, text drops layout/maxbuzz,
+    // special modes hide the section (fixed scoring/timing).
+    const visEp = {
+      schemaVersion: 1, meta: { title: "V" }, defaults: {},
+      items: [
+        { id: "v1", kind: "buttons", prompt: "B?", optionCount: 4, correctOptions: [1] },
+        { id: "v2", kind: "text", prompt: "T?", correctAnswer: "A" },
+        { id: "v3", kind: "fibbage", prompt: "F?", truth: "T", lieTimeSec: 30, voteTimeSec: 30, multiplier: 1 },
+        { id: "v4", kind: "bingo", prompt: "G?", word: "GAMES", rounds: [{ answer: "G" }] },
+      ],
+    };
+    const vis = (id) => epui.renderCreatorScreen({ ep: visEp, selectedId: id, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    const buttonsHtml = vis("v1");
+    check("buttons sees all overrides", ["ep-ov-scoring", "ep-ov-points", "ep-ov-jack", "ep-ov-time", "ep-ov-maxbuzz", "ep-ov-layout", "ep-ov-lock", "ep-ov-rebuzz", "ep-ov-close"].every((oid) => buttonsHtml.includes(`id="${oid}"`)), "buttons missing overrides");
+    const textHtml = vis("v2");
+    check("text hides layout/maxbuzz", !textHtml.includes('id="ep-ov-layout"') && !textHtml.includes('id="ep-ov-maxbuzz"') && textHtml.includes('id="ep-ov-scoring"'), "text filter wrong");
+    const fibHtml = vis("v3");
+    check("fibbage hides overrides", !fibHtml.includes('id="ep-ov-scoring"') && fibHtml.includes("fixed scoring and timing"), "fibbage leaked overrides");
+    const bingoHtml = vis("v4");
+    check("bingo hides overrides", !bingoHtml.includes('id="ep-ov-scoring"') && bingoHtml.includes("fixed scoring and timing"), "bingo leaked overrides");
+  }
+  {
+    // Correct-option labels mirror the game: ABXY in diamond ≤4, else numbers.
+    const mc = { id: "mc1", kind: "buttons", prompt: "P", optionCount: 4, correctOptions: [1] };
+    const mcEp = { schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [mc] };
+    const diamond = epui.renderCreatorScreen({ ep: mcEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("diamond labels ABXY", [">A<", ">B<", ">X<", ">Y<"].every((t) => diamond.includes(t)), "letters missing");
+    const gridEp = { schemaVersion: 1, meta: { title: "T" }, defaults: { choiceLayout: "grid" }, items: [mc] };
+    const grid = epui.renderCreatorScreen({ ep: gridEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("grid labels numeric", [">1<", ">2<", ">3<", ">4<"].every((t) => grid.includes(t)) && !grid.includes(">A<"), "numbers missing");
+    const sixEp = { schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [{ ...mc, optionCount: 6, correctOptions: [6] }] };
+    const six = epui.renderCreatorScreen({ ep: sixEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("6-option diamond numeric", six.includes(">6<") && !six.includes(">A<"), "6-option mislabeled");
+    const ovEp = { schemaVersion: 1, meta: { title: "T" }, defaults: { choiceLayout: "grid" }, items: [{ ...mc, overrides: { choiceLayout: "diamond" } }] };
+    const ov = epui.renderCreatorScreen({ ep: ovEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("override layout wins", ov.includes(">A<"), "override ignored");
+  }
+  const harvested = epui.harvestCreatorFields(null);
+  check("harvest null-safe", harvested.item === null && harvested.meta.title === undefined, JSON.stringify(harvested));
+}
+// --- episode runner: attach + load + broadcast (driven via producer-action) ---
+{
+  const testEp = {
+    schemaVersion: 1,
+    meta: { title: "Harness Ep", author: "T" },
+    defaults: { scoringMode: "uniform", uniformPoints: 777, timeOpen: 25 },
+    items: [
+      { id: "h1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], options: ["Two", "Three", "Four", "Five"], overrides: { uniformPoints: 500 } },
+      { id: "h2", kind: "text", prompt: "Capital?", correctAnswer: "Paris", overrides: { timeOpen: 45 } },
+      { id: "h3", kind: "fibbage", prompt: "The ___!", truth: "real", lieTimeSec: 30, voteTimeSec: 30, multiplier: 2 },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  const upBefore = S().settings?.uniformPoints;
+  check(
+    "impostor cannot attach episode",
+    (await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [testEp] }, impostor))?.ok === false,
+    "impostor attached an episode",
+  );
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [{ schemaVersion: 1, meta: {}, defaults: {}, items: [] }] }, prod);
+  check("invalid attach rejected", S().episodePrompt === null && S().settings?.uniformPoints === upBefore, JSON.stringify(S().episodePrompt));
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [testEp] }, prod);
+  check("attach seeds defaults", S().settings?.uniformPoints === 777 && S().settings?.timeOpen === 25, JSON.stringify({ u: S().settings?.uniformPoints, t: S().settings?.timeOpen }));
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("runner card on host", _mount.innerHTML.includes("ep-runner") && _mount.innerHTML.includes("Harness Ep"), "runner card missing");
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("load seeds MC preset", JSON.stringify(S().round?.correctOptions) === "[4]", JSON.stringify(S().round?.correctOptions));
+  check("load applies point override", S().settings?.uniformPoints === 500, String(S().settings?.uniformPoints));
+  check("load leaves other defaults", S().settings?.timeOpen === 25, String(S().settings?.timeOpen));
+  check("load broadcasts prompt", S().episodePrompt?.prompt === "2+2?" && S().episodePrompt?.index === 0 && S().episodePrompt?.total === 3, JSON.stringify(S().episodePrompt));
+  check("load broadcasts option labels", JSON.stringify(S().episodePrompt?.optionLabels) === JSON.stringify(["Two", "Three", "Four", "Five"]), JSON.stringify(S().episodePrompt?.optionLabels));
+  check("load broadcasts option keys", JSON.stringify(S().episodePrompt?.optionKeys) === JSON.stringify(["A", "B", "X", "Y"]), JSON.stringify(S().episodePrompt?.optionKeys));
+  pk._store.self = dev3;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("player sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?") && _mount.innerHTML.includes("Three"), "banner missing for player");
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("display sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?"), "banner missing on display");
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [1] }, prod);
+  check("load blocked while open", S().episodePrompt?.index === 0, JSON.stringify(S().episodePrompt));
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+  check("step loads text preset", S().round?.correctAnswer === "Paris" && S().episodePrompt?.index === 1, JSON.stringify({ a: S().round?.correctAnswer, p: S().episodePrompt }));
+  check("step falls back to default points", S().settings?.uniformPoints === 777, String(S().settings?.uniformPoints));
+  check("step applies time override", S().settings?.timeOpen === 45, String(S().settings?.timeOpen));
+  check("unlabeled clears broadcast labels", S().episodePrompt?.optionLabels === null && S().episodePrompt?.optionKeys === null, JSON.stringify({ l: S().episodePrompt?.optionLabels, k: S().episodePrompt?.optionKeys }));
+  if (!COOP) {
+    await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+    check("step loads fibbage truth", S().fibbage?.truth === "real" && S().episodePrompt?.index === 2, JSON.stringify({ t: S().fibbage?.truth, p: S().episodePrompt }));
+    await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+    check("step stops at end", S().episodePrompt?.index === 2, JSON.stringify(S().episodePrompt));
+  }
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  check("end clears prompt", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("banner gone after end", !_mount.innerHTML.includes("ep-prompt-banner"), "stale banner on display");
+  pk._store.self = pk._store.participants.host1;
+}
+// --- episode cycling modes: word+target seeding, start preserves it ---
+{
+  const cycleEp = {
+    schemaVersion: 1,
+    meta: { title: "Cycle Ep" },
+    defaults: {},
+    items: [
+      {
+        id: "c1", kind: "bingo", prompt: "Collect!", word: "GAMES",
+        rounds: [{ prompt: "First?", answer: "G" }, { prompt: "Second?", answer: "E" }],
+      },
+      { id: "c2", kind: "wendithapn", prompt: "When?", rounds: [{ prompt: "W?", answer: "N" }] },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [cycleEp] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("bingo load seeds word", S().bingo?.word === "GAMES" && S().bingo?.items?.join("") === "GAMES", JSON.stringify(S().bingo?.word));
+  check("bingo load seeds first target", S().bingo?.targetIndex === 0, String(S().bingo?.targetIndex));
+  check("bingo load resets play", S().bingo?.active === false && S().bingo?.winner === null, JSON.stringify({ a: S().bingo?.active, w: S().bingo?.winner }));
+  check("bingo prompt is round prompt", S().episodePrompt?.prompt === "First?" && S().episodePrompt?.roundIndex === 0 && S().episodePrompt?.roundTotal === 2, JSON.stringify(S().episodePrompt));
+  // startBingo reads the setup input headlessly via queryMap.
+  queryMap["#bingo-word"] = { value: "HELLO" };
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("live start rejects repeats", S().bingo?.active === false && S().bingo?.targetIndex === 0, JSON.stringify({ a: S().bingo?.active, t: S().bingo?.targetIndex }));
+  queryMap["#bingo-word"] = { value: "GAMES" };
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("start preserves seeded target", S().bingo?.active === true && S().bingo?.targetIndex === 0, JSON.stringify({ a: S().bingo?.active, t: S().bingo?.targetIndex }));
+  await pk._store.rpc["producer-action"]({ fn: "setBingoTarget", args: [4] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("mid-game restart resets target", S().bingo?.targetIndex === -1, String(S().bingo?.targetIndex));
+  // Reload to replay the collection flow below.
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "startBingoCycling", args: [] }, prod);
+  // dev1's roster was shrunk to 1 slot by an earlier test, so its track key
+  // collapses to the pid (same rule as getCoopScoreKey) — derive it live.
+  const dev1Slots = (S().coopRosters?.dev1?.slots || []).length;
+  const trackKey = COOP && dev1Slots > 1 ? "coop:dev1:0" : "dev1";
+  const bz1 = await pk._store.rpc["bingo-buzz"]({ litIndex: 0, litSlot: 0, coopSlot: 0 }, dev1);
+  check("collect first letter", bz1?.ok === true && (S().bingo?.playerItems?.[trackKey] || []).includes(0), JSON.stringify(bz1));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLetter", args: [1] }, prod);
+  check("letter nav moves target", S().bingo?.targetIndex === 3, String(S().bingo?.targetIndex));
+  check("letter nav switches prompt", S().episodePrompt?.prompt === "Second?" && S().episodePrompt?.roundIndex === 1, JSON.stringify(S().episodePrompt));
+  check("letter nav keeps collection", (S().bingo?.playerItems?.[trackKey] || []).includes(0), JSON.stringify(S().bingo?.playerItems?.[trackKey]));
+  check("letter nav clears per-target scores", Object.keys(S().bingo?.scoredTracks || {}).length === 0, JSON.stringify(S().bingo?.scoredTracks));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLetter", args: [1] }, prod);
+  check("letter nav stops at end", S().bingo?.targetIndex === 3 && S().episodePrompt?.roundIndex === 1, JSON.stringify({ t: S().bingo?.targetIndex }));
+  await pk._store.rpc["bingo-buzz"]({ litIndex: 3, litSlot: 0, coopSlot: 0 }, dev1);
+  check("collect second letter", (S().bingo?.playerItems?.[trackKey] || []).join(",") === "0,3", JSON.stringify(S().bingo?.playerItems?.[trackKey]));
+  // Audience view: pk-stub hardcodes isHost=true, so bingo-mode *player*
+  // screens always render the host panel headlessly — assert the banner on
+  // the display client instead (same component, no isHost involvement).
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(600);
+  check("banner shows letter position", _mount.innerHTML.includes("Second?") && _mount.innerHTML.includes("Letter 2 of 2"), "position missing");
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLetter", args: [-1] }, prod);
+  check("letter nav steps back", S().bingo?.targetIndex === 0 && S().episodePrompt?.prompt === "First?", JSON.stringify({ t: S().bingo?.targetIndex, p: S().episodePrompt?.prompt }));
+  await pk._store.rpc["producer-action"]({ fn: "endBingo", args: [] }, prod);
+  delete queryMap["#bingo-word"];
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [1] }, prod);
+  check("wen load seeds target", S().bingo?.targetIndex === 1 && S().bingo?.items?.join(",") === "Before,Never,After", JSON.stringify({ t: S().bingo?.targetIndex, i: S().bingo?.items }));
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  check("wen start keeps target", S().bingo?.active === true && S().bingo?.targetIndex === 1, String(S().bingo?.targetIndex));
+  await pk._store.rpc["producer-action"]({ fn: "endBingo", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  pk._store.self = pk._store.participants.host1;
+}
+// --- episode setting locks: refuse managed, allow the rest, relock, unlock ---
+{
+  const lockEp = {
+    schemaVersion: 1,
+    meta: { title: "Lock Ep" },
+    defaults: { scoringMode: "uniform", uniformPoints: 600, timeOpen: 22, lockAfterBuzz: true },
+    items: [
+      { id: "k1", kind: "buttons", prompt: "Q1?", optionCount: 4, correctOptions: [1], overrides: { uniformPoints: 650 } },
+      { id: "k2", kind: "text", prompt: "Q2?", correctAnswer: "A" },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [lockEp] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("load applies override points", S().settings?.uniformPoints === 650, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["uniformPoints", 999] }, prod);
+  check("locked points refused", S().settings?.uniformPoints === 650, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 99] }, prod);
+  check("locked buzz time refused", S().settings?.timeOpen === 22, String(S().settings?.timeOpen));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  check("locked toggle refused", S().settings?.lockAfterBuzz === true, String(S().settings?.lockAfterBuzz));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "grid"] }, prod);
+  check("unlocked setting allowed", S().settings?.choiceLayout === "grid", String(S().settings?.choiceLayout));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "diamond"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  {
+    const html = _mount.innerHTML;
+    check("runner shows lock note", html.includes("Locked by episode") && html.includes("Points"), "lock note missing");
+    check("locked select disabled", /data-setting="uniformPoints"\s+disabled/.test(html), "points select enabled");
+    check("locked input disabled", /data-setting="timeOpen"\s+disabled/.test(html), "time input enabled");
+    check("locked toggle disabled", /data-toggle-setting="lockAfterBuzz"[^>]*disabled/.test(html), "lock toggle enabled");
+    check("unlocked select enabled", !/data-setting="choiceLayout"\s+disabled/.test(html), "layout select disabled");
+  }
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+  check("step falls back to default points", S().settings?.uniformPoints === 600, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["uniformPoints", 999] }, prod);
+  check("default-managed stays locked", S().settings?.uniformPoints === 600, String(S().settings?.uniformPoints));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["uniformPoints", 999] }, prod);
+  check("end unlocks settings", S().settings?.uniformPoints === 999, String(S().settings?.uniformPoints));
+  pk._store.self = pk._store.participants.host1;
+}
+// --- episode cloud: API server + client over real HTTP (in-memory store) ---
+{
+  const epApi = await import("../src/episodes/api.js");
+  const epServer = await import("../server/index.js");
+  check("cloud disabled when unconfigured", (await epApi.isEpisodeCloudEnabled()) === false, "cloud on without server");
+  check("diagnosis reports unconfigured", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === "" && d.ok === false; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
+  const hash = await epServer.hashOwnerPassword("secret-1");
+  check("owner hash verifies", (await epServer.verifyOwnerPassword("secret-1", hash)) === true, "verify failed");
+  check("owner hash rejects wrong", (await epServer.verifyOwnerPassword("nope", hash)) === false, "verify passed wrong password");
+  check("share code shape", /^[A-Z2-9]{6}$/.test(epServer.makeShareCode()), epServer.makeShareCode());
+  const mem = new Map();
+  const fakeStore = {
+    async findOne({ code }) { return mem.get(code) || null; },
+    async insertOne(doc) {
+      if (mem.has(doc.code)) { const e = new Error("duplicate key"); e.code = 11000; throw e; }
+      mem.set(doc.code, { ...doc });
+      return { insertedId: doc.code };
+    },
+    async updateOne({ code }, { $set }) {
+      const cur = mem.get(code);
+      if (cur) mem.set(code, { ...cur, ...$set });
+      return { modifiedCount: cur ? 1 : 0 };
+    },
+  };
+  const srv = await new Promise((resolve) => {
+    const s = epServer.createApp(fakeStore).listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  epApi.configureEpisodeApiUrl(base);
+  let rateLimitCode = null;
+  let rateLimitEp = null;
+  try {
+    check("cloud enabled with server", (await epApi.isEpisodeCloudEnabled()) === true, "health check failed");
+    check("diagnosis reports reachable", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === base && d.ok === true; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
+    const cloudEp = {
+      schemaVersion: 1,
+      meta: { title: "Cloud Ep" },
+      defaults: {},
+      items: [{ id: "c1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
+    };
+    const saved = await epApi.saveEpisode(cloudEp, "secret-1");
+    rateLimitCode = saved.code;
+    rateLimitEp = cloudEp;
+    check("save mints code", /^[A-Z2-9]{6}$/.test(saved.code), JSON.stringify(saved));
+    let threw = null;
+    try { await epApi.saveEpisode({ schemaVersion: 1, meta: {}, defaults: {}, items: [] }, "secret-1"); } catch (e) { threw = e; }
+    check("save rejects invalid episode", threw?.status === 400, String(threw?.status));
+    threw = null;
+    try { await epApi.saveEpisode(cloudEp, "x"); } catch (e) { threw = e; }
+    check("save rejects short password", threw?.status === 400, String(threw?.status));
+    const loaded = await epApi.loadEpisode(saved.code.toLowerCase());
+    check("load returns copy", loaded.episode?.meta?.title === "Cloud Ep" && loaded.episode?.items?.length === 1, JSON.stringify(loaded.episode?.meta));
+    threw = null;
+    try { await epApi.loadEpisode("ZZZZZZ"); } catch (e) { threw = e; }
+    check("load 404s unknown code", threw?.status === 404, String(threw?.status));
+    const raw = await (await fetch(`${base}/api/episodes/${saved.code}`)).json();
+    check("hash never leaks", raw && !("ownerHash" in raw), Object.keys(raw || {}).join(","));
+    threw = null;
+    try { await epApi.overwriteEpisode(saved.code, "wrong", { ...cloudEp, meta: { title: "Hijacked" } }); } catch (e) { threw = e; }
+    check("overwrite rejects wrong password", threw?.status === 401, String(threw?.status));
+    const still = await epApi.loadEpisode(saved.code);
+    check("failed overwrite keeps original", still.episode?.meta?.title === "Cloud Ep", JSON.stringify(still.episode?.meta));
+    const over = await epApi.overwriteEpisode(saved.code, "secret-1", { ...cloudEp, meta: { title: "Cloud Ep v2" } });
+    check("overwrite keeps code", over.code === saved.code, JSON.stringify(over));
+    const after = await epApi.loadEpisode(saved.code);
+    check("overwrite applies", after.episode?.meta?.title === "Cloud Ep v2", JSON.stringify(after.episode?.meta));
+  } finally {
+    epApi.configureEpisodeApiUrl("");
+    await new Promise((resolve) => srv.close(resolve));
+  }
+  // Rate limits: tiny buckets prove the wiring without hammering hundreds
+  // of requests. Separate apps so the general bucket doesn't trip the
+  // overwrite test (every /api/ request counts toward general).
+  const generalSrv = await new Promise((resolve) => {
+    const s = epServer
+      .createApp(fakeStore, { limits: { general: { windowMs: 60000, max: 5 } } })
+      .listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const generalBase = `http://127.0.0.1:${generalSrv.address().port}`;
+  try {
+    // CORS must work or no browser (vite dev, PWA, static host) can use the API.
+    const corsRes = await fetch(`${generalBase}/api/health`);
+    check("cors header on GET", corsRes.headers.get("access-control-allow-origin") === "*", "ACAO missing");
+    const preflight = await fetch(`${generalBase}/api/episodes`, { method: "OPTIONS" });
+    check("preflight handled", preflight.status === 204 && preflight.headers.get("access-control-allow-methods")?.includes("PUT"), `${preflight.status}`);
+    const statuses = [];
+    for (let i = 0; i < 4; i++) {
+      statuses.push((await fetch(`${generalBase}/api/health`)).status);
+    }
+    check("general limit trips", JSON.stringify(statuses) === "[200,200,200,200]", JSON.stringify(statuses));
+    const limitedRes = await fetch(`${generalBase}/api/health`);
+    const limitedBody = await limitedRes.json().catch(() => ({}));
+    check("limited response shape", limitedRes.status === 429 && limitedBody.ok === false && typeof limitedBody.reason === "string", `${limitedRes.status} ${JSON.stringify(limitedBody)}`);
+    check("retry-after header", limitedRes.headers.get("retry-after") !== null, "no Retry-After");
+  } finally {
+    await new Promise((resolve) => generalSrv.close(resolve));
+  }
+  const guessSrv = await new Promise((resolve) => {
+    const s = epServer
+      .createApp(fakeStore, { limits: { general: { windowMs: 60000, max: 1000 }, overwrite: { windowMs: 60000, max: 2 } } })
+      .listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const guessBase = `http://127.0.0.1:${guessSrv.address().port}`;
+  try {
+    // Overwrite bucket is per IP+code and runs before auth: two bad guesses
+    // 401, the third 429s without ever reaching scrypt.
+    const putStatuses = [];
+    for (let i = 0; i < 3; i++) {
+      putStatuses.push(
+        (await fetch(`${guessBase}/api/episodes/${rateLimitCode}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ episode: rateLimitEp, ownerPassword: "wrong" }),
+        })).status,
+      );
+    }
+    check("overwrite guesses limited", JSON.stringify(putStatuses) === "[401,401,429]", JSON.stringify(putStatuses));
+  } finally {
+    await new Promise((resolve) => guessSrv.close(resolve));
+  }
+  // Vercel serverless handlers (api/): same core over mock req/res, backed
+  // by the same in-memory store via the __EPISODE_TEST_STORE__ seam.
+  const mockRes = () => ({
+    statusCode: 200, headers: {}, body: null,
+    setHeader(k, v) { this.headers[String(k).toLowerCase()] = String(v); return this; },
+    status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; },
+    end() { return this; },
+  });
+  const mockReq = ({ method = "GET", query = {}, body = {}, headers = {} } = {}) => ({
+    method, query, body, headers, socket: { remoteAddress: "127.0.0.1" },
+  });
+  globalThis.__EPISODE_TEST_STORE__ = fakeStore;
+  try {
+    const healthFn = (await import("../api/health.js")).default;
+    const saveFn = (await import("../api/episodes/index.js")).default;
+    const codeFn = (await import("../api/episodes/[code].js")).default;
+    const vercel = await import("../server/vercel.js");
+    let res = mockRes();
+    await healthFn(mockReq({ method: "GET" }), res);
+    check("fn health ok", res.statusCode === 200 && res.body?.ok === true, String(res.statusCode));
+    res = mockRes();
+    await healthFn(mockReq({ method: "POST" }), res);
+    check("fn health rejects POST", res.statusCode === 405, String(res.statusCode));
+    check("fn ip prefers forwarded", vercel.vercelIp(mockReq({ headers: { "x-forwarded-for": "9.9.9.9, 1.1.1.1" } })) === "9.9.9.9", "xff ignored");
+    const fnEp = {
+      schemaVersion: 1, meta: { title: "Fn Ep" }, defaults: {},
+      items: [{ id: "f1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
+    };
+    res = mockRes();
+    await saveFn(mockReq({ method: "POST", body: { episode: fnEp, ownerPassword: "pw-for-fn" } }), res);
+    check("fn save mints", res.statusCode === 201 && /^[A-Z2-9]{6}$/.test(res.body?.code), `${res.statusCode} ${JSON.stringify(res.body)}`);
+    const fnCode = res.body?.code;
+    res = mockRes();
+    await saveFn(mockReq({ method: "POST", body: { episode: { schemaVersion: 1 }, ownerPassword: "pw-for-fn" } }), res);
+    check("fn save validates", res.statusCode === 400, String(res.statusCode));
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: fnCode.toLowerCase() } }), res);
+    check("fn load ok", res.statusCode === 200 && res.body?.episode?.meta?.title === "Fn Ep" && !("ownerHash" in res.body), `${res.statusCode}`);
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: "ZZZZZZ" } }), res);
+    check("fn load 404s", res.statusCode === 404, String(res.statusCode));
+    res = mockRes();
+    await codeFn(mockReq({ method: "PUT", query: { code: fnCode }, body: { episode: fnEp, ownerPassword: "wrong" } }), res);
+    check("fn overwrite auth", res.statusCode === 401, String(res.statusCode));
+    res = mockRes();
+    await codeFn(mockReq({ method: "PUT", query: { code: fnCode }, body: { episode: { ...fnEp, meta: { title: "Fn Ep v2" } }, ownerPassword: "pw-for-fn" } }), res);
+    check("fn overwrite ok", res.statusCode === 200 && res.body?.code === fnCode, `${res.statusCode}`);
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: fnCode } }), res);
+    check("fn overwrite applied", res.body?.episode?.meta?.title === "Fn Ep v2", JSON.stringify(res.body?.episode?.meta));
+    res = mockRes();
+    await codeFn(mockReq({ method: "DELETE", query: { code: fnCode } }), res);
+    check("fn rejects DELETE", res.statusCode === 405, String(res.statusCode));
+  } finally {
+    globalThis.__EPISODE_TEST_STORE__ = null;
+  }
+  check("cloud disabled after reset", (await epApi.isEpisodeCloudEnabled()) === false, "override stuck");
+  epApi.configureEpisodeApiUrl("http://127.0.0.1:1");
+  check("dead server disables", (await epApi.isEpisodeCloudEnabled(true)) === false, "dead server enabled");
+  check("diagnosis reports unreachable", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === "http://127.0.0.1:1" && d.ok === false && d.error !== ""; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
+  epApi.configureEpisodeApiUrl("");
+}
+// --- episode creator opens pre-launch (regression: helpers must be
+// top-level scope — a nested-in-bindEvents helper broke this silently) ---
+{
+  const firePrejoin = async (selector, dataset = {}) => {
+    const t = { dataset, closest: (s) => (s === selector ? t : null) };
+    for (const fn of mount._listeners.click || []) await fn({ target: t, preventDefault() {} });
+    await sleep(600);
+  };
+  const handlerErrors = [];
+  const origWarn2 = console.warn;
+  console.warn = (...a) => {
+    const s = a.map(String).join(" ");
+    if (s.includes("delegated handler failed")) handlerErrors.push(s);
+    origWarn2(...a);
+  };
+  try {
+    await firePrejoin("[data-prejoin-open]", { prejoinOpen: "creator" });
+    check("creator opens from landing", _mount.innerHTML.includes("ep-panel") && _mount.innerHTML.includes("data-ep-add"), "creator panel missing");
+    await firePrejoin("[data-ep-add]");
+    check("creator add works headless", _mount.innerHTML.includes('id="ep-prompt"'), "edit form missing after add");
+    await firePrejoin("[data-ep-close-edit]");
+    check("creator close works headless", !_mount.innerHTML.includes('id="ep-prompt"'), "edit form stuck open");
+    check("no creator handler errors", handlerErrors.length === 0, handlerErrors.join(" || ").slice(0, 300));
+  } finally {
+    console.warn = origWarn2;
+  }
+}
+// --- episode checkbox gate on the host prejoin form ---
+{
+  const fireClick = async (selector, dataset = {}) => {
+    const t = { dataset, closest: (s) => (s === selector ? t : null) };
+    for (const fn of mount._listeners.click || []) await fn({ target: t, preventDefault() {} });
+    await sleep(200);
+  };
+  const fireSubmitHost = async () => {
+    const fakeHost = {
+      dataset: { prejoinForm: "host" },
+      closest: (s) => (s === "[data-prejoin-form]" ? fakeHost : null),
+      querySelector: () => ({ disabled: false }),
+    };
+    for (const fn of mount._listeners.submit || []) await fn({ preventDefault() {}, target: fakeHost });
+    await sleep(700);
+  };
+  queryMap["#prejoin-name"] = { value: "Host" };
+  queryMap["#prejoin-team-mode"] = { value: "off" };
+  queryMap["#prejoin-coop"] = { checked: false };
+  // Checked with nothing attached (pendingEpisode starts null) → error, no attach.
+  queryMap["#prejoin-episode"] = { checked: true };
+  await fireSubmitHost();
+  check("episode box without attach errors", _mount.innerHTML.includes("Attach an episode"), "gate missing");
+  check("failed gate attaches nothing", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
+  // Unchecked → success path, still nothing attached.
+  queryMap["#prejoin-episode"] = { checked: false };
+  await fireSubmitHost();
+  check("unchecked box attaches nothing", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
+  // Full path: save to cloud → load by code on the host form → submit →
+  // hostTick consumes the attach and seeds lobby defaults.
+  const epApi2 = await import("../src/episodes/api.js");
+  const epServer2 = await import("../server/index.js");
+  const lobbyMem = new Map();
+  const lobbyStore = {
+    async findOne({ code }) { return lobbyMem.get(code) || null; },
+    async insertOne(doc) {
+      if (lobbyMem.has(doc.code)) { const e = new Error("duplicate key"); e.code = 11000; throw e; }
+      lobbyMem.set(doc.code, { ...doc });
+      return { insertedId: doc.code };
+    },
+    async updateOne({ code }, { $set }) {
+      const cur = lobbyMem.get(code);
+      if (cur) lobbyMem.set(code, { ...cur, ...$set });
+      return { modifiedCount: cur ? 1 : 0 };
+    },
+  };
+  const lobbySrv = await new Promise((resolve) => {
+    const s = epServer2.createApp(lobbyStore).listen(0, "127.0.0.1", () => resolve(s));
+  });
+  epApi2.configureEpisodeApiUrl(`http://127.0.0.1:${lobbySrv.address().port}`);
+  try {
+    const lobbyEp = {
+      schemaVersion: 1,
+      meta: { title: "Lobby Path Ep" },
+      defaults: { scoringMode: "uniform", uniformPoints: 1750 },
+      items: [{ id: "l1", kind: "text", prompt: "Q?", correctAnswer: "A" }],
+    };
+    const savedLobby = await epApi2.saveEpisode(lobbyEp, "lobby-pw");
+    // Entering creator runs the probe, which enables the cloud row.
+    const opener = { dataset: { prejoinOpen: "creator" }, closest: (s) => (s === "[data-prejoin-open]" ? opener : null) };
+    for (const fn of mount._listeners.click || []) await fn({ target: opener, preventDefault() {} });
+    await sleep(700);
+    queryMap["#ep-attach-code"] = { value: savedLobby.code };
+    await fireClick("[data-ep-attach-cloud]");
+    queryMap["#prejoin-episode"] = { checked: true };
+    await fireSubmitHost();
+    check("cloud-attached episode passes gate", !_mount.innerHTML.includes("Attach an episode"), "gate blocked a valid attach");
+    await sleep(1600);
+    check("lobby seeded cloud defaults", S().settings?.uniformPoints === 1750, String(S().settings?.uniformPoints));
+  } finally {
+    epApi2.configureEpisodeApiUrl("");
+    queryMap["#prejoin-episode"] = { checked: false };
+    delete queryMap["#ep-attach-code"];
+    await new Promise((resolve) => lobbySrv.close(resolve));
+  }
+}
+// --- host form renders the episode checkbox + cloud retry ---
+{
+  // Empty name forces the validation-error render of the host form.
+  queryMap["#prejoin-name"] = { value: "" };
+  const badName = {
+    dataset: { prejoinForm: "host" },
+    closest: (s) => (s === "[data-prejoin-form]" ? badName : null),
+    querySelector: () => ({ disabled: false }),
+  };
+  for (const fn of mount._listeners.submit || []) await fn({ preventDefault() {}, target: badName });
+  await sleep(700);
+  check("host form has episode checkbox", _mount.innerHTML.includes('id="prejoin-episode"'), "checkbox missing");
+  check("host form hides picker hook", _mount.innerHTML.includes("ep-attach-options"), "options block missing");
+  queryMap["#prejoin-name"] = { value: "Host" };
+  // Force the cloud state back to disabled (a prior test's probe enabled it),
+  // then re-render the form: the retry affordance must appear.
+  const retry = { dataset: {}, closest: (s) => (s === "[data-ep-attach-cloud-retry]" ? retry : null) };
+  for (const fn of mount._listeners.click || []) await fn({ target: retry, preventDefault() {} });
+  await sleep(300);
+  queryMap["#prejoin-name"] = { value: "" };
+  for (const fn of mount._listeners.submit || []) await fn({ preventDefault() {}, target: badName });
+  await sleep(700);
+  check("host form has cloud retry", _mount.innerHTML.includes("data-ep-attach-cloud-retry"), "retry missing");
+  check("cloud retry re-renders hint", _mount.innerHTML.includes("Cloud codes need the episode server"), "hint text missing");
+  queryMap["#prejoin-name"] = { value: "Host" };
 }
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
