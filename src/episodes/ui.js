@@ -264,38 +264,52 @@ function scoringOpts(current, blankLabel) {
 
 // Per-question overrides, shared by every kind. Blank = fall back to the
 // episode default (which itself falls back to the live game setting).
+// Which setting overrides actually do anything per question kind. Buttons
+// use the full buzz/scoring flow; text has no option buttons (no layout or
+// per-option cap). Special modes score and time themselves with fixed rules,
+// so no game setting applies — the section hides entirely for them.
+const OVERRIDE_KEYS_BY_KIND = {
+  buttons: ["scoringMode", "uniformPoints", "jackMultiplier", "timeOpen", "lockAfterBuzz", "rebuzzAllowed", "maxBuzzesPerOption", "closeBuzzersOnPointsGiven", "choiceLayout"],
+  text: ["scoringMode", "uniformPoints", "jackMultiplier", "timeOpen", "lockAfterBuzz", "rebuzzAllowed", "closeBuzzersOnPointsGiven"],
+};
+
 function renderOverridesFields(item, esc) {
   const o = (item && item.overrides) || {};
+  const keys = OVERRIDE_KEYS_BY_KIND[item?.kind] || [];
+  if (!keys.length) {
+    return `<p class="muted">This mode has fixed scoring and timing — no setting overrides apply (its own options above still work).</p>`;
+  }
+  const has = (k) => keys.includes(k);
   return `
     <fieldset class="ep-fieldset"><legend>Setting overrides <span class="muted">(blank = episode default)</span></legend>
       <div class="ep-grid2">
-        <label>Scoring
+        ${has("scoringMode") ? `<label>Scoring
           <select data-ep-harvest id="ep-ov-scoring">${scoringOpts(o.scoringMode, "Episode default")}</select>
-        </label>
-        <label>Uniform points
+        </label>` : ""}
+        ${has("uniformPoints") ? `<label>Uniform points
           <input data-ep-harvest id="ep-ov-points" type="number" min="1" step="1" value="${o.uniformPoints ?? ""}" placeholder="Episode default" />
-        </label>
-        <label>JACK multiplier
+        </label>` : ""}
+        ${has("jackMultiplier") ? `<label>JACK multiplier
           <select data-ep-harvest id="ep-ov-jack"><option value="" ${o.jackMultiplier === undefined ? "selected" : ""}>Episode default</option>${opts([1, 1.5, 2, 2.5, 3], o.jackMultiplier ?? "")}</select>
-        </label>
-        <label>Buzzers open (s)
+        </label>` : ""}
+        ${has("timeOpen") ? `<label>Buzzers open (s)
           <input data-ep-harvest id="ep-ov-time" type="number" min="1" max="600" step="1" value="${o.timeOpen ?? ""}" placeholder="Episode default" />
-        </label>
-        <label>Max buzzes per option
+        </label>` : ""}
+        ${has("maxBuzzesPerOption") ? `<label>Max buzzes per option
           <input data-ep-harvest id="ep-ov-maxbuzz" type="number" min="1" max="50" step="1" value="${o.maxBuzzesPerOption ?? ""}" placeholder="Episode default" />
-        </label>
-        <label>Choice layout
+        </label>` : ""}
+        ${has("choiceLayout") ? `<label>Choice layout
           <select data-ep-harvest id="ep-ov-layout"><option value="" ${!o.choiceLayout ? "selected" : ""}>Episode default</option>${opts(["diamond", "grid", "list"], o.choiceLayout ?? "")}</select>
-        </label>
-        <label>Lock after buzz
+        </label>` : ""}
+        ${has("lockAfterBuzz") ? `<label>Lock after buzz
           <select data-ep-harvest id="ep-ov-lock">${triState(o.lockAfterBuzz)}</select>
-        </label>
-        <label>Allow re-buzz
+        </label>` : ""}
+        ${has("rebuzzAllowed") ? `<label>Allow re-buzz
           <select data-ep-harvest id="ep-ov-rebuzz">${triState(o.rebuzzAllowed)}</select>
-        </label>
-        <label>Close on points given
+        </label>` : ""}
+        ${has("closeBuzzersOnPointsGiven") ? `<label>Close on points given
           <select data-ep-harvest id="ep-ov-close">${triState(o.closeBuzzersOnPointsGiven)}</select>
-        </label>
+        </label>` : ""}
       </div>
     </fieldset>`;
 }
@@ -481,27 +495,6 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
           </select>
           <button type="button" data-ep-add>Add question</button>
         </div>
-        <details class="ep-bulk">
-          <summary>Bulk add bingo / Wen questions</summary>
-          <p class="muted">One per line: <code>Question, B</code> — letter must be in the word (bingo) or B/N/A for Before/Never/After (Wen). Prompts may contain commas; the last one splits the letter.</p>
-          <div class="ep-grid2">
-            <label>Type
-              <select id="ep-bulk-kind">
-                <option value="bingo">Bingo</option>
-                <option value="wendithapn">Wen Dit Happn</option>
-              </select>
-            </label>
-            <label>Word <span class="muted">(bingo only)</span>
-              <input id="ep-bulk-word" type="text" maxlength="5" placeholder="BINGO" />
-            </label>
-          </div>
-          <label>Questions
-            <textarea id="ep-bulk-text" rows="4" placeholder="When did it happen?, B&#10;Never happened?, N"></textarea>
-          </label>
-          <div class="ep-toolbar">
-            <button type="button" data-ep-bulk-add>Add lines</button>
-          </div>
-        </details>
       </section>
 
       ${renderEditForm(selected, esc, editLayout)}
@@ -561,7 +554,7 @@ export function harvestCreatorFields(root) {
           prompt: val(`#ep-rd-prompt-${k}`) || "",
           answer: val(`#ep-rd-answer-${k}`) || "",
         });
-        if (k > 8) break;
+        if (k > 20) break;
       }
       patch.rounds = rounds;
     }

@@ -1314,13 +1314,13 @@ const badCases = [
   ["bingo repeated letters", (e) => { e.items[5].word = "HELLO"; }, "word"],
   ["bingo missing answer", (e) => { delete e.items[5].rounds; }, "rounds"],
   ["bingo empty rounds", (e) => { e.items[5].rounds = []; }, "rounds"],
-  ["bingo too many rounds", (e) => { e.items[5].rounds = ["B", "I", "N", "G", "O", "X"].map((a) => ({ answer: a })); }, "rounds"],
+  ["bingo too many rounds", (e) => { e.items[5].rounds = Array.from({ length: 13 }, (_, i) => ({ answer: "BINGO"[i % 5] })); }, "rounds"],
   ["bingo bad letter", (e) => { e.items[5].rounds = [{ answer: "7" }]; }, "rounds"],
   ["bingo letter not in word", (e) => { e.items[5].rounds = [{ answer: "Z" }]; }, "rounds"],
   ["bingo round unknown field", (e) => { e.items[5].rounds = [{ answer: "B", junk: 1 }]; }, "rounds"],
   ["wen missing answer", (e) => { delete e.items[6].rounds; }, "rounds"],
   ["wen bad answer", (e) => { e.items[6].rounds = [{ answer: "X" }]; }, "rounds"],
-  ["wen too many rounds", (e) => { e.items[6].rounds = [{ answer: "B" }, { answer: "N" }, { answer: "A" }, { answer: "B" }]; }, "rounds"],
+  ["wen too many rounds", (e) => { e.items[6].rounds = Array.from({ length: 13 }, (_, i) => ({ answer: ["B", "N", "A"][i % 3] })); }, "rounds"],
   ["bad default key", (e) => { e.defaults.junk = 1; }, "defaults.junk"],
   ["bad scoring mode", (e) => { e.defaults.scoringMode = "chaos"; }, "defaults.scoringMode"],
 ];
@@ -1337,6 +1337,32 @@ for (const [name, mutate, field] of badCases) {
   rep.items[6].rounds = [{ answer: "B" }, { answer: "B" }];
   const rr = eps.validateEpisode(rep);
   check("repeat rounds allowed", rr.ok === true, JSON.stringify(rr.errors));
+}
+{
+  // Raised caps: 12 rounds validate; 13 do not (covered in badCases).
+  const cap = validEp();
+  cap.items[5].rounds = Array.from({ length: 12 }, (_, i) => ({ prompt: `R${i + 1}`, answer: "BINGO"[i % 5] }));
+  cap.items[6].rounds = Array.from({ length: 12 }, (_, i) => ({ answer: ["B", "N", "A"][i % 3] }));
+  check("twelve rounds allowed", eps.validateEpisode(cap).ok === true, JSON.stringify(eps.validateEpisode(cap).errors));
+}
+{
+  // Legacy `points` migrates to overrides.uniformPoints on normalize.
+  const legacyPts = eps.normalizeEpisode({
+    schemaVersion: 1,
+    meta: { title: "Old pts" },
+    defaults: {},
+    items: [
+      { id: "p1", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1], points: 500 },
+      { id: "p2", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1], points: 500, overrides: { uniformPoints: 700, timeOpen: 20 } },
+      { id: "p3", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1], points: -5 },
+      { id: "p4", kind: "buttons", prompt: "Q?", optionCount: 4, correctOptions: [1] },
+    ],
+  });
+  check("points migrates", legacyPts.items[0].overrides?.uniformPoints === 500 && legacyPts.items[0].points === undefined, JSON.stringify(legacyPts.items[0]));
+  check("explicit override wins", legacyPts.items[1].overrides?.uniformPoints === 700, JSON.stringify(legacyPts.items[1].overrides));
+  check("bad points dropped", legacyPts.items[2].points === undefined && legacyPts.items[2].overrides === undefined, JSON.stringify(legacyPts.items[2]));
+  check("absent stays absent", legacyPts.items[3].overrides === undefined, JSON.stringify(legacyPts.items[3]));
+  check("migrated validates", eps.validateEpisode(legacyPts).ok === true, JSON.stringify(eps.validateEpisode(legacyPts).errors));
 }
 {
   const messy = validEp();
@@ -1422,6 +1448,12 @@ const epui = await import("../src/episodes/ui.js");
   const badEp = eped.parseImportText(JSON.stringify({ schemaVersion: 1, meta: {}, defaults: {}, items: [] }));
   check("import rejects invalid episode", badEp.ok === false && badEp.errors.length > 0, JSON.stringify(badEp));
   check("export filename slugs title", eped.exportFileName(ep) === "night.episode.json", eped.exportFileName(ep));
+  check("fresh blank", eped.isBlankEpisode({ schemaVersion: 1, meta: { title: "", author: "", createdAt: "" }, defaults: {}, items: [] }) === true, "fresh flagged dirty");
+  check("blank null-safe", eped.isBlankEpisode(null) === true && eped.isBlankEpisode(undefined) === true && eped.isBlankEpisode("x") === true, "null unsafe");
+  check("title dirties", eped.isBlankEpisode({ schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [] }) === false, "title missed");
+  check("author dirties", eped.isBlankEpisode({ schemaVersion: 1, meta: { title: "", author: "A" }, defaults: {}, items: [] }) === false, "author missed");
+  check("defaults dirty", eped.isBlankEpisode({ schemaVersion: 1, meta: {}, defaults: { timeOpen: 20 }, items: [] }) === false, "defaults missed");
+  check("items dirty", eped.isBlankEpisode({ schemaVersion: 1, meta: {}, defaults: {}, items: [{ id: "1" }] }) === false, "items missed");
   const html = epui.renderCreatorScreen({ ep, selectedId: firstId, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
   check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
   check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
@@ -1430,6 +1462,28 @@ const epui = await import("../src/episodes/ui.js");
   check("creator shows cloud reason", htmlErr.includes("Cloud unreachable") && htmlErr.includes("data-ep-cloud-retry"), "diagnosis missing");
   const htmlNoSel = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
   check("creator no edit without selection", !htmlNoSel.includes('id="ep-prompt"'), "edit form leaked");
+  {
+    // Override visibility: buttons sees all, text drops layout/maxbuzz,
+    // special modes hide the section (fixed scoring/timing).
+    const visEp = {
+      schemaVersion: 1, meta: { title: "V" }, defaults: {},
+      items: [
+        { id: "v1", kind: "buttons", prompt: "B?", optionCount: 4, correctOptions: [1] },
+        { id: "v2", kind: "text", prompt: "T?", correctAnswer: "A" },
+        { id: "v3", kind: "fibbage", prompt: "F?", truth: "T", lieTimeSec: 30, voteTimeSec: 30, multiplier: 1 },
+        { id: "v4", kind: "bingo", prompt: "G?", word: "GAMES", rounds: [{ answer: "G" }] },
+      ],
+    };
+    const vis = (id) => epui.renderCreatorScreen({ ep: visEp, selectedId: id, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    const buttonsHtml = vis("v1");
+    check("buttons sees all overrides", ["ep-ov-scoring", "ep-ov-points", "ep-ov-jack", "ep-ov-time", "ep-ov-maxbuzz", "ep-ov-layout", "ep-ov-lock", "ep-ov-rebuzz", "ep-ov-close"].every((oid) => buttonsHtml.includes(`id="${oid}"`)), "buttons missing overrides");
+    const textHtml = vis("v2");
+    check("text hides layout/maxbuzz", !textHtml.includes('id="ep-ov-layout"') && !textHtml.includes('id="ep-ov-maxbuzz"') && textHtml.includes('id="ep-ov-scoring"'), "text filter wrong");
+    const fibHtml = vis("v3");
+    check("fibbage hides overrides", !fibHtml.includes('id="ep-ov-scoring"') && fibHtml.includes("fixed scoring and timing"), "fibbage leaked overrides");
+    const bingoHtml = vis("v4");
+    check("bingo hides overrides", !bingoHtml.includes('id="ep-ov-scoring"') && bingoHtml.includes("fixed scoring and timing"), "bingo leaked overrides");
+  }
   {
     // Correct-option labels mirror the game: ABXY in diamond ≤4, else numbers.
     const mc = { id: "mc1", kind: "buttons", prompt: "P", optionCount: 4, correctOptions: [1] };
@@ -1448,23 +1502,6 @@ const epui = await import("../src/episodes/ui.js");
   }
   const harvested = epui.harvestCreatorFields(null);
   check("harvest null-safe", harvested.item === null && harvested.meta.title === undefined, JSON.stringify(harvested));
-}
-// --- episode bulk line import (cycling modes) ---
-{
-  const eped2 = await import("../src/episodes/editor.js");
-  const bingo = eped2.parseBulkLines("First?, B\nSecond, with comma?, I\n\n  \nThird?,o", "bingo", "BINGO");
-  check("bulk bingo valid", bingo.items.length === 3 && bingo.errors.length === 0, JSON.stringify({ n: bingo.items.length, e: bingo.errors }));
-  check("bulk prompts keep commas", bingo.items[1].prompt === "Second, with comma?" && bingo.items[1].rounds[0].answer === "I", JSON.stringify(bingo.items[1]));
-  check("bulk builds rounds", bingo.items[0].rounds.length === 1 && bingo.items[0].rounds[0].answer === "B", JSON.stringify(bingo.items[0].rounds));
-  check("bulk ids unique", new Set(bingo.items.map((i) => i.id)).size === 3, "dup ids");
-  const bad = eped2.parseBulkLines("No comma here\nEmpty?, \nNot in word?, Z\n, B", "bingo", "BINGO");
-  check("bulk bingo errors by line", bad.items.length === 0 && bad.errors.length === 4 && bad.errors[0].line === 1, JSON.stringify(bad.errors));
-  const wen = eped2.parseBulkLines("Happened before?, b\nNever?, N\nAfter?, a", "wendithapn");
-  check("bulk wen valid", wen.items.length === 3 && wen.errors.length === 0 && wen.items[0].rounds[0].answer === "B", JSON.stringify(wen));
-  const wenBad = eped2.parseBulkLines("Maybe?, X", "wendithapn");
-  check("bulk wen rejects letter", wenBad.items.length === 0 && wenBad.errors.length === 1 && wenBad.errors[0].line === 1, JSON.stringify(wenBad));
-  const wrongKind = eped2.parseBulkLines("Q?, A", "buttons");
-  check("bulk rejects other kinds", wrongKind.items.length === 0 && wrongKind.errors.length === 1, JSON.stringify(wrongKind));
 }
 // --- episode runner: attach + load + broadcast (driven via producer-action) ---
 {

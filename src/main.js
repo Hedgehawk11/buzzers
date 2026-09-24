@@ -12,10 +12,10 @@ import {
   duplicateItem as epDuplicateItem,
   exportFileName as epExportFileName,
   exportText as epExportText,
+  isBlankEpisode as epIsBlankEpisode,
   loadDraft as epLoadDraft,
   moveItem as epMoveItem,
   newDraft as epNewDraft,
-  parseBulkLines as epParseBulkLines,
   parseImportText as epParseImportText,
   persistDraft as epPersistDraft,
   updateDefaults as epUpdateDefaults,
@@ -23,7 +23,7 @@ import {
   updateMeta as epUpdateMeta,
 } from "./episodes/editor.js";
 import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
-import { EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
+import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
 import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 
 // =============================================================================
@@ -11386,33 +11386,6 @@ function bindEvents() {
     epPersistDraft(episodeDraft);
     refreshCreator();
   });
-  delegate("click", "[data-ep-bulk-add]", () => {
-    harvestIntoDraft();
-    let kind = "bingo";
-    let word = "";
-    let text = "";
-    try {
-      kind = document.querySelector("#ep-bulk-kind")?.value || "bingo";
-      word = String(document.querySelector("#ep-bulk-word")?.value || "");
-      text = String(document.querySelector("#ep-bulk-text")?.value || "");
-    } catch {}
-    const { items, errors } = epParseBulkLines(text, kind, word);
-    if (items.length) {
-      episodeDraft = { ...episodeDraft, items: [...episodeDraft.items, ...items] };
-      creatorSelectedId = items[items.length - 1]?.id || creatorSelectedId;
-      epPersistDraft(episodeDraft);
-    }
-    creatorImportErrors = errors.slice(0, 12).map((e) => ({
-      index: -1,
-      itemId: null,
-      field: e.line > 0 ? `Line ${e.line}` : "Bulk import",
-      message: e.message,
-    }));
-    refreshCreator();
-    showToast(items.length
-      ? `Added ${items.length} question${items.length === 1 ? "" : "s"}${errors.length ? ` (${errors.length} line${errors.length === 1 ? "" : "s"} skipped)` : ""}.`
-      : "No valid lines — nothing added.", { variant: items.length ? "info" : "error" });
-  });
   delegate("click", "[data-ep-edit]", (e, btn) => {
     harvestIntoDraft();
     creatorSelectedId = btn.dataset.epEdit || null;
@@ -11423,7 +11396,7 @@ function bindEvents() {
     const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
     if (!sel || (sel.kind !== "bingo" && sel.kind !== "wendithapn")) return;
     const rounds = Array.isArray(sel.rounds) ? sel.rounds : [];
-    const max = sel.kind === "bingo" ? 5 : 3;
+    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : EP_MAX_WEN_ROUNDS;
     if (rounds.length >= max) return;
     episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, { prompt: "", answer: "" }] });
     epPersistDraft(episodeDraft);
@@ -11447,6 +11420,11 @@ function bindEvents() {
   delegate("click", "[data-ep-del]", (e, btn) => {
     harvestIntoDraft();
     const id = btn.dataset.epDel;
+    const target = episodeDraft.items.find((it) => it && it.id === id);
+    const excerpt = String(target?.prompt || "").trim().slice(0, 60);
+    let confirmed = true;
+    try { confirmed = window.confirm(excerpt ? `Delete "${excerpt}"? This cannot be undone.` : "Delete this question? This cannot be undone."); } catch {}
+    if (!confirmed) return;
     episodeDraft = epDeleteItem(episodeDraft, id);
     if (creatorSelectedId === id) creatorSelectedId = null;
     epPersistDraft(episodeDraft);
@@ -11477,6 +11455,7 @@ function bindEvents() {
   });
   delegate("click", "[data-ep-export]", () => downloadEpisodeJson());
   delegate("click", "[data-ep-import-btn]", () => {
+    harvestIntoDraft();
     try { document.querySelector("#ep-import-file")?.click(); } catch {}
   });
   delegate("change", "#ep-import-file", (e, input) => {
@@ -11486,6 +11465,11 @@ function bindEvents() {
     reader.onload = () => {
       const result = epParseImportText(String(reader.result || ""));
       if (result.ok && result.episode) {
+        if (!epIsBlankEpisode(episodeDraft)) {
+          let confirmed = true;
+          try { confirmed = window.confirm(`Replace the current episode with "${result.episode.meta?.title || "episode"}"? Unsaved work is lost unless exported.`); } catch {}
+          if (!confirmed) { try { input.value = ""; } catch {} return; }
+        }
         episodeDraft = result.episode;
         creatorSelectedId = null;
         creatorImportErrors = [];
@@ -11660,6 +11644,7 @@ function bindEvents() {
     refreshCreator();
   });
   delegate("click", "[data-ep-cloud-load-confirm]", async () => {
+    harvestIntoDraft();
     let code = "";
     try { code = String(document.querySelector("#ep-cloud-load-code")?.value || "").trim().toUpperCase(); } catch {}
     if (!code) {
@@ -11671,6 +11656,11 @@ function bindEvents() {
       const { episode } = await epCloudLoad(code);
       const check = epValidateEpisode(episode);
       if (!check.ok) throw new Error("That episode failed validation.");
+      if (!epIsBlankEpisode(episodeDraft)) {
+        let confirmed = true;
+        try { confirmed = window.confirm(`Replace the current episode with "${episode.meta?.title || "episode"}"? Unsaved work is lost unless exported.`); } catch {}
+        if (!confirmed) return;
+      }
       episodeDraft = episode;
       creatorSelectedId = null;
       creatorImportErrors = [];

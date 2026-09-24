@@ -47,9 +47,9 @@ export const EPISODE_DISORDAT_ANSWER_VALUES = ["dis", "dat", "both"];
 export const EPISODE_OPTION_LABEL_MAX = 120;
 // Bingo words are 5 letters (see startBingo validation in main.js).
 export const EPISODE_BINGO_WORD_LEN = 5;
-// Max answer rounds per cycling question (bounded by the items themselves).
-export const EPISODE_BINGO_MAX_ROUNDS = 5;
-export const EPISODE_WEN_MAX_ROUNDS = 3;
+// Max answer rounds per cycling question (generous; repeats allowed).
+export const EPISODE_BINGO_MAX_ROUNDS = 12;
+export const EPISODE_WEN_MAX_ROUNDS = 12;
 // Wen Dit Happn answers: B(efore) / N(ever) / A(fter), indices 0/1/2.
 export const EPISODE_WEN_ANSWERS = ["B", "N", "A"];
 export const EPISODE_WEN_LABELS = { B: "Before", N: "Never", A: "After" };
@@ -469,6 +469,17 @@ export function normalizeEpisode(ep) {
           if (Array.isArray(next.items)) next.items = next.items.map((s) => String(s ?? "").trim());
           if (Array.isArray(next.trash)) next.trash = next.trash.map((s) => String(s ?? "").trim());
           if (Array.isArray(next.options)) next.options = next.options.map((s) => String(s ?? "").trim());
+          // Migrate pre-overrides episodes (`points`): fold a valid value
+          // into overrides.uniformPoints (explicit overrides win); anything
+          // else was invalid before, so drop it.
+          if (next.kind === "buttons" && next.points !== undefined) {
+            const p = Number(next.points);
+            if (Number.isInteger(p) && p > 0) {
+              next.overrides = isPlainObject(next.overrides) ? { ...next.overrides } : {};
+              if (next.overrides.uniformPoints === undefined) next.overrides.uniformPoints = p;
+            }
+            delete next.points;
+          }
           if (next.overrides !== undefined) next.overrides = stripBlankSettings({ ...next.overrides });
           return next;
         })
