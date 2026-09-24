@@ -103,8 +103,7 @@ const QUIXORT_MAX_ITEMS = 9;
 const QUIXORT_MAX_TRASH = 3;
 const QUIXORT_MAX_TEXT = 120;
 const QUIXORT_POINTS_EXACT = 1000;
-const QUIXORT_POINTS_ADJ1 = 500;
-const QUIXORT_POINTS_ADJ2 = 250;
+const QUIXORT_PENALTY_MISCLASS = 500;
 const QUIXORT_BONUS_CLEAN = 1500;
 const QUIXORT_MAX_MULT = 5;
 const QUIXORT_BLOCK_SECONDS_OPTIONS = [15, 20, 30, 45, 60];
@@ -3656,9 +3655,10 @@ function handleDisOrDatTick() {
 // Quixort — host enters an ordered list (4-9) + optional trash (0-3). Every
 // track plays simultaneously from its own shuffled deck, one block at a time,
 // inserting each block into a growing row (or trashing it). Shared-team tracks
-// rotate members per block. Scored once at the end by position distance:
-// exact 1000 / off-by-one 500 / off-by-two 250 / else 0 (x multiplier), plus a
-// 1500 x mult bonus for a perfect run. Per-block timer voids+passes on expiry.
+// rotate members per block. Scored once at the end, pairwise: each
+// correctly-ordered pair +W, each inverted pair -W (W scales so perfect order
+// is ~N*1000), trash +1000 / misclass -500, 1500 x mult bonus for a perfect
+// run. Per-block timer voids+passes on expiry.
 // Banned in coopertition mode (no coop model, like fibbage/disordat).
 // =============================================================================
 function normalizeQuixortMultiplier(v) {
@@ -3732,8 +3732,16 @@ function getQuixortRunTimeLeftCs(run, qx) {
   if (typeof run.blockEndsAt !== "number") return normalizeQuixortBlockSec(qx?.blockSec) * 100;
   return Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
 }
-// End scoring for one run. Voided blocks are excluded entirely (neighbors
-// close the gap); placed trash scores 0 and occupies its row slot.
+// End scoring for one run (pairwise / Kendall style). Every correctly-ordered
+// pair of real items earns +W, every inverted pair costs -W, where
+// W = round(N*1000 / P) scales with list length so a perfect order is always
+// worth ~N*1000 (same economy as the old exact-based scoring). Pairs with a
+// missing member (voided on timeout, or a real wrongly trashed) score 0 — the
+// lost opportunity is the penalty. Trash correctly trashed is +1000 each;
+// each misclass (real trashed, trash placed in the row) is -500. Placed trash
+// is excluded from pair order. Run total is floored at 0, then x multiplier;
+// a perfect run (all pairs concordant, all trash right, nothing voided or
+// misclassed) adds the clean bonus.
 function scoreQuixortRun(qx, run) {
   const mult = normalizeQuixortMultiplier(qx.multiplier);
   const items = getQuixortItems(qx);
@@ -3742,22 +3750,43 @@ function scoreQuixortRun(qx, run) {
   const trashed = Array.isArray(run?.trashed) ? run.trashed : [];
   const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
   const placedReals = row.filter((e) => e && e.t === "item");
-  let base = 0;
+  const n = items.length;
+  const totalPairs = (n * (n - 1)) / 2;
+  const pairWeight = totalPairs > 0 ? Math.max(1, Math.round((n * QUIXORT_POINTS_EXACT) / totalPairs)) : 0;
+  // Position of each placed real ref in the filtered row (trash excluded).
+  const posByRef = new Map();
+  placedReals.forEach((entry, pos) => {
+    const ref = Number(entry.ref);
+    if (Number.isInteger(ref) && !posByRef.has(ref)) posByRef.set(ref, pos);
+  });
+  let concordant = 0;
+  let discordant = 0;
+  for (let a = 0; a < n; a++) {
+    if (!posByRef.has(a)) continue;
+    for (let b = a + 1; b < n; b++) {
+      if (!posByRef.has(b)) continue;
+      if (posByRef.get(a) < posByRef.get(b)) concordant++;
+      else discordant++;
+    }
+  }
   let exactCount = 0;
   placedReals.forEach((entry, pos) => {
-    const dist = Math.abs(pos - Number(entry.ref));
-    if (dist === 0) { base += QUIXORT_POINTS_EXACT; exactCount++; }
-    else if (dist === 1) base += QUIXORT_POINTS_ADJ1;
-    else if (dist === 2) base += QUIXORT_POINTS_ADJ2;
+    if (pos === Number(entry.ref)) exactCount++;
   });
   const trashCorrect = trashed.filter((e) => e && e.t === "trash").length;
-  base += trashCorrect * QUIXORT_POINTS_EXACT;
+  const trashedReals = trashed.filter((e) => e && e.t === "item").length;
   const placedTrash = row.filter((e) => e && e.t === "trash").length;
-  const clean = voided === 0 && placedTrash === 0
-    && placedReals.length === items.length && exactCount === items.length
+  const misclass = trashedReals + placedTrash;
+  const orderPoints = (concordant - discordant) * pairWeight;
+  const base = Math.max(
+    0,
+    orderPoints + trashCorrect * QUIXORT_POINTS_EXACT - misclass * QUIXORT_PENALTY_MISCLASS,
+  );
+  const clean = voided === 0 && misclass === 0
+    && placedReals.length === n && concordant === totalPairs && totalPairs > 0
     && trashCorrect === trash.length;
   const total = (base + (clean ? QUIXORT_BONUS_CLEAN : 0)) * mult;
-  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, clean };
+  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, misclass, concordant, discordant, totalPairs, pairWeight, clean };
 }
 function formatQuixortEstimate(totalSeconds) {
   const s = Math.max(0, Math.round(Number(totalSeconds) || 0));
@@ -4024,7 +4053,7 @@ function finalizeQuixort() {
       scoreKey,
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${isTeamTrack ? track : getPlayerTeamColor(rep?.id, assignments)}` : trackDisplayName,
       option: null,
-      answerText: `Quixort: ${scored.exactCount} exact, ${scored.placedCount} placed, ${scored.trashCorrect} trash${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = ${scored.total}`,
+      answerText: `Quixort: ${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = ${scored.total}`,
       timeLeftCs: 0,
       scoringMode: "uniform",
       jackMultiplier: settings.jackMultiplier,
@@ -6968,7 +6997,7 @@ function renderQuixortHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Quixort Setup</h2>
-        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Exact 1000, off-by-one 500, off-by-two 250 (x multiplier), clean-run bonus ${QUIXORT_BONUS_CLEAN} x multiplier.</p>
+        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Correctly-ordered pairs score +W, inverted pairs −W (perfect order ≈ items × 1000), trash +1000, wrong trash calls −500 (x multiplier), clean-run bonus ${QUIXORT_BONUS_CLEAN} x multiplier.</p>
         <div class="control-grid">
           <label>Multiplier
             <select id="quixort-mult">${multOpts}</select>
@@ -7009,7 +7038,7 @@ function renderQuixortHostPanel(settings, players) {
   const remainingMax = trackRows.reduce((m, r) => Math.max(m, r.run.finished ? 0 : r.remaining), 0);
   const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }) => {
     const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
-    const scoreTxt = scored ? ` — <strong>${scored.total}</strong> pts (${scored.exactCount} exact, ${scored.trashCorrect} trash${scored.bonus ? ` + ${scored.bonus} bonus` : ""})` : "";
+    const scoreTxt = scored ? ` — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})` : "";
     return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span>${scoreTxt}</li>`;
   }).join("");
   if (qx.phase === "results") {
@@ -7061,7 +7090,7 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
       <section class="card player-card">
         <h2>Quixort ${teamPill}</h2>
         <h3>${getSnark("player.quixort.resultsTitle", "Results")}</h3>
-        <p class="muted">${getSnark("player.quixort.exactCount", `${scored.exactCount} exact placements`, { exact: scored.exactCount })}, ${scored.trashCorrect} trash sorted${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
+        <p class="muted">${getSnark("player.quixort.pairsCount", `${scored.concordant}/${scored.totalPairs} pairs in order`, { good: scored.concordant, pairs: scored.totalPairs })}, ${scored.trashCorrect} trash sorted${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
         <p class="muted">${getSnark("player.quixort.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </section>`;
   }
@@ -7116,7 +7145,7 @@ function renderQuixortAudienceDisplay(settings, players) {
   const standings = tracks.map(({ track, run, scored }) => {
     const deckLen = (run.deck || []).length;
     const detail = qx.phase === "results" && scored
-      ? `${scored.exactCount} exact, ${scored.trashCorrect} trash = ${scored.total} pts`
+      ? `${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash = ${scored.total} pts`
       : `${Number(run.deckPos) || 0}/${deckLen} blocks`;
     return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${detail}</li>`;
   }).join("");
@@ -10185,7 +10214,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="quixort" ${settingDisabledAttr} ${settings.inputMode === "quixort" || isCoopMode(settings) ? "disabled" : ""}>Quixort</button>
-                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end by position: exact 1000, off-by-one 500, off-by-two 250 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +1000, wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort"

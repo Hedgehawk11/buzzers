@@ -656,10 +656,41 @@ await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
 check("quixort finalized", S().quixort?.phase === "results", S().quixort?.phase);
 check(
   "quixort clean bonus scored at mult 2",
-  (S().scores?.dev1 || 0) - qxBefore === (4 * 1000 + 1000 + 1500) * 2,
+  // pairwise: N=4 -> P=6 pairs, W=round(4000/6)=667; perfect = 6*667 order
+  // + 1000 trash + 1500 clean bonus, x2 mult = 13004
+  (S().scores?.dev1 || 0) - qxBefore === (6 * 667 + 1000 + 1500) * 2,
   `before=${qxBefore} after=${S().scores?.dev1}`,
 );
 check("quixort log entry", S().gameLog.filter((e) => e.type === "quixort").some((e) => e.awardedDelta > 0), "no quixort log");
+check("quixort log uses pairs text", S().gameLog.filter((e) => e.type === "quixort").some((e) => /6\/6 pairs/.test(e.answerText || "")), JSON.stringify(S().gameLog.filter((e) => e.type === "quixort").map((e) => e.answerText)));
+// misclass penalty: trash one real, sort the rest + trash the trash.
+// 3 concordant pairs (3*667) + 1000 trash - 500 misclass, no bonus, x2 = 5002
+await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+const qxBeforeMis = S().scores?.dev1 || 0;
+let qxMisTrashedReal = false;
+let qxMisGuard = 0;
+while (S().quixort?.runs?.dev1 && !S().quixort.runs.dev1.finished && qxMisGuard++ < 12) {
+  const run = S().quixort.runs.dev1;
+  const entry = run.deck[run.deckPos];
+  if (entry.t === "trash" || !qxMisTrashedReal && entry.t === "item") {
+    if (entry.t === "item") qxMisTrashedReal = true;
+    await pk._store.rpc["quixort-place"]({ trash: true }, dev1);
+  } else {
+    let pos = 0;
+    for (const e of run.row) if (e.t === "item" && e.ref < entry.ref) pos++;
+    const res = await pk._store.rpc["quixort-place"]({ insertIndex: pos }, dev1);
+    if (!res?.ok) break;
+  }
+}
+check("quixort misclass run trashed a real", qxMisTrashedReal === true, JSON.stringify(qxMisTrashedReal));
+await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
+check(
+  "quixort misclass penalized at mult 2",
+  (S().scores?.dev1 || 0) - qxBeforeMis === (3 * 667 + 1000 - 500) * 2,
+  `before=${qxBeforeMis} after=${S().scores?.dev1}`,
+);
+check("quixort misclass logged", S().gameLog.filter((e) => e.type === "quixort").some((e) => /1 misclass/.test(e.answerText || "")), "no misclass log");
 // shared-team rotation: teammates rotate per block, off-turn rejected
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);

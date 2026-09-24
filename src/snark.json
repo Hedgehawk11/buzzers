@@ -673,6 +673,11 @@
         "snark1": "",
         "snark2": ""
       },
+      "pairsCount": {
+        "en": "{good}/{pairs} pairs in order",
+        "snark1": "",
+        "snark2": ""
+      },
       "waitingHostContinue": {
         "en": "Waiting for the host to continue...",
         "snark1": "Waiting for the host... any day now...",
