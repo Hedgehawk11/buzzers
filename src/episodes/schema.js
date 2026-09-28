@@ -330,8 +330,9 @@ function validateWenDitHapn(item, index) {
 }
 
 // Shared answer-round validation for cycling modes. Repeats across rounds
-// are allowed (each round is a fresh contest for that letter — per-target
-// scores reset on letter nav, and other tracks can still collect it).
+// are allowed (each round is a fresh contest for that target — per-target
+// scores reset on letter nav, and other tracks can still score it; only
+// bingo collects).
 function validateRounds(item, index, { max, checkAnswer }) {
   const errors = [];
   if (!Array.isArray(item.rounds) || item.rounds.length === 0) {

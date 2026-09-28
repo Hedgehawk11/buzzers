@@ -141,9 +141,9 @@ let pendingEpisode = null;
 let attachedEpisode = null;
 let activeEpisode = null;
 let episodeIndex = 0;
-// Sub-position inside a cycling question's answer rounds (letter collection).
-// Reset on every load/step/attach/end; the letter nav below moves it without
-// wiping collected progress.
+// Sub-position inside a cycling question's answer rounds (bingo letter
+// collection; Wen collects nothing). Reset on every load/step/attach/end;
+// the letter nav below moves it without wiping bingo collected progress.
 let episodeLetterIndex = 0;
 // Episode setting locks (host-local, never mirrored): keys currently managed
 // by the loaded question (episode defaults + its overrides). Set on load,
@@ -9704,7 +9704,8 @@ function episodeRunLoad(index) {
     // Fresh question state: reset per-question play (a stale active game
     // from the previous question must not leak in), seed the word + the
     // first round's target. Letter nav below advances rounds without this
-    // reset, so collection progress persists. The host still presses Start —
+    // reset, so bingo collection progress persists (Wen collects nothing).
+    // The host still presses Start —
     // startBingo preserves an inactive pre-seeded target for the same word.
     const rounds = getEpisodeRounds(item);
     if (!rounds.length) {
@@ -9791,10 +9792,11 @@ function episodeRunStep(dir) {
   return episodeRunLoad(next);
 }
 
-// Advance within a cycling question's answer rounds (letter collection).
-// Unlike a fresh load this is a setBingoTarget-style transition: the target
-// changes but collected progress (playerItems/collectedCounts/itemStates)
-// persists, so letters accumulate across rounds.
+// Advance within a cycling question's answer rounds. Unlike a fresh load
+// this is a setBingoTarget-style transition: the target changes but bingo
+// collection progress (playerItems/collectedCounts/itemStates) persists, so
+// letters accumulate across rounds. Wen Dit Happn collects nothing — only
+// the target changes.
 function episodeRunLetter(dir) {
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "episodeRunLetter", args: [dir] }, RPC.Mode.HOST);
@@ -10766,7 +10768,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="wendithapn" ${settingDisabledAttr} ${settings.inputMode === "wendithapn" ? "disabled" : ""}>Wen Dit Happn</button>
-                <p class="setting-helper">Same collection race, but the tiles are "Before, Never, After". Pick the correct one for every question, then Start Cycling — players buzz to grab tiles as they light up. First to collect them all wins. (From YDKJ: Louder Faster Funnier, remade in the fangame YDKJ: The Re-ride, Recommended for small games (2-5 players) or team mode, not reccomended for large games)</p>
+                <p class="setting-helper">Same tiles but no collection race — the tiles are "Before, Never, After". Pick the correct one for every question, then Start Cycling — players buzz to score as tiles light up. Every round scores fresh, nothing is collected and there is no winner. (From YDKJ: Louder Faster Funnier, remade in the fangame YDKJ: The Re-ride, Recommended for small games (2-5 players) or team mode, not reccomended for large games)</p>
               </div>
               <div>
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" || isCoopMode(settings) ? "disabled" : ""}>Dis or Dat</button>

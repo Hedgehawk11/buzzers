@@ -221,12 +221,13 @@ function renderBingoFields(item, esc) {
 
 function renderWenFields(item, esc) {
   return `
-    <p class="muted">Wen Dit Happn always uses Before / Never / After — each round below collects one of them. Letters stay collected across rounds.</p>
+    <p class="muted">Wen Dit Happn always uses Before / Never / After — each round below scores one of them. Nothing is collected; every round is a fresh contest.</p>
     ${renderRoundsList(item, esc)}`;
 }
 
-// Answer-round list shared by cycling modes. Each round is one collected
-// target; collection progress persists across rounds within the question.
+// Answer-round list shared by cycling modes. Each round is one target; only
+// bingo collects (progress persists across rounds within the question), Wen
+// Dit Happn just scores each round fresh.
 function renderRoundsList(item, esc) {
   const max = item.kind === "bingo" ? EPISODE_BINGO_MAX_ROUNDS : EPISODE_WEN_MAX_ROUNDS;
   const rounds = Array.isArray(item.rounds) && item.rounds.length ? item.rounds : [{ prompt: "", answer: "" }];
@@ -245,7 +246,7 @@ function renderRoundsList(item, esc) {
     </div>`;
   }).join("");
   return `
-    <fieldset class="ep-fieldset"><legend>Answer rounds (${rounds.length}/${max}) — letters stay collected across rounds</legend>
+    <fieldset class="ep-fieldset"><legend>Answer rounds (${rounds.length}/${max})${item.kind === "bingo" ? " — letters stay collected across rounds" : " — each round scores fresh, nothing collected"}</legend>
       <div class="ep-rounds">${rows}</div>
       <div class="ep-toolbar">
         <button type="button" data-ep-round-add ${rounds.length >= max ? "disabled" : ""}>Add round</button>
