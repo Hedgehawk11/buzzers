@@ -1996,6 +1996,182 @@ const epui = await import("../src/episodes/ui.js");
   check("cloud retry re-renders hint", _mount.innerHTML.includes("Cloud codes need the episode server"), "hint text missing");
   queryMap["#prejoin-name"] = { value: "Host" };
 }
+// --- prune grace: transient flicker must not wipe scores/names, sustained
+// leave still prunes, empty snapshots never wipe (regression: "scores and
+// player names sometimes randomly reset") ---
+{
+  const T = globalThis.__BUZZER_TEST__;
+  check("prune test seam exposed", typeof T?.ensureHostInit === "function", String(typeof T?.ensureHostInit));
+  if (T?.ensureHostInit) {
+    const grace = T.pruneGraceTicks || 5;
+    const victim = pk.makePlayer("flick1", "Flick");
+    pk._store.participants.flick1 = victim;
+    S().scores = { ...(S().scores || {}), flick1: 1500 };
+    S().customNames = { ...(S().customNames || {}), flick1: "FlickName" };
+    T.resetPruneTracking();
+    T.ensureHostInit(); // present tick establishes the roster baseline
+    // 1-tick flicker: absent once, then back before grace elapses
+    delete pk._store.participants.flick1;
+    T.ensureHostInit();
+    check("flicker keeps score", S().scores?.flick1 === 1500, JSON.stringify(S().scores?.flick1));
+    check("flicker keeps name", S().customNames?.flick1 === "FlickName", JSON.stringify(S().customNames?.flick1));
+    pk._store.participants.flick1 = victim;
+    T.ensureHostInit();
+    check("returnee intact", S().scores?.flick1 === 1500 && S().customNames?.flick1 === "FlickName", `${JSON.stringify(S().scores?.flick1)} ${JSON.stringify(S().customNames?.flick1)}`);
+    // sustained leave past the fast grace still retains identity state
+    delete pk._store.participants.flick1;
+    for (let i = 0; i < grace + 3; i++) T.ensureHostInit();
+    check("sustained leave retains score", S().scores?.flick1 === 1500, JSON.stringify(S().scores?.flick1));
+    check("sustained leave retains name", S().customNames?.flick1 === "FlickName", JSON.stringify(S().customNames?.flick1));
+    // ... past the slow-rejoin window it finally expires
+    for (let i = 0; i < (T.retainTicks || 300); i++) T.ensureHostInit();
+    check("expired leave prunes score", S().scores?.flick1 === undefined, JSON.stringify(S().scores?.flick1));
+    check("expired leave prunes name", S().customNames?.flick1 === undefined, JSON.stringify(S().customNames?.flick1));
+    // empty snapshot (total participant gap) never wipes live state
+    S().scores = { ...(S().scores || {}), dev1: 777 };
+    const keepScores = JSON.stringify(S().scores);
+    const keepNames = JSON.stringify(S().customNames);
+    const savedParts = { ...pk._store.participants };
+    pk._store.participants = {};
+    T.resetPruneTracking();
+    T.ensureHostInit();
+    check("empty snapshot keeps scores", JSON.stringify(S().scores) === keepScores, `${keepScores} -> ${JSON.stringify(S().scores)}`);
+    check("empty snapshot keeps names", JSON.stringify(S().customNames) === keepNames, `${keepNames} -> ${JSON.stringify(S().customNames)}`);
+    pk._store.participants = savedParts;
+    // halved roster in one tick (partial list) prunes nothing
+    T.resetPruneTracking();
+    T.ensureHostInit();
+    const ids = Object.keys(pk._store.participants);
+    const dropped = {};
+    ids.slice(Math.ceil(ids.length / 2)).forEach((id) => {
+      dropped[id] = pk._store.participants[id];
+      delete pk._store.participants[id];
+    });
+    const preHalfScores = JSON.stringify(S().scores);
+    T.ensureHostInit();
+    check("halved snapshot keeps scores", JSON.stringify(S().scores) === preHalfScores, `${preHalfScores} -> ${JSON.stringify(S().scores)}`);
+    Object.assign(pk._store.participants, dropped);
+    T.resetPruneTracking();
+    T.ensureHostInit();
+    // victim cleanup so downstream counts stay stable (identity keys are
+    // long-retained now, so clear them explicitly)
+    delete pk._store.participants.flick1;
+    try {
+      delete S().scores.flick1;
+      delete S().customNames.flick1;
+    } catch {}
+    T.resetPruneTracking();
+  }
+}
+// --- rejoin continuity: same device key under a rotated pid migrates home ---
+{
+  const T = globalThis.__BUZZER_TEST__;
+  S().deviceLinks = {};
+  T.resetPruneTracking();
+  const oldP = pk.makePlayer("rejoin1", "Rejoiner");
+  pk._store.participants.rejoin1 = oldP;
+  S().scores = { ...(S().scores || {}), rejoin1: 2000, "coop:rejoin1:1": 500 };
+  S().customNames = { ...(S().customNames || {}), rejoin1: "Renamed" };
+  S().teamAssignments = { ...(S().teamAssignments || {}), rejoin1: "red" };
+  const roundBefore = S().round || {};
+  S().round = { ...roundBefore, buzzedPlayerIds: [...(roundBefore.buzzedPlayerIds || []), "rejoin1"] };
+  S().gameLog = [
+    ...(S().gameLog || []),
+    { id: "rejoin-log", type: "buzz", playerId: "rejoin1", scoreKey: "rejoin1", awardedDelta: 2000, resolved: true },
+  ];
+  const linkRes = await pk._store.rpc["link-device"]({ key: "raw-key-aaa" }, oldP);
+  check("link-device ok", linkRes?.ok === true, JSON.stringify(linkRes));
+  check("link stores hash not raw", S().deviceLinks?.rejoin1 === T.hashDeviceKey("raw-key-aaa") && S().deviceLinks?.rejoin1 !== "raw-key-aaa", JSON.stringify(S().deviceLinks?.rejoin1));
+  const badLink = await pk._store.rpc["link-device"]({ key: "" }, oldP);
+  check("link rejects bad key", badLink?.ok === false, JSON.stringify(badLink));
+  const spoof = await pk._store.rpc["link-device"]({ key: "raw-key-aaa" }, impostor);
+  check("link binds sender not payload", spoof?.ok === true && S().deviceLinks?.rejoin1 === T.hashDeviceKey("raw-key-aaa"), JSON.stringify(S().deviceLinks));
+  // rotate pid (rejoin): same device, new Playroom id, pre-existing balance
+  delete pk._store.participants.rejoin1;
+  const newP = pk.makePlayer("rejoin2", "Rejoiner");
+  pk._store.participants.rejoin2 = newP;
+  S().scores = { ...(S().scores || {}), rejoin2: 300 };
+  await pk._store.rpc["link-device"]({ key: "raw-key-aaa" }, newP);
+  T.ensureHostInit();
+  check("rejoin migrates score (summed)", S().scores?.rejoin2 === 2300, JSON.stringify(S().scores?.rejoin2));
+  check("rejoin migrates coop slot", S().scores?.["coop:rejoin2:1"] === 500, JSON.stringify(S().scores?.["coop:rejoin2:1"]));
+  check("rejoin clears old keys", S().scores?.rejoin1 === undefined && S().scores?.["coop:rejoin1:1"] === undefined, JSON.stringify([S().scores?.rejoin1, S().scores?.["coop:rejoin1:1"]]));
+  check("rejoin migrates name", S().customNames?.rejoin2 === "Renamed" && S().customNames?.rejoin1 === undefined, JSON.stringify(S().customNames?.rejoin2));
+  check("rejoin migrates team", S().teamAssignments?.rejoin2 === "red" && S().teamAssignments?.rejoin1 === undefined, JSON.stringify(S().teamAssignments?.rejoin2));
+  check("rejoin remaps buzzed ids", (S().round?.buzzedPlayerIds || []).includes("rejoin2") && !(S().round?.buzzedPlayerIds || []).includes("rejoin1"), JSON.stringify(S().round?.buzzedPlayerIds));
+  const movedEntry = (S().gameLog || []).find((e) => e.id === "rejoin-log");
+  check("rejoin remaps log attribution", movedEntry?.playerId === "rejoin2" && movedEntry?.scoreKey === "rejoin2", JSON.stringify(movedEntry));
+  check("rejoin repoints links", S().deviceLinks?.rejoin1 === undefined, JSON.stringify(S().deviceLinks?.rejoin1));
+  // different device key -> no migration
+  const oldQ = pk.makePlayer("rejoinQ1", "Q");
+  pk._store.participants.rejoinQ1 = oldQ;
+  S().scores = { ...(S().scores || {}), rejoinQ1: 900 };
+  await pk._store.rpc["link-device"]({ key: "raw-key-Q" }, oldQ);
+  delete pk._store.participants.rejoinQ1;
+  const newR = pk.makePlayer("rejoinR1", "R");
+  pk._store.participants.rejoinR1 = newR;
+  await pk._store.rpc["link-device"]({ key: "raw-key-R" }, newR);
+  T.ensureHostInit();
+  check("different key migrates nothing", S().scores?.rejoinR1 === undefined && S().scores?.rejoinQ1 === 900, `${JSON.stringify(S().scores?.rejoinR1)} ${JSON.stringify(S().scores?.rejoinQ1)}`);
+  // two live tabs sharing a key -> freeze, no steal; loser leaves -> migrate
+  const oldC = pk.makePlayer("rejoinC1", "C");
+  pk._store.participants.rejoinC1 = oldC;
+  S().scores = { ...(S().scores || {}), rejoinC1: 700 };
+  await pk._store.rpc["link-device"]({ key: "raw-key-C" }, oldC);
+  delete pk._store.participants.rejoinC1;
+  const newD = pk.makePlayer("rejoinD1", "D");
+  pk._store.participants.rejoinD1 = newD;
+  await pk._store.rpc["link-device"]({ key: "raw-key-C" }, newD);
+  pk._store.participants.rejoinC1 = oldC; // old tab wakes before the tick
+  T.ensureHostInit();
+  check("live conflict freezes", S().scores?.rejoinC1 === 700 && S().scores?.rejoinD1 === undefined, `${JSON.stringify(S().scores?.rejoinC1)} ${JSON.stringify(S().scores?.rejoinD1)}`);
+  delete pk._store.participants.rejoinC1; // loser leaves -> survivor inherits
+  T.ensureHostInit();
+  check("survivor inherits", S().scores?.rejoinD1 === 700 && S().scores?.rejoinC1 === undefined, `${JSON.stringify(S().scores?.rejoinD1)} ${JSON.stringify(S().scores?.rejoinC1)}`);
+  // producer id follows a rejoining producer device
+  const oldProdP = pk.makePlayer("rejoinP1", "P");
+  pk._store.participants.rejoinP1 = oldProdP;
+  S().scores = { ...(S().scores || {}), rejoinP1: 100 };
+  S().producerIds = [...(S().producerIds || []), "rejoinP1"];
+  await pk._store.rpc["link-device"]({ key: "raw-key-P" }, oldProdP);
+  delete pk._store.participants.rejoinP1;
+  const newProdP = pk.makePlayer("rejoinP2", "P");
+  pk._store.participants.rejoinP2 = newProdP;
+  await pk._store.rpc["link-device"]({ key: "raw-key-P" }, newProdP);
+  T.ensureHostInit();
+  check("producer follows rejoin", (S().producerIds || []).includes("rejoinP2") && !(S().producerIds || []).includes("rejoinP1"), JSON.stringify(S().producerIds));
+  check("producer score follows", S().scores?.rejoinP2 === 100, JSON.stringify(S().scores?.rejoinP2));
+  // cleanup: drop fixtures and their identity keys
+  for (const id of ["rejoin2", "rejoinQ1", "rejoinR1", "rejoinC1", "rejoinD1", "rejoinP2", "impostor"]) {
+    delete pk._store.participants[id];
+    try {
+      for (const k of Object.keys(S().scores || {})) {
+        if (k === id || String(k).startsWith(`coop:${id}:`)) delete S().scores[k];
+      }
+      delete S().customNames[id];
+      delete S().teamAssignments[id];
+      delete S().deviceLinks[id];
+      S().producerIds = (S().producerIds || []).filter((x) => x !== id);
+    } catch {}
+  }
+  try {
+    S().gameLog = (S().gameLog || []).filter((e) => e.id !== "rejoin-log");
+    S().round = { ...(S().round || {}), buzzedPlayerIds: (S().round?.buzzedPlayerIds || []).filter((x) => !String(x).startsWith("rejoin")) };
+  } catch {}
+  S().deviceLinks = {};
+  T.resetPruneTracking();
+  T.ensureHostInit();
+}
+// --- deviceLinks cap: churned departed entries stay bounded ---
+{
+  S().deviceLinks = {};
+  for (let i = 0; i < 505; i++) {
+    const ghost = pk.makePlayer(`ghost${i}`, `Ghost${i}`);
+    await pk._store.rpc["link-device"]({ key: `raw-ghost-key-${i}` }, ghost);
+  }
+  check("deviceLinks capped", Object.keys(S().deviceLinks || {}).length <= 500, String(Object.keys(S().deviceLinks || {}).length));
+  S().deviceLinks = {};
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

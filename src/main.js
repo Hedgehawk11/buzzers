@@ -112,6 +112,7 @@ const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500
 
 const app = document.querySelector("#app") || document.getElementById("app");
 const NAME_KEY = "buzzer_player_name";
+const DEVICE_ID_KEY = "buzzer_device_id";
 let gameLaunched = false;
 let clientMode = "player";
 let buzzNotice = "";
@@ -181,6 +182,26 @@ const PRODUCER_PASSWORD_KEY = "buzzer_producer_password";
 // Persisted in localStorage so a same-device host reload keeps the code;
 // a new host device generates a fresh one.
 let hostProducerPassword = "";
+// Host prune grace (module-local, never shared): ensureHostInit runs every
+// second off a single getParticipants() snapshot, and a transient gap (WiFi
+// blip, Playroom eventual-consistency, backgrounded host tab) used to
+// permanently delete that player's scores + custom name on the very next
+// tick. departedPresenceCounts tracks consecutive ticks each known device id
+// has been absent; only ids absent for HOST_PRUNE_GRACE_TICKS straight are
+// eligible for pruning. lastPruneRosterSize detects partial-list snapshots
+// (roster halving in one tick) so a bad snapshot prunes nothing at all.
+const HOST_PRUNE_GRACE_TICKS = 5;
+// Slow-rejoin retention for identity state: a device that reboots or drops
+// for minutes (past the 5-tick flow prune) must still find its scores, name
+// and roster waiting when it links back with the same device key. Only a
+// rejoin-migration or an explicit host reset clears these sooner.
+const HOST_RETAIN_TICKS = 300;
+// Cap for the deviceLinks map (pid -> key hash). Link entries are never
+// absence-pruned (a late rejoin still needs its hash group); the cap bounds
+// pathological churn instead.
+const DEVICE_LINKS_CAP = 500;
+const departedPresenceCounts = new Map();
+let lastPruneRosterSize = null;
 
 const F_YOU_EASTER_EGG_H2 = "Congratulations! You typed F*** You!";
 
@@ -5907,12 +5928,513 @@ function assignControllerIfNeeded() {
   setState("controllerId", self.id, true);
 }
 
+// Every per-device id currently referenced by shared state (score owners,
+// rosters, names, producer/power lists, team + round bookkeeping). team:*
+// keys are balances, not devices, and are never candidates.
+function collectPruneCandidateIds() {
+  const ids = new Set();
+  try {
+    for (const id of Object.keys(getCoopRosters() || {})) ids.add(id);
+    for (const key of Object.keys(getScores() || {})) {
+      if (String(key).startsWith("team:")) continue;
+      const parsed = parseCoopScoreKey(key);
+      ids.add(parsed ? parsed.deviceId : key);
+    }
+    for (const id of Object.keys(getCustomNames() || {})) ids.add(id);
+    for (const id of getSafeState("producerIds", []) || []) {
+      if (typeof id === "string") ids.add(id);
+    }
+    const s = getSettings();
+    for (const id of [...(s.kickedPlayerIds || []), ...(s.screwBlockedPlayerIds || [])]) {
+      if (typeof id === "string") ids.add(id);
+    }
+    for (const id of Object.keys(getTeamAssignments() || {})) ids.add(id);
+    const round = getRound();
+    for (const id of round.buzzedPlayerIds || []) {
+      const parsed = parseCoopScoreKey(id);
+      ids.add(parsed ? parsed.deviceId : id);
+    }
+    if (round.coopControl) {
+      const parsed = parseCoopScoreKey(round.coopControl);
+      ids.add(parsed ? parsed.deviceId : round.coopControl);
+    }
+    for (const key of Object.keys(getCoopMoods() || {})) {
+      const parsed = parseCoopScoreKey(key);
+      if (parsed) ids.add(parsed.deviceId);
+    }
+    for (const id of Object.keys(getCoopLastCorrect() || {})) ids.add(id);
+  } catch {}
+  return ids;
+}
+
+// Advance the absence counters for one stable tick and return the ids that
+// have now been absent long enough to prune. Present ids reset to zero.
+function advancePresenceAndGetPrunable(activeIds, candidateIds) {
+  const prunable = new Set();
+  for (const id of activeIds) departedPresenceCounts.delete(id);
+  for (const id of candidateIds) {
+    if (activeIds.has(id)) {
+      departedPresenceCounts.delete(id);
+      continue;
+    }
+    const n = (departedPresenceCounts.get(id) || 0) + 1;
+    departedPresenceCounts.set(id, n);
+    if (n >= HOST_PRUNE_GRACE_TICKS) prunable.add(id);
+  }
+  // Bound the map: drop entries for ids nobody references anymore.
+  for (const id of [...departedPresenceCounts.keys()]) {
+    if (activeIds.has(id) || !candidateIds.has(id)) departedPresenceCounts.delete(id);
+  }
+  return prunable;
+}
+
+// True when the snapshot can't be trusted for destructive writes: empty, or
+// the roster halved in a single tick (partial getParticipants() list).
+function isRosterSnapshotUnstable(activeIds) {
+  if (activeIds.size === 0) return true;
+  if (lastPruneRosterSize != null && lastPruneRosterSize >= 2 && activeIds.size * 2 <= lastPruneRosterSize) return true;
+  return false;
+}
+
+// Ids absent past the slow-rejoin retention window. Scores, names, rosters
+// and link entries survive the fast flow prune this long so a rebooting
+// device still migrates home; only then are they treated as truly gone.
+function getExpiredIds() {
+  const expired = new Set();
+  for (const [id, n] of departedPresenceCounts) {
+    if (n >= HOST_RETAIN_TICKS) expired.add(id);
+  }
+  return expired;
+}
+
+// =============================================================================
+// Stable device identity — survives PlayroomKit pid rotation on rejoin.
+// A device keeps a random key in localStorage and sends the RAW key only to
+// the host (link-device RPC, sender-authenticated). Shared state holds just
+// a hash (cyrb53 of 128-bit entropy: unclonable from the broadcast), plus a
+// broadcast hash per player so an old tab that wakes without re-linking is
+// still attributable (two live tabs sharing a hash = conflict, freeze).
+// =============================================================================
+function getOrCreateDeviceKey() {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_KEY);
+    if (typeof existing === "string" && /^[0-9a-f]{32}$/.test(existing)) return existing;
+  } catch {}
+  let hex = "";
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      const buf = new Uint8Array(16);
+      crypto.getRandomValues(buf);
+      hex = [...buf].map((b) => b.toString(16).padStart(2, "0")).join("");
+    }
+  } catch {}
+  if (!/^[0-9a-f]{32}$/.test(hex)) {
+    hex = "";
+    for (let i = 0; i < 32; i++) hex += Math.floor(Math.random() * 16).toString(16);
+  }
+  try { localStorage.setItem(DEVICE_ID_KEY, hex); } catch {}
+  return hex;
+}
+
+// Non-secret device fingerprint safe to broadcast (preimage needs the raw
+// 128-bit key, which never enters readable state).
+function hashDeviceKey(key) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  const s = String(key || "");
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+}
+
+function getDeviceLinks() {
+  const links = getSafeState("deviceLinks", {});
+  return links && typeof links === "object" ? links : {};
+}
+
+// Remap one pid-keyed track/score key to a new owner. team:* balances are
+// not device keys and pass through untouched.
+function remapTrackKey(key, fromPid, toPid) {
+  if (key === fromPid) return toPid;
+  if (typeof key === "string" && key.startsWith("coop:")) {
+    const parsed = parseCoopScoreKey(key);
+    if (parsed && parsed.deviceId === fromPid) return `coop:${toPid}:${parsed.slot}`;
+  }
+  return key;
+}
+
+function swapIdInList(list, fromPid, toPid) {
+  if (!Array.isArray(list)) return list;
+  const next = list.map((id) => (id === fromPid ? toPid : id));
+  return [...new Set(next)];
+}
+
+// Move every scrap of per-device state from a departed pid to its live
+// successor. Scores SUM on collision (never overwrite earned points); names,
+// rosters and assignments keep the live pid's own values when present.
+function migrateDeviceState(fromPid, toPid) {
+  if (!fromPid || !toPid || fromPid === toPid) return false;
+  let changed = false;
+  try {
+    const scores = getScores();
+    const nextScores = {};
+    Object.entries(scores || {}).forEach(([key, value]) => {
+      const nextKey = remapTrackKey(key, fromPid, toPid);
+      if (nextKey !== key) {
+        nextScores[nextKey] = (Number(nextScores[nextKey]) || 0) + (Number(value) || 0);
+        changed = true;
+      } else {
+        nextScores[key] = (Number(nextScores[key]) || 0) + (Number(value) || 0);
+      }
+    });
+    if (changed && JSON.stringify(nextScores) !== JSON.stringify(scores)) {
+      setState("scores", nextScores, true);
+    }
+  } catch {}
+  try {
+    const names = getCustomNames();
+    if (names[fromPid] !== undefined && names[toPid] === undefined) {
+      const next = { ...(names || {}) };
+      next[toPid] = next[fromPid];
+      delete next[fromPid];
+      setState("customNames", next, true);
+      changed = true;
+    } else if (names[fromPid] !== undefined) {
+      const next = { ...(names || {}) };
+      delete next[fromPid];
+      setState("customNames", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const rosters = getCoopRosters();
+    if (rosters[fromPid] !== undefined && rosters[toPid] === undefined) {
+      const next = { ...(rosters || {}) };
+      next[toPid] = next[fromPid];
+      delete next[fromPid];
+      setState("coopRosters", next, true);
+      changed = true;
+    } else if (rosters[fromPid] !== undefined) {
+      const next = { ...(rosters || {}) };
+      delete next[fromPid];
+      setState("coopRosters", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const assignments = getTeamAssignments();
+    if (assignments[fromPid] !== undefined && assignments[toPid] === undefined) {
+      const next = { ...(assignments || {}) };
+      next[toPid] = next[fromPid];
+      delete next[fromPid];
+      setState("teamAssignments", next, true);
+      changed = true;
+    } else if (assignments[fromPid] !== undefined) {
+      const next = { ...(assignments || {}) };
+      delete next[fromPid];
+      setState("teamAssignments", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const s = getSettings();
+    const next = { ...s };
+    let touched = false;
+    for (const field of ["kickedPlayerIds", "screwBlockedPlayerIds", "disabledPlayerIds"]) {
+      if (Array.isArray(next[field]) && next[field].includes(fromPid)) {
+        next[field] = swapIdInList(next[field], fromPid, toPid);
+        touched = true;
+      }
+    }
+    if (touched) {
+      setState("settings", next, true);
+      changed = true;
+    }
+  } catch {}
+  // producerIds lives top-level (not inside settings).
+  try {
+    const pids = getSafeState("producerIds", []);
+    if (Array.isArray(pids) && pids.includes(fromPid)) {
+      setState("producerIds", swapIdInList(pids, fromPid, toPid), true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    if (getControllerId() === fromPid) {
+      setState("controllerId", toPid, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const round = getRound();
+    let next = null;
+    if (Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.some((id) => remapTrackKey(id, fromPid, toPid) !== id)) {
+      next = { ...(next || round) };
+      next.buzzedPlayerIds = round.buzzedPlayerIds.map((id) => remapTrackKey(id, fromPid, toPid));
+    }
+    if (round.coopControl && remapTrackKey(round.coopControl, fromPid, toPid) !== round.coopControl) {
+      next = { ...(next || round) };
+      next.coopControl = remapTrackKey(round.coopControl, fromPid, toPid);
+    }
+    if (round.winnerCoopKey && remapTrackKey(round.winnerCoopKey, fromPid, toPid) !== round.winnerCoopKey) {
+      next = { ...(next || round) };
+      next.winnerCoopKey = remapTrackKey(round.winnerCoopKey, fromPid, toPid);
+    }
+    if (round.screw && (round.screw.screwerId === fromPid || round.screw.screweeId === fromPid)) {
+      next = { ...(next || round) };
+      next.screw = { ...round.screw };
+      if (next.screw.screwerId === fromPid) next.screw.screwerId = toPid;
+      if (next.screw.screweeId === fromPid) next.screw.screweeId = toPid;
+    }
+    if (Array.isArray(round.screwsUsedBy) && round.screwsUsedBy.includes(fromPid)) {
+      next = { ...(next || round) };
+      next.screwsUsedBy = swapIdInList(round.screwsUsedBy, fromPid, toPid);
+    }
+    if (next) {
+      setState("round", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const log = getSafeState("gameLog", []);
+    if (Array.isArray(log)) {
+      let touched = false;
+      const next = log.map((e) => {
+        if (!e || typeof e !== "object") return e;
+        let out = e;
+        if (e.playerId === fromPid) { out = { ...out, playerId: toPid }; touched = true; }
+        for (const f of ["scoreKey", "coopKey", "screwerScoreKey"]) {
+          if (typeof out[f] === "string" && remapTrackKey(out[f], fromPid, toPid) !== out[f]) {
+            out = { ...out, [f]: remapTrackKey(out[f], fromPid, toPid) };
+            touched = true;
+          }
+        }
+        return out;
+      });
+      if (touched) {
+        setState("gameLog", next, true);
+        changed = true;
+      }
+    }
+  } catch {}
+  try {
+    const moods = getCoopMoods();
+    const next = {};
+    let touched = false;
+    Object.entries(moods || {}).forEach(([key, value]) => {
+      const nk = remapTrackKey(key, fromPid, toPid);
+      if (nk !== key) touched = true;
+      next[nk] = value;
+    });
+    if (touched) {
+      setState("coopMoods", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const lastCorrect = getCoopLastCorrect();
+    if (lastCorrect[fromPid] !== undefined) {
+      const next = { ...(lastCorrect || {}) };
+      if (next[toPid] === undefined) next[toPid] = next[fromPid];
+      delete next[fromPid];
+      setState("coopLastCorrect", next, true);
+      changed = true;
+    }
+  } catch {}
+  // Minigame tracks (bingo / disordat / fibbage / quixort) are keyed by the
+  // same track rule: coop slot-key, shared-team color, else pid.
+  try {
+    const bingo = getBingo();
+    let next = null;
+    const remapMap = (obj) => {
+      const out = {};
+      let t = false;
+      Object.entries(obj || {}).forEach(([k, v]) => {
+        const nk = remapTrackKey(k, fromPid, toPid);
+        if (nk !== k) t = true;
+        out[nk] = v;
+      });
+      return { out, t };
+    };
+    for (const f of ["playerItems", "collectedCounts"]) {
+      const { out, t } = remapMap(bingo[f]);
+      if (t) { next = { ...(next || bingo) }; next[f] = out; }
+    }
+    if (bingo.scoredTracks && typeof bingo.scoredTracks === "object") {
+      const out = {};
+      let t = false;
+      Object.entries(bingo.scoredTracks).forEach(([k, v]) => {
+        const nv = Array.isArray(v) ? v.map((id) => remapTrackKey(id, fromPid, toPid)) : v;
+        if (JSON.stringify(nv) !== JSON.stringify(v)) t = true;
+        out[k] = nv;
+      });
+      if (t) { next = { ...(next || bingo) }; next.scoredTracks = out; }
+    }
+    if (bingo.coopLockout && typeof bingo.coopLockout === "object") {
+      const out = {};
+      let t = false;
+      Object.entries(bingo.coopLockout).forEach(([k, v]) => {
+        const nk = remapTrackKey(k, fromPid, toPid);
+        const nv = typeof v === "string" ? remapTrackKey(v, fromPid, toPid) : v;
+        if (nk !== k || nv !== v) t = true;
+        out[nk] = nv;
+      });
+      if (t) { next = { ...(next || bingo) }; next.coopLockout = out; }
+    }
+    if (typeof bingo.winner === "string" && remapTrackKey(bingo.winner, fromPid, toPid) !== bingo.winner) {
+      next = { ...(next || bingo) };
+      next.winner = remapTrackKey(bingo.winner, fromPid, toPid);
+    }
+    if (next) {
+      setState("bingo", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const dd = getDisOrDat();
+    let next = null;
+    for (const f of ["responses", "pointsEarned", "jackBonus"]) {
+      const out = {};
+      let t = false;
+      Object.entries(dd[f] || {}).forEach(([k, v]) => {
+        const nk = remapTrackKey(k, fromPid, toPid);
+        if (nk !== k) t = true;
+        out[nk] = v;
+      });
+      if (t) { next = { ...(next || dd) }; next[f] = out; }
+    }
+    if (Array.isArray(dd.finishedPlayerIds) && dd.finishedPlayerIds.some((id) => remapTrackKey(id, fromPid, toPid) !== id)) {
+      next = { ...(next || dd) };
+      next.finishedPlayerIds = dd.finishedPlayerIds.map((id) => remapTrackKey(id, fromPid, toPid));
+    }
+    if (dd.claims && typeof dd.claims === "object") {
+      const out = {};
+      let t = false;
+      Object.entries(dd.claims).forEach(([k, v]) => {
+        const nv = typeof v === "string" ? remapTrackKey(v, fromPid, toPid) : v;
+        if (nv !== v) t = true;
+        out[k] = nv;
+      });
+      if (t) { next = { ...(next || dd) }; next.claims = out; }
+    }
+    if (dd.activePlayerId === fromPid) { next = { ...(next || dd) }; next.activePlayerId = toPid; }
+    if (typeof dd.activeCoopKey === "string" && remapTrackKey(dd.activeCoopKey, fromPid, toPid) !== dd.activeCoopKey) {
+      next = { ...(next || dd) };
+      next.activeCoopKey = remapTrackKey(dd.activeCoopKey, fromPid, toPid);
+    }
+    if (next) {
+      setState("disordat", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const fb = getFibbage();
+    let next = null;
+    for (const f of ["lies", "blocked", "lieErrors", "votes", "pointsEarned"]) {
+      const out = {};
+      let t = false;
+      Object.entries(fb[f] || {}).forEach(([k, v]) => {
+        const nk = remapTrackKey(k, fromPid, toPid);
+        if (nk !== k) t = true;
+        out[nk] = v;
+      });
+      if (t) { next = { ...(next || fb) }; next[f] = out; }
+    }
+    if (Array.isArray(fb.choices) && fb.choices.some((c) => c && c.authorKey === fromPid)) {
+      next = { ...(next || fb) };
+      next.choices = fb.choices.map((c) => (c && c.authorKey === fromPid ? { ...c, authorKey: toPid } : c));
+    }
+    if (next) {
+      setState("fibbage", next, true);
+      changed = true;
+    }
+  } catch {}
+  try {
+    const qx = getQuixort();
+    let next = null;
+    if (Array.isArray(qx.expectedTracks) && qx.expectedTracks.some((t) => remapTrackKey(t, fromPid, toPid) !== t)) {
+      next = { ...(next || qx) };
+      next.expectedTracks = qx.expectedTracks.map((t) => remapTrackKey(t, fromPid, toPid));
+    }
+    if (qx.runs && typeof qx.runs === "object") {
+      const out = {};
+      let t = false;
+      Object.entries(qx.runs).forEach(([k, v]) => {
+        const nk = remapTrackKey(k, fromPid, toPid);
+        if (nk !== k) t = true;
+        out[nk] = v;
+      });
+      if (t) { next = { ...(next || qx) }; next.runs = out; }
+    }
+    if (next) {
+      setState("quixort", next, true);
+      changed = true;
+    }
+  } catch {}
+  if (changed) {
+    try { console.warn(`[hostInit] rejoin migrated ${fromPid} -> ${toPid}`); } catch {}
+  }
+  return changed;
+}
+
+// Match departed pids back to their live successor by device hash. Exactly
+// one live owner per hash migrates; zero (all gone) or 2+ (two live tabs)
+// migrates nothing. Stateless and idempotent: repeated ticks no-op once the
+// departed pid's keys have moved.
+function reconcileDeviceLinks(activeIds) {
+  try {
+    const links = getDeviceLinks();
+    const linkPids = Object.keys(links || {});
+    if (linkPids.length === 0) return;
+    const hashOf = {};
+    linkPids.forEach((pid) => { hashOf[pid] = links[pid]; });
+    // A live tab that woke without re-linking still broadcasts its hash.
+    for (const p of currentParticipants()) {
+      try {
+        const h = p?.getState?.("deviceHash");
+        if (typeof h === "string" && h && hashOf[p.id] === undefined) hashOf[p.id] = h;
+      } catch {}
+    }
+    const byHash = new Map();
+    for (const [pid, h] of Object.entries(hashOf)) {
+      if (typeof h !== "string" || !h) continue;
+      if (!byHash.has(h)) byHash.set(h, []);
+      byHash.get(h).push(pid);
+    }
+    for (const [, pids] of byHash) {
+      if (pids.length < 2) continue;
+      const live = pids.filter((id) => activeIds.has(id));
+      if (live.length !== 1) continue;
+      const toPid = live[0];
+      const nextLinks = { ...getDeviceLinks() };
+      let linksTouched = false;
+      for (const fromPid of pids) {
+        if (fromPid === toPid) continue;
+        if (activeIds.has(fromPid)) continue;
+        migrateDeviceState(fromPid, toPid);
+        // Re-point the map so the next tick is a no-op (the departed pid's
+        // keys now live under toPid).
+        if (nextLinks[fromPid] !== undefined) {
+          delete nextLinks[fromPid];
+          linksTouched = true;
+        }
+        departedPresenceCounts.delete(fromPid);
+      }
+      if (linksTouched) setState("deviceLinks", nextLinks, true);
+    }
+  } catch {}
+}
+
 // Ensure all shared state keys exist and are consistent
 function ensureHostInit() {
   if (!isHost()) {
     return;
   }
-  if (!getState("settings")) {
+  if (getState("settings") === undefined || getState("settings") === null) {
     const teamModeEnabled = hostPrejoinTeamSetting !== "off";
     const teamScoringMode = hostPrejoinTeamSetting === "shared" ? "shared" : "alliance";
     setState(
@@ -5948,7 +6470,7 @@ function ensureHostInit() {
       setState("settings", { ...s, teamScoringMode: "alliance" }, true);
     }
   } catch {}
-  if (!getState("round")) {
+  if (getState("round") === undefined || getState("round") === null) {
     resetRound();
   } else {
     // Backfill the round counter / pause marker for rooms created before them.
@@ -5963,38 +6485,70 @@ function ensureHostInit() {
       }
     } catch {}
   }
-  if (!getState("scores")) {
+  if (getState("scores") === undefined || getState("scores") === null) {
     setState("scores", {}, true);
   }
-  if (!getState("gameLog")) {
+  if (getState("gameLog") === undefined || getState("gameLog") === null) {
     setState("gameLog", [], true);
   }
   if (getState("pendingLogId") === undefined) {
     setState("pendingLogId", null, true);
   }
-  if (!getState("bingo")) {
+  if (getState("bingo") === undefined || getState("bingo") === null) {
     setState("bingo", getBingo(), true);
   }
-  if (!getState("teamSelect")) {
+  if (getState("teamSelect") === undefined || getState("teamSelect") === null) {
     setState("teamSelect", freshTeamSelect(), true);
   }
-  if (!getState("coopRosters")) {
+  // Presence tracking for the prune grace below: computed once per tick from
+  // a single participant snapshot. An unstable snapshot (empty / halved
+  // roster) freezes the absence counters AND yields an empty prunable set,
+  // so no prune branch on this tick can delete anything.
+  const pruneActiveIds = new Set(currentParticipants().map((p) => p.id));
+  const pruneRosterUnstable = isRosterSnapshotUnstable(pruneActiveIds);
+  if (pruneRosterUnstable) {
+    try { console.warn(`[hostInit] skipping prune: unstable roster snapshot (seen=${pruneActiveIds.size}, baseline=${lastPruneRosterSize})`); } catch {}
+  } else {
+    lastPruneRosterSize = pruneActiveIds.size;
+  }
+  const prunableIds = pruneRosterUnstable
+    ? new Set()
+    : advancePresenceAndGetPrunable(pruneActiveIds, collectPruneCandidateIds());
+  // Slow-rejoin retention: scores, names and rosters outlive the fast flow
+  // prune by HOST_RETAIN_TICKS so a rebooting device still migrates home.
+  const expiredIds = pruneRosterUnstable ? new Set() : getExpiredIds();
+  // Rejoin reconciliation runs BEFORE any prune write on this tick so a
+  // device that just linked back under a new pid inherits its old keys
+  // while they are still (retained) live.
+  try { reconcileDeviceLinks(pruneActiveIds); } catch {}
+  // Recently-absent ids count as present for power-list normalization so a
+  // flicker doesn't silently unkick/unblock/unteach. When the snapshot is
+  // unstable prunableIds is empty, so every referenced id counts as present
+  // and normalization is a strict no-op.
+  const pruneEffectivePlayers = [
+    ...currentParticipants(),
+    ...[...collectPruneCandidateIds()].filter((id) => !pruneActiveIds.has(id) && !prunableIds.has(id)).map((id) => ({ id })),
+  ];
+  if (getState("coopRosters") === undefined || getState("coopRosters") === null) {
     setState("coopRosters", {}, true);
   } else {
-    // Prune rosters for devices that left the room.
-    const activeIds = new Set(currentParticipants().map((p) => p.id));
+    // Rosters are identity state: retained for the slow-rejoin window so a
+    // returning device migrates home with its slots intact.
     const rosters = getCoopRosters();
     const pruned = {};
     Object.entries(rosters || {}).forEach(([id, roster]) => {
-      if (activeIds.has(id)) pruned[id] = roster;
+      if (!expiredIds.has(id)) pruned[id] = roster;
     });
     if (Object.keys(pruned).length !== Object.keys(rosters || {}).length) {
+      try { console.warn(`[hostInit] pruned coopRosters for ${[...expiredIds].filter((id) => !(id in pruned) && (id in (rosters || {}))).join(",")}`); } catch {}
       setState("coopRosters", pruned, true);
     }
     // Prune score keys of departed devices (pid + coop:pid:*). Live keys for
     // the controller/producers are kept; team:* legacy balances are untouched.
+    // Identity keys are retained for the slow-rejoin window; only expired
+    // ids are finally dropped.
     try {
-      const keepIds = new Set([...activeIds, getControllerId(), ...(getSafeState("producerIds", []) || [])]);
+      const keepIds = new Set([getControllerId(), ...(getSafeState("producerIds", []) || [])]);
       const scores = getScores();
       const prunedScores = {};
       Object.entries(scores || {}).forEach(([key, value]) => {
@@ -6004,17 +6558,18 @@ function ensureHostInit() {
         }
         const parsed = parseCoopScoreKey(key);
         const deviceId = parsed ? parsed.deviceId : key;
-        if (keepIds.has(deviceId)) prunedScores[key] = value;
+        if (keepIds.has(deviceId) || !expiredIds.has(deviceId)) prunedScores[key] = value;
       });
       if (Object.keys(prunedScores).length !== Object.keys(scores || {}).length) {
+        try { console.warn(`[hostInit] pruned scores for ${Object.keys(scores || {}).filter((k) => !(k in prunedScores)).join(",")}`); } catch {}
         setState("scores", prunedScores, true);
       }
     } catch {}
   }
-  if (!getState("coopMoods")) {
+  if (getState("coopMoods") === undefined || getState("coopMoods") === null) {
     setState("coopMoods", {}, true);
   }
-  if (!getState("coopLastCorrect")) {
+  if (getState("coopLastCorrect") === undefined || getState("coopLastCorrect") === null) {
     setState("coopLastCorrect", {}, true);
   }
   if (getState("customNames") === undefined) {
@@ -6022,27 +6577,36 @@ function ensureHostInit() {
   } else {
     try {
       const names = getCustomNames();
-      const liveIds = new Set(currentParticipants().map((p) => p.id));
+      const keepNameIds = new Set([getControllerId(), ...(getSafeState("producerIds", []) || [])]);
       const pruned = {};
       Object.entries(names || {}).forEach(([id, name]) => {
-        if (liveIds.has(id) && typeof name === "string" && name.trim()) pruned[id] = String(name).trim().slice(0, 32);
+        if (typeof name === "string" && name.trim() && (keepNameIds.has(id) || !expiredIds.has(id))) pruned[id] = String(name).trim().slice(0, 32);
       });
-      if (JSON.stringify(pruned) !== JSON.stringify(names)) setState("customNames", pruned, true);
+      if (JSON.stringify(pruned) !== JSON.stringify(names)) {
+        try { console.warn(`[hostInit] pruned customNames for ${Object.keys(names || {}).filter((k) => !(k in pruned)).join(",")}`); } catch {}
+        setState("customNames", pruned, true);
+      }
     } catch {}
   }
+  // Device-link map (pid -> device-hash) for rejoin reconciliation. Seeded
+  // once; entries are never absence-pruned (a late rejoin still needs its
+  // hash group) — the link handler caps the map instead.
+  if (getState("deviceLinks") === undefined || getState("deviceLinks") === null) {
+    setState("deviceLinks", {}, true);
+  }
   // Normalize per-player host-power lists (kicked / screw-blocked) against
-  // live participants so departed devices don't linger.
+  // live participants so departed devices don't linger. Recently-absent ids
+  // count as present until the grace window elapses.
   try {
-    const livePlayers = currentParticipants();
     const liveController = getControllerId();
     const s = getSettings();
-    const nextKicked = normalizeKickedPlayerIds(s.kickedPlayerIds, livePlayers, liveController);
-    const nextBlocked = normalizeScrewBlockedIds(s.screwBlockedPlayerIds, livePlayers, liveController);
+    const nextKicked = normalizeKickedPlayerIds(s.kickedPlayerIds, pruneEffectivePlayers, liveController);
+    const nextBlocked = normalizeScrewBlockedIds(s.screwBlockedPlayerIds, pruneEffectivePlayers, liveController);
     if (JSON.stringify(nextKicked) !== JSON.stringify(s.kickedPlayerIds || []) || JSON.stringify(nextBlocked) !== JSON.stringify(s.screwBlockedPlayerIds || [])) {
       setState("settings", { ...s, kickedPlayerIds: nextKicked, screwBlockedPlayerIds: nextBlocked }, true);
     }
   } catch {}
-  if (!getState("fibbage")) {
+  if (getState("fibbage") === undefined || getState("fibbage") === null) {
     setState("fibbage", freshFibbageState(), true);
   }
   // Producer password is host-local only (shared room state is readable by
@@ -6054,13 +6618,13 @@ function ensureHostInit() {
       setState("producerPassword", null, true);
     }
   } catch {}
-  if (!getState("producerIds")) {
+  if (getState("producerIds") === undefined || getState("producerIds") === null) {
     setState("producerIds", [], true);
   } else {
     const currentIds = getSafeState("producerIds", []);
-    const activeIds = currentParticipants().map((p) => p.id);
-    const cleaned = Array.isArray(currentIds) ? currentIds.filter((id) => activeIds.includes(id)) : [];
+    const cleaned = Array.isArray(currentIds) ? currentIds.filter((id) => pruneActiveIds.has(id) || !prunableIds.has(id)) : [];
     if (cleaned.length !== (Array.isArray(currentIds) ? currentIds.length : 0)) {
+      try { console.warn(`[hostInit] pruned producerIds for ${currentIds.filter((id) => !cleaned.includes(id)).join(",")}`); } catch {}
       setState("producerIds", cleaned, true);
     }
   }
@@ -6072,25 +6636,26 @@ function ensureHostInit() {
   }
   assignControllerIfNeeded();
   // Prune departed devices from live round + coop bookkeeping so a holder
-  // leaving can't orphan Jeopardy control or freeze buzz lists.
+  // leaving can't orphan Jeopardy control or freeze buzz lists. Only ids
+  // absent past the grace window are pruned; a flicker keeps its control
+  // and buzz slots until it either returns or the window elapses.
   try {
-    const liveIds = new Set(currentParticipants().map((p) => p.id));
     const round = getRound();
     let nextRound = null;
     if (Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.some((id) => {
       const parsed = parseCoopScoreKey(id);
-      return !liveIds.has(parsed ? parsed.deviceId : id);
+      return prunableIds.has(parsed ? parsed.deviceId : id);
     })) {
       nextRound = { ...(nextRound || round) };
       nextRound.buzzedPlayerIds = round.buzzedPlayerIds.filter((id) => {
         const parsed = parseCoopScoreKey(id);
-        return liveIds.has(parsed ? parsed.deviceId : id);
+        return !prunableIds.has(parsed ? parsed.deviceId : id);
       });
     }
     if (round.coopControl) {
       const parsed = parseCoopScoreKey(round.coopControl);
       const holder = parsed ? parsed.deviceId : round.coopControl;
-      if (!liveIds.has(holder)) {
+      if (prunableIds.has(holder)) {
         nextRound = { ...(nextRound || round), coopControl: null };
       }
     }
@@ -6099,7 +6664,7 @@ function ensureHostInit() {
     const prunedMoods = {};
     Object.entries(moods || {}).forEach(([key, value]) => {
       const parsed = parseCoopScoreKey(key);
-      if (!parsed || liveIds.has(parsed.deviceId)) prunedMoods[key] = value;
+      if (!parsed || !prunableIds.has(parsed.deviceId)) prunedMoods[key] = value;
     });
     if (Object.keys(prunedMoods).length !== Object.keys(moods || {}).length) {
       setState("coopMoods", prunedMoods, true);
@@ -6107,15 +6672,14 @@ function ensureHostInit() {
     const lastCorrect = getCoopLastCorrect();
     const prunedLast = {};
     Object.entries(lastCorrect || {}).forEach(([id, slot]) => {
-      if (liveIds.has(id)) prunedLast[id] = slot;
+      if (!prunableIds.has(id)) prunedLast[id] = slot;
     });
     if (Object.keys(prunedLast).length !== Object.keys(lastCorrect || {}).length) {
       setState("coopLastCorrect", prunedLast, true);
     }
   } catch {}
-  const players = currentParticipants();
   const controllerId = getControllerId();
-  const normalizedAssignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const normalizedAssignments = normalizeTeamAssignments(getTeamAssignments(), pruneEffectivePlayers, controllerId);
   const currentAssignments = getTeamAssignments();
   if (JSON.stringify(normalizedAssignments) !== JSON.stringify(currentAssignments)) {
     setState("teamAssignments", normalizedAssignments, true);
@@ -12308,6 +12872,24 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   if (clientMode === "display" || clientMode === "tablet_timer") {
     me().setState("isAudienceDisplay", true, true);
   }
+  // Stable device identity for rejoin continuity (players only — audience
+  // screens hold no per-device state). Broadcasts just the hash (safe);
+  // the raw key goes only to the host via link-device, and is re-sent once
+  // a few seconds later to cover a host handover mid-login.
+  try {
+    if (!isAudienceDisplayClient()) {
+      const deviceKey = getOrCreateDeviceKey();
+      try { me().setState("deviceHash", hashDeviceKey(deviceKey), true); } catch {}
+      const sendLink = () => {
+        try {
+          const p = RPC.call("link-device", { key: deviceKey }, RPC.Mode.HOST);
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        } catch {}
+      };
+      sendLink();
+      setTimeout(sendLink, 3000);
+    }
+  } catch {}
 
   RPC.register("buzz", async (payload, senderPlayer) => {
     if (!isHost()) {
@@ -12399,6 +12981,50 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       return { ok: false, reason: "Not host" };
     }
     return handleCoopRoster(senderPlayer, payload);
+  });
+
+  // Stable device identity: links the sender's authenticated pid to their
+  // device hash so a rejoin under a rotated pid migrates home. The raw key
+  // never enters readable state — only its hash is stored.
+  RPC.register("link-device", async (payload, senderPlayer) => {
+    if (!isHost()) {
+      return { ok: false, reason: "Not host" };
+    }
+    const pid = senderPlayer?.id;
+    const raw = payload?.key;
+    if (typeof pid !== "string" || !pid) return { ok: false, reason: "No sender." };
+    if (typeof raw !== "string" || raw.length < 1 || raw.length > 256) {
+      return { ok: false, reason: "Bad key." };
+    }
+    try {
+      const links = { ...getDeviceLinks() };
+      links[pid] = hashDeviceKey(raw);
+      // Cap the map: drop oldest entries for departed pids first.
+      const ids = Object.keys(links);
+      if (ids.length > DEVICE_LINKS_CAP) {
+        let liveIds = new Set();
+        try { liveIds = new Set(currentParticipants().map((p) => p.id)); } catch {}
+        const keep = {};
+        let dropped = 0;
+        for (const id of ids) {
+          if (ids.length - dropped <= DEVICE_LINKS_CAP) {
+            keep[id] = links[id];
+            continue;
+          }
+          if (liveIds.has(id)) {
+            keep[id] = links[id];
+          } else {
+            dropped++;
+          }
+        }
+        setState("deviceLinks", keep, true);
+      } else {
+        setState("deviceLinks", links, true);
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "Link failed." };
+    }
   });
 
   RPC.register("disordat-claim", async (payload, senderPlayer) => {
@@ -12596,3 +13222,22 @@ function boot() {
 
 
 boot();
+
+// Test seam for test-harness/run.mjs churn tests (no production use):
+// exposes ensureHostInit so flicker/leave/empty-snapshot cases can drive it
+// deterministically instead of waiting on the 1s interval.
+try {
+  globalThis.__BUZZER_TEST__ = globalThis.__BUZZER_TEST__ || {};
+  Object.assign(globalThis.__BUZZER_TEST__, {
+    ensureHostInit,
+    migrateDeviceState,
+    reconcileDeviceLinks,
+    hashDeviceKey,
+    resetPruneTracking: () => {
+      departedPresenceCounts.clear();
+      lastPruneRosterSize = null;
+    },
+    pruneGraceTicks: HOST_PRUNE_GRACE_TICKS,
+    retainTicks: HOST_RETAIN_TICKS,
+  });
+} catch {}
