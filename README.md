@@ -24,7 +24,7 @@ Music, Questions, everything except a scoreboard, who buzzed etc.
 Thanks captain obvious, I was mainly on the configurability of everything (seriously, go look at the options), now yes, this controller is reminicent of YDKJ2015's but hey, what else could I do?
 
 ### Can we have all in one instead of requiring a slideshow?
-No. at least not now, I do see the idea of one in the distant future, but thats when I decide, it would probably look like a question creator menu in a separate area (another main menu button) which lets you make a set there, then you import when creating a lobby.
+Yes, but its in beta so warning
 
 ### Alright, where is the snark in the messages
 You need to enable it in the settings, please read [This file](/src/snark.json) before turning on snark (it is what things will change to)
@@ -34,7 +34,6 @@ In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Bounce gamemode
  - BINGO/Wendit UI revamp
- - Episode creator
  - Some love to the main buzzers
  - Better UI 
  - YDKJ The Ride RNG preset for pick-a-value
@@ -42,10 +41,11 @@ In no particular order:
  - ~~whatever I think of the next time I shower~~ other cool stuff.
 
 ### How do you decide what to add?
-Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a few random qol and bug fixes changes added in as well
+Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a few random qol and bug fixes (and bugs) added in as well
 
 ### Tutorial?
-[Crappy tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
+[Crappy outdatedtutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
+
 #### Video tutorial?
 Possibly.
 
@@ -93,6 +93,9 @@ IDK possibly
 - PWA support
 - and probably more (soon!)
 
+### Why are you using gameshow terms in this thing
+Play JACK, then you will know
+
 ### Why?
 Because jackbox doesn't have a large player count, easily moddable version of JACK that I could use, and kahoot & similar pissed me off with the free limits and lack of question type variety (and screws).
 
@@ -113,7 +116,8 @@ npm install
 ```
 npm run dev
 ```
-### Development server but actually using a network (for multi device testing):
+
+### Development server but actually using a network (for LAN multi device testing):
 ```
 npm run dev-server
 ```
