@@ -8890,7 +8890,7 @@ const screwBtn = settings.allowScrewing
       <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         ${myScoreLine}
       <p class="muted">${helperText}</p>
-      <p class="muted">${timeText}</p>
+      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
       ${notice ? `<p class="muted">${notice}</p>` : ""}
       <div class="abxy">${buttons}</div>
       ${screwBtn}
