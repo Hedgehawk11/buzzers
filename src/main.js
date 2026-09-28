@@ -1025,6 +1025,9 @@ function freshDisOrDatState() {
     disLabel: "",
     datLabel: "",
     answers: Array(DIS_OR_DAT_QUESTION_COUNT).fill(null),
+    // The seven things being read off (episode-loaded or host-typed).
+    // Empty entries = host reads aloud with nothing on screens.
+    questions: Array(DIS_OR_DAT_QUESTION_COUNT).fill(""),
     mode: null,
     activePlayerId: null,
     pendingPick: false,
@@ -1040,6 +1043,19 @@ function freshDisOrDatState() {
 
 function getDisOrDat() {
   return getSafeState("disordat", freshDisOrDatState());
+}
+
+// Text of one of the seven read-off things, or "" when the host is reading
+// aloud with nothing stored (legacy episodes / manual games).
+function getDisOrDatQuestionText(dd, i) {
+  const list = Array.isArray(dd?.questions) ? dd.questions : [];
+  return String(list[i] ?? "").trim();
+}
+
+// Quoted display line for one read-off thing, or "" when there is no text.
+function renderDisOrDatQuestionText(dd, i) {
+  const text = getDisOrDatQuestionText(dd, i);
+  return text ? `<p class="disordat-question-text">&ldquo;${escapeHtml(text)}&rdquo;</p>` : "";
 }
 
 function getDisOrDatTimeLeftCs(dd) {
@@ -6705,6 +6721,34 @@ function optionButtonLabel(option) {
   return labels[option] || String(option);
 }
 
+// Episode custom option name for a buzzer option ("" when the loaded episode
+// question doesn't name its options). Names ride episodePrompt.optionLabels.
+function getEpisodeOptionLabel(option) {
+  try {
+    const ep = getEpisodePrompt();
+    const labels = Array.isArray(ep?.optionLabels) ? ep.optionLabels : null;
+    const n = Number(option);
+    if (!labels || !Number.isInteger(n) || n < 1 || n > labels.length) return "";
+    return String(labels[n - 1] ?? "").trim();
+  } catch { return ""; }
+}
+
+// Buzzer button content: plain key ("A"/"1") normally, key + custom name
+// when the loaded episode question names its options.
+function buzzerButtonContent(option) {
+  const key = optionButtonLabel(option);
+  const label = getEpisodeOptionLabel(option);
+  if (!label) return escapeHtml(key);
+  return `${escapeHtml(key)}<small class="buzzer-opt-label">${escapeHtml(label)}</small>`;
+}
+
+// Single-option ("BUZZ") buttons: show the custom name when the episode
+// question names its lone option, otherwise the plain BUZZ text.
+function singleBuzzerContent() {
+  const label = getEpisodeOptionLabel(1);
+  return label ? escapeHtml(label) : "BUZZ";
+}
+
 // Renders the 4-option button set for the room's choice layout. `button` is
 // the site's own factory (data attrs, disabled logic, color classes);
 // `placements` preserves that site's existing diamond order; `centerHtml` is
@@ -7082,6 +7126,7 @@ function renderDisOrDatHostPanel(settings, players) {
       return `
         <div class="disordat-setup-row">
           <span class="disordat-q-num">${i + 1}</span>
+          <input type="text" class="disordat-q-text" id="disordat-q-text-${i}" data-disordat-question-text="${i}" maxlength="300" value="${escapeHtml(getDisOrDatQuestionText(dd, i))}" placeholder="Thing ${i + 1} (or read aloud)" aria-label="Thing ${i + 1} text" />
           ${chip("dis", dd.disLabel || "Dis")}
           ${chip("dat", dd.datLabel || "Dat")}
           ${chip("both", "Both")}
@@ -7117,7 +7162,7 @@ function renderDisOrDatHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Dis or Dat Setup</h2>
-        <p class="muted">Optional labels shown on every question (you read each question aloud). Tap the correct answer for each of the ${DIS_OR_DAT_QUESTION_COUNT} questions.</p>
+        <p class="muted">Type each of the seven things (or leave blank and read them aloud). Tap the correct answer for each.</p>
         <div class="control-grid">
           <label>Dis label
             <input type="text" id="disordat-dis-label" maxlength="40" value="${escapeHtml(dd.disLabel)}" placeholder="Dis" />
@@ -7209,12 +7254,19 @@ function renderDisOrDatHostPanel(settings, players) {
           : activePlayer ? `Player: <strong>${escapeHtml(getPlayerName(activePlayer))}</strong>` : "")
     : "";
 
+  const thingsList = dd.questions?.some((s) => String(s || "").trim())
+    ? `<ol class="disordat-things">${dd.answers.map((a, i) => {
+        const text = getDisOrDatQuestionText(dd, i);
+        return `<li>${text ? escapeHtml(text) : `<span class="muted">Thing ${i + 1} (read aloud)</span>`} — <strong>${escapeHtml(a || "?")}</strong></li>`;
+      }).join("")}</ol>`
+    : "";
   return `
     <section class="card host-panel bingo-host-panel">
       <h2>Dis or Dat — Active</h2>
       <p class="muted">Mode: <strong>${modeLabel}</strong>${activeLabel ? ` — ${activeLabel}` : ""}</p>
       ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></p>` : ""}
-      ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>` : ""}
+      ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}` : ""}
+      ${isTimed ? thingsList : ""}
       <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
       ${!isTimed ? `<div class="host-actions" style="margin-top:0.6rem"><button type="button" class="primary-action" data-disordat-next>Next Question</button></div>` : ""}
       <div class="host-actions" style="margin-top:0.6rem">
@@ -7315,8 +7367,8 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     body = `
       ${isTimed
         ? `<div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
-           ${answeredAll && !revealShowing ? "" : `<p class="muted">${getSnark("player.disdat.questionTimed", `Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.`, { current: currentQ + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>`}`
-        : `<p class="muted">${getSnark("player.disdat.questionHostPaced", `Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.`, { current: dd.currentQuestion + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>`}
+           ${answeredAll && !revealShowing ? "" : `<p class="muted">${getSnark("player.disdat.questionTimed", `Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.`, { current: currentQ + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>${renderDisOrDatQuestionText(dd, currentQ)}`}`
+        : `<p class="muted">${getSnark("player.disdat.questionHostPaced", `Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.`, { current: dd.currentQuestion + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}`}
       <div class="disordat-diamond-wrap">${diamond}</div>
       ${answeredAll && isTimed && !revealShowing ? `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>` : ""}
     `;
@@ -7507,7 +7559,7 @@ function renderDisOrDatAudienceDisplay(settings, players) {
     ? `<div class="audience-timer">${getSnark("audience.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>`
     : "";
   const questionHtml = !isTimed && dd.phase === "playing"
-    ? `<div class="disordat-audience-question"><h2>${getSnark("audience.disdat.audienceQuestionTitle", `Question ${dd.currentQuestion + 1}`, { number: dd.currentQuestion + 1 })}</h2><p>${escapeHtml(dd.disLabel || "Dis")} or ${escapeHtml(dd.datLabel || "Dat")}?</p></div>`
+    ? `<div class="disordat-audience-question"><h2>${getSnark("audience.disdat.audienceQuestionTitle", `Question ${dd.currentQuestion + 1}`, { number: dd.currentQuestion + 1 })}</h2>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}<p>${escapeHtml(dd.disLabel || "Dis")} or ${escapeHtml(dd.datLabel || "Dat")}?</p></div>`
     : "";
 
   return `
@@ -8386,7 +8438,7 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
 
   let grid = "";
   if (settings.optionCount === 1) {
-    grid = `<button type="button" class="big-red" data-coop-buzz="1" ${dis(1)}>BUZZ</button>`;
+    grid = `<button type="button" class="big-red" data-coop-buzz="1" ${dis(1)}>${singleBuzzerContent()}</button>`;
   } else if (settings.optionCount === 4) {
     const coopAssignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
     const coopTeamColor = getPlayerTeamColor(deviceId, coopAssignments);
@@ -8396,7 +8448,7 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
       const extraClass = coopDefaultBuzzerClass ? coopDefaultBuzzerClass[opt] : "";
       const baseClass = coopTeamButtonClass ? `${cls} ${coopTeamButtonClass}` : cls;
       const fullClass = [baseClass, extraClass].filter(Boolean).join(" ");
-      return `<button type="button" class="${fullClass}" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`;
+      return `<button type="button" class="${fullClass}" data-coop-buzz="${opt}" ${dis(opt)}>${buzzerButtonContent(opt)}</button>`;
     };
     grid = renderChoiceLayout4(
       normalizeChoiceLayout(settings.choiceLayout),
@@ -8406,13 +8458,13 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
     );
   } else if (settings.optionCount === 6) {
     grid = `<div class="six-grid">${[1, 2, 3, 4, 5, 6]
-      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${opt}</button>`).join("")}</div>`;
+      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${buzzerButtonContent(opt)}</button>`).join("")}</div>`;
   } else if (settings.optionCount === 8) {
     grid = `<div class="eight-grid">${[1, 2, 3, 4, 5, 6, 7, 8]
-      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${opt}</button>`).join("")}</div>`;
+      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${buzzerButtonContent(opt)}</button>`).join("")}</div>`;
   } else {
     grid = `<div class="abxy">${[1, 2, 3, 4].filter((opt) => opt <= settings.optionCount)
-      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${optionButtonLabel(opt)}</button>`).join("")}</div>`;
+      .map((opt) => `<button type="button" data-coop-buzz="${opt}" ${dis(opt)}>${buzzerButtonContent(opt)}</button>`).join("")}</div>`;
   }
 
   const stateLine = deviceDisabled
@@ -8635,7 +8687,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
           <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
           <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
-          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>BUZZ</button>
+          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>${singleBuzzerContent()}</button>
         </section>
       `;
     }
@@ -8645,7 +8697,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       const button = (opt, cls) => {
         const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
         const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
-        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${optionButtonLabel(opt)}</button>`;
+        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${buzzerButtonContent(opt)}</button>`;
       };
       const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
       const roundLabel = showValue
@@ -8761,7 +8813,7 @@ const screwBtn = settings.allowScrewing
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
-        <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>BUZZ</button>
+        <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>${singleBuzzerContent()}</button>
         ${screwBtn}
       </section>
     `;
@@ -8771,7 +8823,7 @@ const screwBtn = settings.allowScrewing
     const buttons = [1, 2, 3, 4, 5, 6]
       .map((opt) => {
         const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
-        return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
+        return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       })
       .join("");
 const screwBtn = settings.allowScrewing
@@ -8803,7 +8855,7 @@ const screwBtn = settings.allowScrewing
     const buttons = [1, 2, 3, 4, 5, 6, 7, 8]
       .map((opt) => {
         const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
-        return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${opt}</button>`;
+        return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       })
       .join("");
 const screwBtn = settings.allowScrewing
@@ -8837,7 +8889,7 @@ const screwBtn = settings.allowScrewing
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
       const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
-      return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
     };
     const screwBtn = screwBlockedMe
       ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
@@ -8870,7 +8922,7 @@ const screwBtn = settings.allowScrewing
     .filter((opt) => opt <= max)
     .map((opt) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
-      return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${optionButtonLabel(opt)}</button>`;
+      return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
     })
     .join("");
   const screwBtn = settings.allowScrewing
@@ -9697,7 +9749,10 @@ function episodeRunLoad(index) {
   } else if (item.kind === "fibbage") {
     setState("fibbage", { ...getFibbage(), truth: item.truth, lieTimeSec: item.lieTimeSec, voteTimeSec: item.voteTimeSec, multiplier: item.multiplier }, true);
   } else if (item.kind === "disordat") {
-    setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers] }, true);
+    const questions = Array.isArray(item.questions) && item.questions.length === DIS_OR_DAT_QUESTION_COUNT
+      ? item.questions.map((s) => String(s ?? ""))
+      : Array(DIS_OR_DAT_QUESTION_COUNT).fill("");
+    setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers], questions }, true);
   } else if (item.kind === "quixort") {
     setState("quixort", { ...getQuixort(), items: [...item.items], trash: [...(item.trash || [])], multiplier: item.multiplier, blockSec: item.blockSec }, true);
   } else if (item.kind === "bingo" || item.kind === "wendithapn") {
@@ -11790,6 +11845,14 @@ function bindEvents() {
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
   delegate("change", "#disordat-dat-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), datLabel: String(e.target.value || "").trim() }, true)));
+  delegate("change", "[data-disordat-question-text]", requireHost((e, btn) => {
+    const i = Number(btn?.dataset?.disordatQuestionText);
+    if (!Number.isInteger(i) || i < 0 || i >= DIS_OR_DAT_QUESTION_COUNT) return;
+    const dd = getDisOrDat();
+    const questions = Array.from({ length: DIS_OR_DAT_QUESTION_COUNT }, (_, k) => getDisOrDatQuestionText(dd, k));
+    questions[i] = String(e.target.value || "").trim().slice(0, 300);
+    setState("disordat", { ...dd, questions }, true);
+  }));
   delegate("change", "#disordat-timed-seconds", requireHost((e) => {
     const seconds = Number(e.target.value);
     if (DIS_OR_DAT_TIMED_OPTIONS.includes(seconds)) setState("disordat", { ...getDisOrDat(), timedSeconds: seconds }, true);

@@ -55,6 +55,20 @@ const PRESERVED_INPUT_IDS = [
   "ep-word",
   "ep-dislabel",
   "ep-datlabel",
+  "ep-dod-q-0",
+  "ep-dod-q-1",
+  "ep-dod-q-2",
+  "ep-dod-q-3",
+  "ep-dod-q-4",
+  "ep-dod-q-5",
+  "ep-dod-q-6",
+  "disordat-q-text-0",
+  "disordat-q-text-1",
+  "disordat-q-text-2",
+  "disordat-q-text-3",
+  "disordat-q-text-4",
+  "disordat-q-text-5",
+  "disordat-q-text-6",
 ];
 
 let inputDrafts = new Map(); // id -> { value, selStart, selEnd, focused }

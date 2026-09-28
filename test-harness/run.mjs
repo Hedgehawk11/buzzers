@@ -1271,7 +1271,7 @@ function validEp() {
       { id: "q1", kind: "buttons", prompt: "2+2?", optionCount: 4, correctOptions: [4], options: ["two", "three", "four", "five"], overrides: { uniformPoints: 500 } },
       { id: "q2", kind: "text", prompt: "Capital of France?", correctAnswer: "Paris" },
       { id: "q3", kind: "fibbage", prompt: "The ___ is real", truth: "thing", lieTimeSec: 30, voteTimeSec: 45, multiplier: 2 },
-      { id: "q4", kind: "disordat", prompt: "Sort these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"] },
+      { id: "q4", kind: "disordat", prompt: "Sort these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"], questions: ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"] },
       { id: "q5", kind: "quixort", prompt: "Sort oldest first", items: ["a", "b", "c", "d"], trash: ["zzz"], multiplier: 1, blockSec: 30 },
       { id: "q6", kind: "bingo", prompt: "Letters", word: "BINGO", rounds: [{ prompt: "Pick G", answer: "G" }] },
       { id: "q7", kind: "wendithapn", prompt: "When?", rounds: [{ prompt: "W?", answer: "N" }] },
@@ -1307,6 +1307,8 @@ const badCases = [
   ["bad fibbage mult", (e) => { e.items[2].multiplier = 9; }, "multiplier"],
   ["disordat short", (e) => { e.items[3].answers = ["dis"]; }, "answers"],
   ["disordat bad value", (e) => { e.items[3].answers[0] = "maybe"; }, "answers"],
+  ["disordat questions short", (e) => { e.items[3].questions = ["Alpha"]; }, "questions"],
+  ["disordat questions empty entry", (e) => { e.items[3].questions[0] = "  "; }, "questions"],
   ["quixort few items", (e) => { e.items[4].items = ["a", "b"]; }, "items"],
   ["quixort dupes", (e) => { e.items[4].trash = ["A "]; }, "items"],
   ["quixort bad block", (e) => { e.items[4].blockSec = 25; }, "blockSec"],
@@ -1329,6 +1331,16 @@ for (const [name, mutate, field] of badCases) {
   mutate(e);
   const r = eps.validateEpisode(e);
   check(`episode invalid: ${name}`, r.ok === false && r.errors.some((x) => x.field === field), JSON.stringify(r.errors));
+}
+{
+  // Legacy episodes without `questions` stay valid (host reads aloud).
+  const legacy = validEp();
+  delete legacy.items[3].questions;
+  check("disordat legacy without questions valid", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
+  // Normalize trims question text.
+  const messyQ = validEp();
+  messyQ.items[3].questions[0] = "  Alpha ";
+  check("normalize trims questions", eps.normalizeEpisode(messyQ).items[3].questions[0] === "Alpha", JSON.stringify(eps.normalizeEpisode(messyQ).items[3].questions[0]));
 }
 {
   // Repeat letters across rounds are allowed (fresh contest per round).
@@ -1407,7 +1419,7 @@ for (const [name, mutate, field] of badCases) {
     check("legacy validates after migrate", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
   }
 }
-check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
 // --- episode editor ops (mode-independent, DOM-free) ---
 const eped = await import("../src/episodes/editor.js");
 const epui = await import("../src/episodes/ui.js");
@@ -1500,6 +1512,14 @@ const epui = await import("../src/episodes/ui.js");
     const ov = epui.renderCreatorScreen({ ep: ovEp, selectedId: "mc1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
     check("override layout wins", ov.includes(">A<"), "override ignored");
   }
+  {
+    // Dis or Dat edit form: seven thing inputs, each with its answer select.
+    const dod = { id: "d1", kind: "disordat", prompt: "Read these", disLabel: "Dis", datLabel: "Dat", answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"], questions: ["Alpha", "", "", "", "", "", ""] };
+    const dodEp = { schemaVersion: 1, meta: { title: "T" }, defaults: {}, items: [dod] };
+    const dodHtml = epui.renderCreatorScreen({ ep: dodEp, selectedId: "d1", errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("disordat edits seven things", [0, 1, 2, 3, 4, 5, 6].every((k) => dodHtml.includes(`id="ep-dod-q-${k}"`) && dodHtml.includes(`id="ep-dod-${k}"`)), "thing rows missing");
+    check("disordat shows thing text", dodHtml.includes("Alpha"), "thing text missing");
+  }
   const harvested = epui.harvestCreatorFields(null);
   check("harvest null-safe", harvested.item === null && harvested.meta.title === undefined, JSON.stringify(harvested));
 }
@@ -1544,6 +1564,18 @@ const epui = await import("../src/episodes/ui.js");
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
   await sleep(50);
   check("display sees prompt banner", _mount.innerHTML.includes("ep-prompt-banner") && _mount.innerHTML.includes("2+2?"), "banner missing on display");
+  // --- player buzzers rewrite episode option names (no setting toggles:
+  // fresh fixture, team-assigned only if team mode is live) ---
+  {
+    const lbl = pk.makePlayer("lbl1", "Label");
+    pk._store.participants.lbl1 = lbl;
+    if (COOP) await pk._store.rpc["coop-roster"]({ group: "Lbl", count: 1, names: [] }, lbl);
+    if (S().settings?.teamModeEnabled) await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["lbl1", "red"] }, prod);
+    pk._store.self = lbl;
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+    check("player buzzer rewrites option names", _mount.innerHTML.includes("buzzer-opt-label") && _mount.innerHTML.includes("Three"), "option names missing from buzzer");
+    pk._store.self = pk._store.participants.host1;
+  }
   pk._store.self = pk._store.participants.host1;
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [1] }, prod);
@@ -1567,6 +1599,48 @@ const epui = await import("../src/episodes/ui.js");
   await sleep(50);
   check("banner gone after end", !_mount.innerHTML.includes("ep-prompt-banner"), "stale banner on display");
   pk._store.self = pk._store.participants.host1;
+}
+// --- episode disordat: seven things load into live state + screens ---
+{
+  const thingsEp = {
+    schemaVersion: 1,
+    meta: { title: "DoD Ep" },
+    defaults: {},
+    items: [
+      {
+        id: "d1", kind: "disordat", prompt: "Read these off", disLabel: "Dis", datLabel: "Dat",
+        answers: ["dis", "dat", "both", "dis", "dat", "both", "dis"],
+        questions: ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"],
+      },
+    ],
+  };
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [thingsEp] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  const coopWas = S().settings?.coopertitionEnabled;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [0] }, prod);
+  check("disordat load seeds questions", JSON.stringify(S().disordat?.questions) === JSON.stringify(["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf"]), JSON.stringify(S().disordat?.questions));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("host setup lists things", _mount.innerHTML.includes("Alpha") && _mount.innerHTML.includes('data-disordat-question-text="0"'), "things missing from setup");
+  const dd1 = pk.makePlayer("dd1", "DoD");
+  pk._store.participants.dd1 = dd1;
+  if (S().settings?.teamModeEnabled) await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dd1", "red"] }, prod);
+  clickBtn({ disordatStart: "allPlayHostPaced" }, "[data-disordat-start]");
+  check("disordat started host-paced", S().disordat?.active === true && S().disordat?.mode === "allPlayHostPaced", S().disordat?.mode);
+  pk._store.self = dd1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("player sees current thing", _mount.innerHTML.includes("disordat-question-text") && _mount.innerHTML.includes("Alpha"), "thing missing for player");
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("audience sees current thing", _mount.innerHTML.includes("disordat-question-text") && _mount.innerHTML.includes("Alpha"), "thing missing on display");
+  pk._store.self = pk._store.participants.host1;
+  clickBtn({}, "[data-disordat-reset]");
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  if (coopWas) await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, prod);
+  check("disordat block restores coop", S().settings?.coopertitionEnabled === coopWas, String(S().settings?.coopertitionEnabled));
 }
 // --- episode cycling modes: word+target seeding, start preserves it ---
 {

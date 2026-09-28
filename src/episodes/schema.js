@@ -106,7 +106,7 @@ export function blankItem(kind) {
     case "fibbage":
       return { ...base, truth: "", lieTimeSec: 30, voteTimeSec: 30, multiplier: 1 };
     case "disordat":
-      return { ...base, disLabel: "Dis", datLabel: "Dat", answers: Array(EPISODE_DISORDAT_COUNT).fill("dis") };
+      return { ...base, disLabel: "Dis", datLabel: "Dat", answers: Array(EPISODE_DISORDAT_COUNT).fill("dis"), questions: Array(EPISODE_DISORDAT_COUNT).fill("") };
     case "quixort":
       return { ...base, items: ["", "", "", ""], trash: [], multiplier: 1, blockSec: 30 };
     case "bingo":
@@ -260,6 +260,22 @@ function validateDisordat(item, index) {
       }
     }
   }
+  // The seven things being read off. Optional so older episodes (host reads
+  // aloud) keep validating; when present every thing must be filled in.
+  if (item.questions !== undefined) {
+    if (!Array.isArray(item.questions) || item.questions.length !== EPISODE_DISORDAT_COUNT) {
+      errors.push(err(index, item.id, "questions", `Provide exactly ${EPISODE_DISORDAT_COUNT} things to read off.`));
+    } else {
+      item.questions.forEach((q, i) => {
+        const s = String(q ?? "").trim();
+        if (!s) {
+          errors.push(err(index, item.id, "questions", `Thing ${i + 1} cannot be empty.`));
+        } else if (s.length > EPISODE_PROMPT_MAX) {
+          errors.push(err(index, item.id, "questions", `Thing ${i + 1} must be ${EPISODE_PROMPT_MAX} characters or fewer.`));
+        }
+      });
+    }
+  }
   return errors;
 }
 
@@ -379,7 +395,7 @@ const ITEM_FIELDS = {
   buttons: ["id", "kind", "prompt", "optionCount", "correctOptions", "options", "overrides"],
   text: ["id", "kind", "prompt", "correctAnswer", "overrides"],
   fibbage: ["id", "kind", "prompt", "truth", "lieTimeSec", "voteTimeSec", "multiplier", "overrides"],
-  disordat: ["id", "kind", "prompt", "disLabel", "datLabel", "answers", "overrides"],
+  disordat: ["id", "kind", "prompt", "disLabel", "datLabel", "answers", "questions", "overrides"],
   quixort: ["id", "kind", "prompt", "items", "trash", "multiplier", "blockSec", "overrides"],
   bingo: ["id", "kind", "prompt", "word", "rounds", "overrides"],
   wendithapn: ["id", "kind", "prompt", "rounds", "overrides"],
@@ -467,6 +483,7 @@ export function normalizeEpisode(ep) {
             next.correctOptions = [...new Set(next.correctOptions.map(Number).filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
           }
           if (Array.isArray(next.answers)) next.answers = next.answers.map((a) => String(a ?? "").toLowerCase());
+          if (Array.isArray(next.questions)) next.questions = next.questions.map((s) => String(s ?? "").trim());
           if (Array.isArray(next.items)) next.items = next.items.map((s) => String(s ?? "").trim());
           if (Array.isArray(next.trash)) next.trash = next.trash.map((s) => String(s ?? "").trim());
           if (Array.isArray(next.options)) next.options = next.options.map((s) => String(s ?? "").trim());

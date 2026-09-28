@@ -49,7 +49,7 @@ function itemSummary(item) {
     case "fibbage":
       return item.truth ? "truth set" : "no truth set";
     case "disordat":
-      return `${(item.disLabel || "Dis")} / ${(item.datLabel || "Dat")}`;
+      return `${(item.disLabel || "Dis")} / ${(item.datLabel || "Dat")} • ${Array.isArray(item.questions) ? item.questions.filter((s) => String(s || "").trim()).length : 0}/7 things`;
     case "quixort": {
       const n = Array.isArray(item.items) ? item.items.filter((s) => String(s || "").trim()).length : 0;
       return `${n} items`;
@@ -131,7 +131,7 @@ function renderButtonsFields(item, esc, layout = "diamond") {
     <fieldset class="ep-fieldset"><legend>Correct option${correct.size === 1 ? "" : "s"}</legend>
       <div class="ep-checks">${boxes}</div>
     </fieldset>
-    <fieldset class="ep-fieldset"><legend>Option names <span class="muted">(optional — shown beside the question; blank = letters/numbers)</span></legend>
+    <fieldset class="ep-fieldset"><legend>Option names <span class="muted">(optional — shown on the buzzers and beside the question; blank = letters/numbers)</span></legend>
       <div class="ep-grid2">${labelInputs}</div>
     </fieldset>`;
 }
@@ -139,7 +139,7 @@ function renderButtonsFields(item, esc, layout = "diamond") {
 function renderTextFields(item, esc) {
   return `
     <label>Correct answer
-      <input id="ep-answer" type="text" maxlength="120" value="${esc(item.correctAnswer || "")}" placeholder="Paris" />
+      <input id="ep-answer" type="text" maxlength="120" value="${esc(item.correctAnswer || "")}" placeholder="Correct Answer" />
     </label>`;
 }
 
@@ -163,13 +163,16 @@ function renderFibbageFields(item, esc) {
 
 function renderDisordatFields(item, esc) {
   const answers = Array.isArray(item.answers) ? item.answers : [];
-  const chips = Array.from({ length: EPISODE_DISORDAT_COUNT }, (_, k) => {
+  const questions = Array.isArray(item.questions) ? item.questions : [];
+  const rows = Array.from({ length: EPISODE_DISORDAT_COUNT }, (_, k) => {
     const cur = String(answers[k] || "dis").toLowerCase();
-    return `<label>D${k + 1}
-      <select data-ep-harvest id="ep-dod-${k}">${opts(EPISODE_DISORDAT_ANSWER_VALUES, cur)}</select>
-    </label>`;
+    return `<div class="ep-round-row">
+      <input id="ep-dod-q-${k}" type="text" maxlength="300" value="${esc(questions[k] || "")}" placeholder="Thing ${k + 1} to read off" aria-label="Thing ${k + 1} to read off" />
+      <select data-ep-harvest id="ep-dod-${k}" aria-label="Thing ${k + 1} answer">${opts(EPISODE_DISORDAT_ANSWER_VALUES, cur)}</select>
+    </div>`;
   }).join("");
   return `
+    <p class="muted">“I'm going to read off seven things…” — write each thing below and whether it's Dis, Dat, or Both.</p>
     <div class="ep-grid2">
       <label>Dis label
         <input id="ep-dislabel" type="text" maxlength="40" value="${esc(item.disLabel || "")}" />
@@ -178,8 +181,8 @@ function renderDisordatFields(item, esc) {
         <input id="ep-datlabel" type="text" maxlength="40" value="${esc(item.datLabel || "")}" />
       </label>
     </div>
-    <fieldset class="ep-fieldset"><legend>Answers (7)</legend>
-      <div class="ep-grid2">${chips}</div>
+    <fieldset class="ep-fieldset"><legend>Seven things (${questions.filter((s) => String(s || "").trim()).length}/${EPISODE_DISORDAT_COUNT})</legend>
+      <div class="ep-rounds">${rows}</div>
     </fieldset>`;
 }
 
@@ -598,6 +601,14 @@ export function harvestCreatorFields(root) {
       dod.push(String(val(`#ep-dod-${k}`) || "dis").toLowerCase());
     }
     if (hasDod) patch.answers = dod;
+    const dodQ = [];
+    let hasDodQ = false;
+    for (let k = 0; k < EPISODE_DISORDAT_COUNT; k++) {
+      if (!q(`#ep-dod-q-${k}`)) continue;
+      hasDodQ = true;
+      dodQ.push(val(`#ep-dod-q-${k}`) || "");
+    }
+    if (hasDodQ) patch.questions = dodQ;
     const qxItems = [];
     let hasQx = false;
     for (let k = 0; k < 9; k++) {
