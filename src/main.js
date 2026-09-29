@@ -103,6 +103,8 @@ const QUIXORT_MAX_ITEMS = 9;
 const QUIXORT_MAX_TRASH = 3;
 const QUIXORT_MAX_TEXT = 120;
 const QUIXORT_POINTS_EXACT = 1000;
+const QUIXORT_POINTS_TRASH = 250;
+const QUIXORT_BONUS_TRASH_ALL = 250;
 const QUIXORT_PENALTY_MISCLASS = 500;
 const QUIXORT_BONUS_CLEAN = 1500;
 const QUIXORT_MAX_MULT = 5;
@@ -3694,8 +3696,8 @@ function handleDisOrDatTick() {
 // inserting each block into a growing row (or trashing it). Shared-team tracks
 // rotate members per block. Scored once at the end, pairwise: each
 // correctly-ordered pair +W, each inverted pair -W (W scales so perfect order
-// is ~N*1000), trash +1000 / misclass -500, 1500 x mult bonus for a perfect
-// run. Per-block timer voids+passes on expiry.
+// is ~N*1000), trash +250 each (+250 all-trash bonus with 2+ trash blocks),
+// misclass -500, 1500 x mult clean bonus for a perfect run. Per-block timer voids+passes on expiry.
 // Banned in coopertition mode (no coop model, like fibbage/disordat).
 // =============================================================================
 function normalizeQuixortMultiplier(v) {
@@ -3774,11 +3776,13 @@ function getQuixortRunTimeLeftCs(run, qx) {
 // W = round(N*1000 / P) scales with list length so a perfect order is always
 // worth ~N*1000 (same economy as the old exact-based scoring). Pairs with a
 // missing member (voided on timeout, or a real wrongly trashed) score 0 — the
-// lost opportunity is the penalty. Trash correctly trashed is +1000 each;
-// each misclass (real trashed, trash placed in the row) is -500. Placed trash
+// lost opportunity is the penalty. Trash correctly trashed is +250 each,
+// plus a +250 all-trash bonus when the game has 2+ trash blocks and every
+// one was correctly trashed (0-1 trash games pay no all-trash bonus).
+// Each misclass (real trashed, trash placed in the row) is -500. Placed trash
 // is excluded from pair order. Run total is floored at 0, then x multiplier;
 // a perfect run (all pairs concordant, all trash right, nothing voided or
-// misclassed) adds the clean bonus.
+// misclassed) adds the clean bonus on top of any all-trash bonus.
 function scoreQuixortRun(qx, run) {
   const mult = normalizeQuixortMultiplier(qx.multiplier);
   const items = getQuixortItems(qx);
@@ -3817,13 +3821,99 @@ function scoreQuixortRun(qx, run) {
   const orderPoints = (concordant - discordant) * pairWeight;
   const base = Math.max(
     0,
-    orderPoints + trashCorrect * QUIXORT_POINTS_EXACT - misclass * QUIXORT_PENALTY_MISCLASS,
+    orderPoints + trashCorrect * QUIXORT_POINTS_TRASH - misclass * QUIXORT_PENALTY_MISCLASS,
   );
   const clean = voided === 0 && misclass === 0
     && placedReals.length === n && concordant === totalPairs && totalPairs > 0
     && trashCorrect === trash.length;
-  const total = (base + (clean ? QUIXORT_BONUS_CLEAN : 0)) * mult;
-  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, misclass, concordant, discordant, totalPairs, pairWeight, clean };
+  const trashAll = trash.length >= 2 && trashCorrect === trash.length;
+  const total = (base + (clean ? QUIXORT_BONUS_CLEAN : 0) + (trashAll ? QUIXORT_BONUS_TRASH_ALL : 0)) * mult;
+  return { total, base: base * mult, bonus: clean ? QUIXORT_BONUS_CLEAN * mult : 0, trashBonus: trashAll ? QUIXORT_BONUS_TRASH_ALL * mult : 0, exactCount, placedCount: placedReals.length, trashCorrect, misclass, concordant, discordant, totalPairs, pairWeight, clean, trashAll };
+}
+// Pair weight for a list length (same formula as scoreQuixortRun) so the
+// setup screen can quote the concrete per-pair value before play starts.
+function quixortPairWeightForCount(n) {
+  const totalPairs = (n * (n - 1)) / 2;
+  return totalPairs > 0 ? Math.max(1, Math.round((n * QUIXORT_POINTS_EXACT) / totalPairs)) : 0;
+}
+// Why a run missed the clean bonus (empty when clean). Numbers-free labels;
+// callers join them into the bonusMissed snark string.
+function quixortCleanMissReasons(qx, run, scored) {
+  const reasons = [];
+  const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
+  const items = getQuixortItems(qx);
+  const trash = getQuixortTrash(qx);
+  if (voided > 0) reasons.push("timed-out block");
+  if (scored.misclass > 0) reasons.push("misclassified block");
+  if (scored.placedCount !== items.length) reasons.push("unplaced item");
+  if (scored.concordant !== scored.totalPairs) reasons.push("order");
+  if (scored.trashCorrect !== trash.length) reasons.push("trash");
+  return reasons;
+}
+// Plain-text one-run audit for the game log (keeps the legacy "6/6 pairs"
+// and "1 misclass" substrings so history stays greppable).
+function formatQuixortLogText(scored, voided, mult) {
+  const orderPoints = (scored.concordant - scored.discordant) * scored.pairWeight;
+  const bits = [
+    `${scored.concordant}/${scored.totalPairs} pairs (+${scored.concordant * scored.pairWeight} −${scored.discordant * scored.pairWeight})`,
+    `${scored.trashCorrect} trash`,
+  ];
+  if (scored.misclass) bits.push(`${scored.misclass} misclass`);
+  if (voided) bits.push(`${voided} voided`);
+  bits.push(`base ${scored.base}`);
+  if (scored.trashBonus) bits.push(`+${scored.trashBonus} all-trash bonus`);
+  bits.push(scored.bonus ? `+${scored.bonus} clean bonus` : "no clean bonus");
+  bits.push(`x${mult} = ${scored.total}`);
+  return `Quixort: ${bits.join(", ")} (order ${orderPoints >= 0 ? "+" : ""}${orderPoints})`;
+}
+// Itemized HTML breakdown shared by host / player / audience results panels.
+// All numbers flow through getSnark (which escapeHtml's vars); no user text
+// is interpolated here.
+function renderQuixortBreakdownHtml(qx, run, scored) {
+  const mult = normalizeQuixortMultiplier(qx.multiplier);
+  const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
+  const orderPoints = (scored.concordant - scored.discordant) * scored.pairWeight;
+  const lines = [
+    getSnark("player.quixort.orderLine", `Order: ${scored.concordant} right × ${scored.pairWeight} minus ${scored.discordant} flipped × ${scored.pairWeight} = ${orderPoints}`, { good: scored.concordant, w: scored.pairWeight, bad: scored.discordant, points: orderPoints }),
+    getSnark("player.quixort.trashLine", `Trash kept: ${scored.trashCorrect} × 250 = ${scored.trashCorrect * QUIXORT_POINTS_TRASH}`, { count: scored.trashCorrect, points: scored.trashCorrect * QUIXORT_POINTS_TRASH }),
+  ];
+  if (scored.trashBonus) lines.push(getSnark("player.quixort.trashAllLine", `All trash sorted: +${scored.trashBonus}`, { bonus: scored.trashBonus }));
+  if (scored.misclass) lines.push(getSnark("player.quixort.misclassLine", `Misclassified: ${scored.misclass} × 500 = −${scored.misclass * QUIXORT_PENALTY_MISCLASS}`, { count: scored.misclass, points: scored.misclass * QUIXORT_PENALTY_MISCLASS }));
+  if (voided) lines.push(getSnark("player.quixort.voidedLine", `Timed out (voided): ${voided} — scores 0, the lost order is the penalty`, { count: voided }));
+  lines.push(getSnark("player.quixort.baseLine", `Base (floored at 0): ${scored.base}`, { base: scored.base }));
+  if (scored.bonus) {
+    lines.push(getSnark("player.quixort.bonusLine", `Clean bonus: +${scored.bonus} (perfect run)`, { bonus: scored.bonus }));
+  } else {
+    const reasons = quixortCleanMissReasons(qx, run, scored);
+    if (reasons.length) lines.push(getSnark("player.quixort.bonusMissed", `Clean bonus: — (${reasons.join(", ")})`, { reason: reasons.join(", ") }));
+  }
+  lines.push(getSnark("player.quixort.totalLine", `× ${mult} multiplier = ${scored.total} pts`, { mult, total: scored.total }));
+  return `<ul class="quixort-breakdown">${lines.map((l) => `<li>${l}</li>`).join("")}</ul>`;
+}
+// Correct-order vs placed-row reveal shared by results panels. Item text is
+// host-entered, so every block goes through escapeHtml.
+function renderQuixortRevealHtml(qx, run) {
+  const items = getQuixortItems(qx);
+  const row = Array.isArray(run?.row) ? run.row : [];
+  const trashed = Array.isArray(run?.trashed) ? run.trashed : [];
+  const voided = Array.isArray(run?.voided) ? run.voided : [];
+  const correctHtml = items.map((t, i) => `<li><span class="muted">${i + 1}.</span> ${escapeHtml(t)}</li>`).join("");
+  const rowHtml = row.map((e) => {
+    const txt = escapeHtml(getQuixortBlockText(qx, e));
+    if (e && e.t === "trash") return `<span class="quixort-row-block is-trash">${txt} <small>(${getSnark("player.quixort.placedTrashNote", "trash in row −500")})</small></span>`;
+    return `<span class="quixort-row-block">${txt}</span>`;
+  }).join(`<span class="quixort-row-sep">→</span>`);
+  const trashedHtml = trashed.map((e) => `<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(" ");
+  const voidedHtml = voided.map((e) => `<span class="quixort-row-block is-voided">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(" ");
+  return `<div class="quixort-reveal">
+    <strong>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</strong>
+    <div class="quixort-reveal-lists">
+      <div><span class="muted">${getSnark("player.quixort.correctOrderLabel", "Correct order")}</span><ol class="quixort-correct-list">${correctHtml}</ol></div>
+      <div><span class="muted">${getSnark("player.quixort.yourRowLabel", "Your row")}</span><div class="quixort-row-wrap">${rowHtml || `<span class="muted">—</span>`}</div>
+      ${trashedHtml ? `<div><span class="muted">${getSnark("player.quixort.trashedLabel", "Trashed")}: </span>${trashedHtml}</div>` : ""}
+      ${voidedHtml ? `<div><span class="muted">${getSnark("player.quixort.voidedLabel", "Timed out")}: </span>${voidedHtml}</div>` : ""}</div>
+    </div>
+  </div>`;
 }
 function formatQuixortEstimate(totalSeconds) {
   const s = Math.max(0, Math.round(Number(totalSeconds) || 0));
@@ -4079,6 +4169,7 @@ function finalizeQuixort() {
     const scoreKey = rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : (isTeamTrack ? getTeamScoreKey(track) : track);
     scores[scoreKey] = Number(scores[scoreKey] || 0) + scored.total;
     const trackDisplayName = isTeamTrack ? `Team ${track}` : (rep ? getPlayerName(rep) : track);
+    const voidedCount = Array.isArray(run.voided) ? run.voided.length : 0;
     log.push({
       id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: "quixort",
@@ -4090,7 +4181,7 @@ function finalizeQuixort() {
       scoreKey,
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${isTeamTrack ? track : getPlayerTeamColor(rep?.id, assignments)}` : trackDisplayName,
       option: null,
-      answerText: `Quixort: ${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = ${scored.total}`,
+      answerText: formatQuixortLogText(scored, voidedCount, normalizeQuixortMultiplier(qx.multiplier)),
       timeLeftCs: 0,
       scoringMode: "uniform",
       jackMultiplier: settings.jackMultiplier,
@@ -7610,10 +7701,18 @@ function renderQuixortHostPanel(settings, players) {
         <input type="text" id="quixort-trash-${i}" data-quixort-trash="${i}" maxlength="${QUIXORT_MAX_TEXT}" value="${escapeHtml(val)}" placeholder="Trash ${i + 1}" />
       </label>`).join("");
     const eligible = getEligibleQuixortTracks(settings, assignments, participants);
+    const setupPairN = filledItems.length;
+    const setupPairs = (setupPairN * (setupPairN - 1)) / 2;
+    const setupW = quixortPairWeightForCount(setupPairN);
+    const setupMult = normalizeQuixortMultiplier(qx.multiplier);
+    const setupConcrete = setupPairN >= 2
+      ? getSnark("player.quixort.setupConcrete", `This list: each ordered pair is worth ${setupW} pts (${setupPairs} pairs — a perfect order scores ${setupPairN * QUIXORT_POINTS_EXACT}), each trash kept +250, each misclass −500, all-trash bonus +${QUIXORT_BONUS_TRASH_ALL} (needs 2+ trash blocks), clean-run bonus +${QUIXORT_BONUS_CLEAN}, all × ${setupMult} multiplier.`, { w: setupW, pairs: setupPairs, perfect: setupPairN * QUIXORT_POINTS_EXACT, bonus: QUIXORT_BONUS_CLEAN, mult: setupMult })
+      : "";
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Quixort Setup</h2>
-        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Correctly-ordered pairs score +W, inverted pairs −W (perfect order ≈ items × 1000), trash +1000, wrong trash calls −500 (x multiplier), clean-run bonus ${QUIXORT_BONUS_CLEAN} x multiplier.</p>
+        <p class="muted">Enter the items in correct order (${QUIXORT_MIN_ITEMS}-${QUIXORT_MAX_ITEMS} required) plus up to ${QUIXORT_MAX_TRASH} trash answers. Every player or team sorts their own shuffled deck, one block at a time. Scoring is pairwise: every correctly-ordered pair earns points, every flipped pair loses the same.</p>
+        ${setupConcrete ? `<p class="muted">${setupConcrete}</p><p class="muted">${getSnark("player.quixort.setupClean", "Clean bonus needs: no timeouts, no misclasses, every item placed in perfect order, every trash correctly trashed.")}</p>` : ""}
         <div class="control-grid">
           <label>Multiplier
             <select id="quixort-mult">${multOpts}</select>
@@ -7654,8 +7753,12 @@ function renderQuixortHostPanel(settings, players) {
   const remainingMax = trackRows.reduce((m, r) => Math.max(m, r.run.finished ? 0 : r.remaining), 0);
   const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }) => {
     const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
-    const scoreTxt = scored ? ` — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})` : "";
-    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span>${scoreTxt}</li>`;
+    if (scored) {
+      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})${renderQuixortBreakdownHtml(qx, run, scored)}${renderQuixortRevealHtml(qx, run)}</li>`;
+    }
+    const live = scoreQuixortRun(qx, run);
+    const liveTxt = getSnark("player.quixort.liveProj", `proj. ${live.total} pts (base ${live.base} + bonus ${live.bonus}, ×${normalizeQuixortMultiplier(qx.multiplier)})`, { total: live.total, base: live.base, bonus: live.bonus, mult: normalizeQuixortMultiplier(qx.multiplier) });
+    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span> <span class="muted quixort-proj">${liveTxt}</span></li>`;
   }).join("");
   if (qx.phase === "results") {
     return `
@@ -7705,8 +7808,10 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
     return `
       <section class="card player-card">
         <h2>Quixort ${teamPill}</h2>
-        <h3>${getSnark("player.quixort.resultsTitle", "Results")}</h3>
+        <h3>${getSnark("player.quixort.resultsTitle", "Results")} — <strong>${scored.total}</strong> pts</h3>
         <p class="muted">${getSnark("player.quixort.pairsCount", `${scored.concordant}/${scored.totalPairs} pairs in order`, { good: scored.concordant, pairs: scored.totalPairs })}, ${scored.trashCorrect} trash sorted${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
+        ${renderQuixortBreakdownHtml(qx, run, scored)}
+        ${renderQuixortRevealHtml(qx, run)}
         <p class="muted">${getSnark("player.quixort.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </section>`;
   }
@@ -7760,10 +7865,11 @@ function renderQuixortAudienceDisplay(settings, players) {
   }).sort((a, b) => b.total - a.total || (b.run.deckPos || 0) - (a.run.deckPos || 0));
   const standings = tracks.map(({ track, run, scored }) => {
     const deckLen = (run.deck || []).length;
-    const detail = qx.phase === "results" && scored
-      ? `${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash = ${scored.total} pts`
-      : `${Number(run.deckPos) || 0}/${deckLen} blocks`;
-    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${detail}</li>`;
+    if (qx.phase === "results" && scored) {
+      const summary = `${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash = ${scored.total} pts`;
+      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${summary}${renderQuixortBreakdownHtml(qx, run, scored)}${renderQuixortRevealHtml(qx, run)}</li>`;
+    }
+    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks</li>`;
   }).join("");
   return `
     <main class="layout audience-layout" data-quixort-active="true">
@@ -10835,7 +10941,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="quixort" ${settingDisabledAttr} ${settings.inputMode === "quixort" || isCoopMode(settings) ? "disabled" : ""}>Quixort</button>
-                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +1000, wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+                <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +250 each (+250 all-trash bonus with 2+ trash blocks), wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort"

@@ -617,10 +617,12 @@ await pk._store.rpc["producer-action"]({ fn: "setQuixortMultiplier", args: [2] }
 await pk._store.rpc["producer-action"]({ fn: "setQuixortBlockSec", args: [15] }, prod);
 check("quixort setup stored", S().quixort?.items?.slice(0, 4).join("|") === "Alpha|Bravo|Charlie|Delta", JSON.stringify(S().quixort?.items));
 check("quixort setup shows time estimate", mount.innerHTML.includes("Estimated time"), "no estimate");
+check("quixort setup quotes concrete pair weight", mount.innerHTML.includes("each ordered pair is worth 667"), "no concrete W");
 await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
 check("quixort started", S().quixort?.active === true && S().quixort?.phase === "playing", S().quixort?.phase);
 check("quixort deck is items+trash", (S().quixort?.runs?.dev1?.deck || []).length === 5, JSON.stringify(S().quixort?.runs?.dev1?.deck?.length));
 check("quixort roster frozen", (S().quixort?.expectedTracks || []).includes("dev1"), JSON.stringify(S().quixort?.expectedTracks));
+check("quixort host playing shows live projection", mount.innerHTML.includes("proj."), "no live projection");
 // player view offers trash since host defined trash (true player branch:
 // harness hardcodes isHost, so drop privileges + ungated click to re-render)
 pk._store.isHost = false;
@@ -657,14 +659,30 @@ check("quixort finalized", S().quixort?.phase === "results", S().quixort?.phase)
 check(
   "quixort clean bonus scored at mult 2",
   // pairwise: N=4 -> P=6 pairs, W=round(4000/6)=667; perfect = 6*667 order
-  // + 1000 trash + 1500 clean bonus, x2 mult = 13004
-  (S().scores?.dev1 || 0) - qxBefore === (6 * 667 + 1000 + 1500) * 2,
+  // + 250 trash + 1500 clean bonus (1 trash block -> no all-trash bonus),
+  // x2 mult = 11504
+  (S().scores?.dev1 || 0) - qxBefore === (6 * 667 + 250 + 1500) * 2,
   `before=${qxBefore} after=${S().scores?.dev1}`,
 );
 check("quixort log entry", S().gameLog.filter((e) => e.type === "quixort").some((e) => e.awardedDelta > 0), "no quixort log");
 check("quixort log uses pairs text", S().gameLog.filter((e) => e.type === "quixort").some((e) => /6\/6 pairs/.test(e.answerText || "")), JSON.stringify(S().gameLog.filter((e) => e.type === "quixort").map((e) => e.answerText)));
+check("quixort log shows multiplier math", S().gameLog.filter((e) => e.type === "quixort").some((e) => /x2 =/.test(e.answerText || "")), "no multiplier math in log");
+check("quixort log shows voided block", S().gameLog.filter((e) => e.type === "quixort").some((e) => /voided/.test(e.answerText || "")), "no voided in log");
+check("quixort host results show breakdown", mount.innerHTML.includes("quixort-breakdown") && mount.innerHTML.includes("Clean bonus"), "no breakdown in host results");
+check("quixort host results reveal correct order", mount.innerHTML.includes("Correct order vs your row") && mount.innerHTML.includes("Alpha"), "no reveal in host results");
+// player results view carries the same breakdown + reveal for the own run
+pk._store.isHost = false;
+pk._store.self = dev1;
+clickBtn({}, "[data-f-you-close]");
+await sleep(20);
+check("quixort player results show breakdown", mount.innerHTML.includes("quixort-breakdown") && mount.innerHTML.includes("multiplier"), "no breakdown in player results");
+check("quixort player results reveal order", mount.innerHTML.includes("Correct order vs your row"), "no reveal in player results");
+pk._store.isHost = true;
+pk._store.self = pk._store.participants.host1;
+clickBtn({}, "[data-f-you-close]");
+await sleep(20);
 // misclass penalty: trash one real, sort the rest + trash the trash.
-// 3 concordant pairs (3*667) + 1000 trash - 500 misclass, no bonus, x2 = 5002
+// 3 concordant pairs (3*667) + 250 trash - 500 misclass, no bonus, x2 = 3502
 await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
 const qxBeforeMis = S().scores?.dev1 || 0;
@@ -687,10 +705,38 @@ check("quixort misclass run trashed a real", qxMisTrashedReal === true, JSON.str
 await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
 check(
   "quixort misclass penalized at mult 2",
-  (S().scores?.dev1 || 0) - qxBeforeMis === (3 * 667 + 1000 - 500) * 2,
+  (S().scores?.dev1 || 0) - qxBeforeMis === (3 * 667 + 250 - 500) * 2,
   `before=${qxBeforeMis} after=${S().scores?.dev1}`,
 );
 check("quixort misclass logged", S().gameLog.filter((e) => e.type === "quixort").some((e) => /1 misclass/.test(e.answerText || "")), "no misclass log");
+// all-trash bonus: with 2 trash blocks, sorting all trash pays +250 bonus.
+// perfect = 6*667 order + 2*250 trash + 250 all-trash + 1500 clean, x2 = 12504
+await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setQuixortTrashItem", args: [1, "Yankee"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+const qxBeforeAll = S().scores?.dev1 || 0;
+let qxAllGuard = 0;
+while (S().quixort?.runs?.dev1 && !S().quixort.runs.dev1.finished && qxAllGuard++ < 14) {
+  const run = S().quixort.runs.dev1;
+  const entry = run.deck[run.deckPos];
+  if (entry.t === "trash") {
+    await pk._store.rpc["quixort-place"]({ trash: true }, dev1);
+  } else {
+    let pos = 0;
+    for (const e of run.row) if (e.t === "item" && e.ref < entry.ref) pos++;
+    const res = await pk._store.rpc["quixort-place"]({ insertIndex: pos }, dev1);
+    if (!res?.ok) break;
+  }
+}
+await pk._store.rpc["producer-action"]({ fn: "endQuixort", args: [] }, prod);
+check(
+  "quixort all-trash bonus scored at mult 2",
+  (S().scores?.dev1 || 0) - qxBeforeAll === (6 * 667 + 2 * 250 + 250 + 1500) * 2,
+  `before=${qxBeforeAll} after=${S().scores?.dev1}`,
+);
+check("quixort all-trash logged", S().gameLog.filter((e) => e.type === "quixort").some((e) => /all-trash bonus/.test(e.answerText || "")), "no all-trash in log");
+await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setQuixortTrashItem", args: [1, ""] }, prod);
 // shared-team rotation: teammates rotate per block, off-turn rejected
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);

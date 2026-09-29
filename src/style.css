@@ -2126,6 +2126,56 @@ body:not([data-ui-anims="off"]) .roulette-locked-note {
   margin: 0.3rem 0;
 }
 
+.quixort-breakdown {
+  margin: 0.4rem 0 0.2rem;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.quixort-breakdown li {
+  margin: 0.1rem 0;
+}
+
+.quixort-proj {
+  font-size: 0.85rem;
+}
+
+.quixort-reveal {
+  margin: 0.4rem 0 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.quixort-reveal-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-top: 0.3rem;
+}
+
+@media (max-width: 560px) {
+  .quixort-reveal-lists {
+    grid-template-columns: 1fr;
+  }
+}
+
+.quixort-correct-list {
+  margin: 0.25rem 0;
+  padding-left: 1.2rem;
+}
+
+.quixort-row-block.is-trash {
+  border-style: dashed;
+}
+
+.quixort-row-block.is-voided {
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
 .disordat-progress div {
   font-size: 0.85rem;
   margin-bottom: 0.2rem;

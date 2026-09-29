@@ -678,6 +678,96 @@
         "snark1": "",
         "snark2": ""
       },
+      "orderLine": {
+        "en": "Order: {good} right × {w} minus {bad} flipped × {w} = {points}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "trashLine": {
+        "en": "Trash kept: {count} × 250 = {points}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "trashAllLine": {
+        "en": "All trash sorted: +{bonus}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "misclassLine": {
+        "en": "Misclassified: {count} × 500 = −{points}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "voidedLine": {
+        "en": "Timed out (voided): {count} — scores 0, the lost order is the penalty",
+        "snark1": "",
+        "snark2": ""
+      },
+      "baseLine": {
+        "en": "Base (floored at 0): {base}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "bonusLine": {
+        "en": "Clean bonus: +{bonus} (perfect run)",
+        "snark1": "",
+        "snark2": ""
+      },
+      "bonusMissed": {
+        "en": "Clean bonus: — ({reason})",
+        "snark1": "",
+        "snark2": ""
+      },
+      "totalLine": {
+        "en": "× {mult} multiplier = {total} pts",
+        "snark1": "",
+        "snark2": ""
+      },
+      "liveProj": {
+        "en": "proj. {total} pts (base {base} + bonus {bonus}, ×{mult})",
+        "snark1": "",
+        "snark2": ""
+      },
+      "revealTitle": {
+        "en": "Correct order vs your row",
+        "snark1": "",
+        "snark2": ""
+      },
+      "correctOrderLabel": {
+        "en": "Correct order",
+        "snark1": "",
+        "snark2": ""
+      },
+      "yourRowLabel": {
+        "en": "Your row",
+        "snark1": "",
+        "snark2": ""
+      },
+      "trashedLabel": {
+        "en": "Trashed",
+        "snark1": "",
+        "snark2": ""
+      },
+      "voidedLabel": {
+        "en": "Timed out",
+        "snark1": "",
+        "snark2": ""
+      },
+      "placedTrashNote": {
+        "en": "trash in row −500",
+        "snark1": "",
+        "snark2": ""
+      },
+      "setupConcrete": {
+        "en": "This list: each ordered pair is worth {w} pts ({pairs} pairs — a perfect order scores {perfect}), each trash kept +250, each misclass −500, all-trash bonus +250 (needs 2+ trash blocks), clean-run bonus +{bonus}, all × {mult} multiplier.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "setupClean": {
+        "en": "Clean bonus needs: no timeouts, no misclasses, every item placed in perfect order, every trash correctly trashed.",
+        "snark1": "",
+        "snark2": ""
+      },
       "waitingHostContinue": {
         "en": "Waiting for the host to continue...",
         "snark1": "Waiting for the host... any day now...",
