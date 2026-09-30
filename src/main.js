@@ -119,6 +119,23 @@ let gameLaunched = false;
 let clientMode = "player";
 let buzzNotice = "";
 let buzzNoticeTs = 0;
+// Spam-click guard for buzzer sends (client-side only, never shared state).
+// The buzzer buttons stay enabled until the host's round update round-trips
+// back, so rapid taps used to fire one RPC per tap — the 2nd+ would bounce
+// off the host (or worse, double-toast). While a buzz RPC is in flight, and
+// briefly after an accepted buzz, extra taps are swallowed locally.
+// Only applies when re-buzz is off: with re-buzz on every tap is a legit
+// response and everything is sent untouched.
+let buzzSendInFlight = false;
+let buzzLastSuccessAt = 0;
+let buzzLastSuccessKey = "";
+let buzzLastSuccessRound = null;
+// Cross-button spam window after an accepted buzz (ms). Same-payload repeats
+// are locked for the whole round; a *different* payload within this window is
+// near-certainly spam (the host would reject it — already buzzed). Coop
+// devices are exempt from the cross-payload window so a fast buzz-in →
+// option-pick sequence (different payloads by design) is never swallowed.
+const BUZZ_SPAM_WINDOW_MS = 800;
 let lastUiSignature = "";
 let prejoinMode = "landing";
 let rouletteAnimationInterval = null;
@@ -2707,6 +2724,12 @@ function hostHandleBuzz(player, payload) {
   };
 }
 
+// Stable key for a buzz payload so repeats of the same tap can be spotted.
+function buzzPayloadKey(payload) {
+  const p = payload || {};
+  return [p.option ?? "", p.coopSlot ?? "", p.buzzIn ? "in" : "", p.answerText ?? ""].join("|");
+}
+
 // =============================================================================
 // Player calls this to send their buzz to the host via RPC
 // =============================================================================
@@ -2714,8 +2737,48 @@ async function submitResponse(payload) {
   if (isControllerPlayer() || isProducer()) {
     return;
   }
+  // Spam-click guard (re-buzz off only — with re-buzz on every tap counts).
+  let spamGuarded = false;
+  try {
+    const settings = getSettings();
+    if (!settings.rebuzzAllowed) {
+      const roundId = currentRoundId();
+      // A new round clears the lock from the previous one.
+      if (buzzLastSuccessRound !== null && buzzLastSuccessRound !== roundId) {
+        buzzLastSuccessRound = null;
+        buzzLastSuccessKey = "";
+        buzzLastSuccessAt = 0;
+      }
+      if (buzzSendInFlight) {
+        return;
+      }
+      const key = buzzPayloadKey(payload);
+      if (buzzLastSuccessRound === roundId && buzzLastSuccessKey) {
+        if (key === buzzLastSuccessKey) {
+          // Same tap sent twice (double pointerdown / key repeat / retry
+          // before the host state came back): already accepted, swallow.
+          return;
+        }
+        if (!isCoopMode(settings) && now() - buzzLastSuccessAt < BUZZ_SPAM_WINDOW_MS) {
+          // Different button within the spam window — the host would reject
+          // this as already-buzzed, so don't send (or toast) a 2nd response.
+          return;
+        }
+      }
+      spamGuarded = true;
+      buzzSendInFlight = true;
+    }
+  } catch {}
   try {
     const result = await RPC.call("buzz", payload, RPC.Mode.HOST);
+    if (spamGuarded) {
+      buzzSendInFlight = false;
+      if (result?.ok === true) {
+        buzzLastSuccessAt = now();
+        buzzLastSuccessKey = buzzPayloadKey(payload);
+        try { buzzLastSuccessRound = currentRoundId(); } catch { buzzLastSuccessRound = null; }
+      }
+    }
     if (result?.ok === false) {
       setBuzzNotice(result.reason || getSnark("player.buzzer.buzzBlocked", "Buzz blocked."));
       render();
@@ -2731,6 +2794,7 @@ async function submitResponse(payload) {
     }
     render();
   } catch {
+    if (spamGuarded) buzzSendInFlight = false;
     setBuzzNotice(getSnark("player.buzzer.buzzSendFailed", "Could not send buzz. Check connection/room."));
     render();
   }
@@ -12574,6 +12638,9 @@ function submitRouletteStop() {
 function handleCoopBuzzKeydown(event) {
   const code = event?.code;
   if (code !== "KeyQ" && code !== "KeyB" && code !== "KeyP") return;
+  // Held keys auto-repeat — one physical press must equal one buzz (the
+  // submitResponse spam guard is the backstop, but don't even send repeats).
+  if (event.repeat) return;
   if (isEditingControl()) return;
   if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
   if (!isCoopMode()) return;
