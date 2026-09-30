@@ -90,6 +90,7 @@ const DIS_OR_DAT_CORRECT_POINTS = 300;
 const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
+const DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS = 30;
 const DIS_OR_DAT_TIMED_OPTIONS = [30, 40, 60, 90];
 
 const FIBBAGE_TIMES = [30, 45, 60];
@@ -1084,6 +1085,17 @@ function getDisOrDatTimeLeftCs(dd) {
     return timedSeconds * 100;
   }
   return Math.max(0, Math.ceil((dd.timeEndsAt - now()) / 10));
+}
+
+// Time bonus is only awarded in short (<=30s) timed games. Longer timed
+// durations are bonus-free by decision.
+function getDisOrDatTimedSeconds(dd) {
+  const d = dd || getDisOrDat();
+  return Number(d?.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS);
+}
+
+function isDisOrDatBonusEligible(dd) {
+  return getDisOrDatTimedSeconds(dd) <= DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS;
 }
 
 function freshQuixortState() {
@@ -3505,7 +3517,7 @@ function handleDisOrDatAnswer(player, payload) {
   const answeredAll = nextResps.filter(a => a === "dis" || a === "dat" || a === "both").length >= DIS_OR_DAT_QUESTION_COUNT;
   if (answeredAll && isTimed && !nextFinished.includes(trackKey)) {
     const correctCount = nextResps.filter((a, i) => a === dd.answers[i]).length;
-    if (correctCount >= DIS_OR_DAT_BONUS_MIN_CORRECT) {
+    if (correctCount >= DIS_OR_DAT_BONUS_MIN_CORRECT && isDisOrDatBonusEligible(dd)) {
       nextBonus[trackKey] = getDisOrDatTimeLeftCs(dd);
     }
     nextFinished = [...nextFinished, trackKey];
@@ -3654,6 +3666,7 @@ function finalizeDisOrDat() {
 
   const scores = { ...getScores() };
   const log = getLog();
+  const bonusEligible = isTimed && isDisOrDatBonusEligible(dd);
 
   for (const track of tracks) {
     const resps = responses[track] || [];
@@ -3665,7 +3678,7 @@ function finalizeDisOrDat() {
     const missingCount = padded.filter(a => a === "none").length;
     const penalty = missingCount * DIS_OR_DAT_CORRECT_POINTS;
     const base = correctCount * DIS_OR_DAT_CORRECT_POINTS;
-    const bonus = Number(dd.jackBonus?.[track] || 0);
+    const bonus = bonusEligible ? Number(dd.jackBonus?.[track] || 0) : 0;
     const total = base - penalty + (Number.isFinite(bonus) ? bonus : 0);
     if (!Number.isFinite(total)) continue;
     const isTeamTrack = TEAM_COLORS.includes(track);
@@ -3690,7 +3703,7 @@ function finalizeDisOrDat() {
       coopKey: parsedTrack ? track : null,
       scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : trackDisplayName,
       option: null,
-      answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedText}${isTimed && bonus ? ` + ${bonus} bonus` : ""} = ${total}`,
+      answerText: `Dis or Dat: ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedText}${bonusEligible && bonus ? ` + ${bonus} bonus` : ""} = ${total}`,
       timeLeftCs: 0,
       scoringMode: "uniform",
       jackMultiplier: settings.jackMultiplier,
@@ -7329,6 +7342,7 @@ function renderDisOrDatHostPanel(settings, players) {
             <select id="disordat-timed-seconds">
               ${timedOptionsHtml}
             </select>
+            <small class="setting-helper">Time bonus only at ${DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS}s.</small>
           </label>
         </div>
         <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Correct answers (${DIS_OR_DAT_QUESTION_COUNT})</h3>
@@ -7351,12 +7365,13 @@ function renderDisOrDatHostPanel(settings, players) {
   const activeTrack = dd.mode === "onePlayTimed"
     ? (coopActivePanel ? dd.activeCoopKey : getTeamTrackKey(dd.activePlayerId, settings, assignments))
     : null;
+  const bonusEligiblePanel = isTimed && isDisOrDatBonusEligible(dd);
   const trackRows = (activeTrack ? [activeTrack] : getDisOrDatTracks(settings, assignments, nonController))
     .map(track => {
       const resps = dd.responses[track] || [];
       const correctCount = resps.filter((a, i) => a === dd.answers[i]).length;
       const base = dd.pointsEarned[track] || 0;
-      const bonus = dd.jackBonus[track] || 0;
+      const bonus = bonusEligiblePanel ? (dd.jackBonus[track] || 0) : 0;
       const answered = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
       const missing = dd.phase === "results" ? (DIS_OR_DAT_QUESTION_COUNT - answered) : 0;
       const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
@@ -7379,7 +7394,7 @@ function renderDisOrDatHostPanel(settings, players) {
       const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
       const total = base - penalty + bonus;
       const missedTxt = missing > 0 ? `, ${missing} missed (-${penalty})` : "";
-      return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedTxt}, ${base} pts${isTimed ? ` + ${bonus} bonus` : ""} = <strong>${total} pts</strong></li>`;
+      return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct${missedTxt}, ${base} pts${bonusEligiblePanel ? ` + ${bonus} bonus` : ""} = <strong>${total} pts</strong></li>`;
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel">
@@ -7396,7 +7411,7 @@ function renderDisOrDatHostPanel(settings, players) {
   const progressRows = trackRows.map(({ track, label, correctCount, bonus, total }) => {
     const resps = dd.responses[track] || [];
     const answeredCount = resps.filter(a => a === "dis" || a === "dat" || a === "both").length;
-    return `<div><strong>${label}</strong>: ${answeredCount}/${DIS_OR_DAT_QUESTION_COUNT} answered, ${correctCount} correct${isTimed ? `, ${bonus} bonus` : ""} — ${total} pts</div>`;
+    return `<div><strong>${label}</strong>: ${answeredCount}/${DIS_OR_DAT_QUESTION_COUNT} answered, ${correctCount} correct${bonusEligiblePanel ? `, ${bonus} bonus` : ""} — ${total} pts</div>`;
   }).join("");
   const activePlayer = trackRows.length > 0 && dd.mode === "onePlayTimed" && !coopActivePanel
     ? nonController.find(p => getTeamTrackKey(p.id, settings, assignments) === trackRows[0].track)
@@ -7499,7 +7514,8 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
     : dd.currentQuestion < DIS_OR_DAT_QUESTION_COUNT ? renderQuestionDiamond(dd.currentQuestion) : "";
 
   const points = dd.pointsEarned[trackKey] || 0;
-  const bonus = dd.jackBonus[trackKey] || 0;
+  const bonusEligiblePlayer = isTimed && isDisOrDatBonusEligible(dd);
+  const bonus = bonusEligiblePlayer ? (dd.jackBonus[trackKey] || 0) : 0;
 
   let body;
   if (dd.phase === "results") {
@@ -7513,8 +7529,8 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
       <div class="disordat-results">
         <h3>${getSnark("player.disdat.resultsTitle", "Results")}</h3>
         <p class="muted">${getSnark("player.disdat.correctCount", `${correctCount}/${DIS_OR_DAT_QUESTION_COUNT} correct`, { correct: correctCount, total: DIS_OR_DAT_QUESTION_COUNT })}${missedTxt}</p>
-        <p>Base: <strong>${points}</strong>${missedTxt ? ` - <strong>${penalty}</strong> missed` : ""}${isTimed ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${total}</strong> pts</p>
-        ${isTimed && answeredAll && bonus === 0 ? `<p class="muted">${getSnark("player.disdat.bonusHint", `Finish with ${DIS_OR_DAT_BONUS_MIN_CORRECT}+ correct to claim the time bonus.`, { min: DIS_OR_DAT_BONUS_MIN_CORRECT })}</p>` : ""}
+        <p>Base: <strong>${points}</strong>${missedTxt ? ` - <strong>${penalty}</strong> missed` : ""}${bonusEligiblePlayer ? ` + Bonus: <strong>${bonus}</strong>` : ""} = <strong>${total}</strong> pts</p>
+        ${bonusEligiblePlayer && answeredAll && bonus === 0 ? `<p class="muted">${getSnark("player.disdat.bonusHint", `Finish with ${DIS_OR_DAT_BONUS_MIN_CORRECT}+ correct to claim the time bonus.`, { min: DIS_OR_DAT_BONUS_MIN_CORRECT })}</p>` : ""}
         <p class="muted">${getSnark("player.disdat.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </div>
     `;
@@ -7686,6 +7702,7 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   const activeTrack = dd.mode === "onePlayTimed"
     ? (coopActiveAud ? dd.activeCoopKey : getTeamTrackKey(dd.activePlayerId, settings, assignments))
     : null;
+  const bonusEligibleAud = isTimed && isDisOrDatBonusEligible(dd);
   const tracks = (activeTrack ? [activeTrack] : coopActiveAud ? getDisOrDatTracks(settings, assignments, participants) : [...new Set(participants.map(p => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))])
     .map(track => {
       const resps = dd.responses[track] || [];
@@ -7694,7 +7711,7 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       const missing = dd.phase === "results" ? (DIS_OR_DAT_QUESTION_COUNT - answered) : 0;
       const penalty = missing * DIS_OR_DAT_CORRECT_POINTS;
       const base = dd.pointsEarned[track] || 0;
-      const bonus = dd.jackBonus[track] || 0;
+      const bonus = bonusEligibleAud ? (dd.jackBonus[track] || 0) : 0;
       const total = base - penalty + bonus;
       const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
       const label = coopActiveAud
@@ -10997,7 +11014,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" || isCoopMode(settings) ? "disabled" : ""}>Dis or Dat</button>
-                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race with a finish-fast bonus; Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race (30-second games carry a finish-fast bonus; longer timed games score no time bonus); Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
               <div>
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" || isCoopMode(settings) ? "disabled" : ""}>Fibbage</button>
