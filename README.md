@@ -32,7 +32,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 ### What's coming?
 In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
- - Bounce gamemode
+ - Bounce gamemode (think Jackbox survey scramble, for lists longer than quixort, this one is probably not happening tho)
  - BINGO/Wendit UI revamp
  - Some love to the main buzzers
  - Better UI 
@@ -44,7 +44,7 @@ In no particular order:
 Whatever I decide to add, gets added, if there is a second branch, usually the name will say what I am adding, and there is almost always a few random qol and bug fixes (and bugs) added in as well
 
 ### Tutorial?
-[Crappy outdatedtutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
+[Crappy outdated tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
 
 #### Video tutorial?
 Possibly.
