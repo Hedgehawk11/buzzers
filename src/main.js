@@ -64,6 +64,7 @@ const DEFAULT_SETTINGS = {
   bingoAllowMultipleCorrect: true,
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
+  quixortAudienceLive: false,
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -180,6 +181,11 @@ let lastAudienceParticipantCount = 0;
 let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
 let bingoSpaceKeydownBound = false;
+let quixortKeydownBound = false;
+// Quixort trash two-tap confirm is client-local UI state (never shared —
+// one screen arming trash must not arm every screen). Keyed by
+// `${trackKey}:${deckPos}` so a new block auto-disarms a stale arm.
+let quixortTrashArmedKey = null;
 let coopTextSlot = 0;
 let coopEditing = false;
 // Room-code modal is module-local UI state (never shared PlayroomKit state —
@@ -1590,6 +1596,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
       bingoLessRandom: settings.bingoLessRandom,
       bingoAllowMultipleCorrect: settings.bingoAllowMultipleCorrect,
       disOrDatTimedSeconds: settings.disOrDatTimedSeconds,
+      quixortAudienceLive: settings.quixortAudienceLive === true,
       snarkMode: settings.snarkMode,
     },
     coopRosters: getCoopRosters(),
@@ -3951,7 +3958,8 @@ function renderQuixortBreakdownHtml(qx, run, scored) {
   const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
   const orderPoints = (scored.concordant - scored.discordant) * scored.pairWeight;
   const lines = [
-    getSnark("player.quixort.orderLine", `Order: ${scored.concordant} right × ${scored.pairWeight} minus ${scored.discordant} flipped × ${scored.pairWeight} = ${orderPoints}`, { good: scored.concordant, w: scored.pairWeight, bad: scored.discordant, points: orderPoints }),
+    getSnark("player.quixort.orderLine", `Pairs in order: ${scored.concordant} right − ${scored.discordant} flipped (each ±${scored.pairWeight}) = ${orderPoints}`, { good: scored.concordant, w: scored.pairWeight, bad: scored.discordant, points: orderPoints }),
+    getSnark("player.quixort.pairWeightLine", `Each ordered pair is worth ${scored.pairWeight} pts (${scored.totalPairs} pairs total)`, { w: scored.pairWeight, pairs: scored.totalPairs }),
     getSnark("player.quixort.trashLine", `Trash kept: ${scored.trashCorrect} × 250 = ${scored.trashCorrect * QUIXORT_POINTS_TRASH}`, { count: scored.trashCorrect, points: scored.trashCorrect * QUIXORT_POINTS_TRASH }),
   ];
   if (scored.trashBonus) lines.push(getSnark("player.quixort.trashAllLine", `All trash sorted: +${scored.trashBonus}`, { bonus: scored.trashBonus }));
@@ -3975,15 +3983,24 @@ function renderQuixortRevealHtml(qx, run) {
   const trashed = Array.isArray(run?.trashed) ? run.trashed : [];
   const voided = Array.isArray(run?.voided) ? run.voided : [];
   const correctHtml = items.map((t, i) => `<li><span class="muted">${i + 1}.</span> ${escapeHtml(t)}</li>`).join("");
+  // Per-item signal: exact-position hits (green) vs moved reals (amber).
+  // Pairwise scoring is global, so the legend says "exact spot" — not "pair".
+  let realPos = -1;
   const rowHtml = row.map((e) => {
     const txt = escapeHtml(getQuixortBlockText(qx, e));
-    if (e && e.t === "trash") return `<span class="quixort-row-block is-trash">${txt} <small>(${getSnark("player.quixort.placedTrashNote", "trash in row −500")})</small></span>`;
-    return `<span class="quixort-row-block">${txt}</span>`;
+    if (e && e.t === "trash") return `<span class="quixort-row-block is-trash is-misplaced">${txt} <small>(${getSnark("player.quixort.placedTrashNote", "trash in row −500")})</small></span>`;
+    realPos += 1;
+    const exact = Number(e?.ref) === realPos;
+    return `<span class="quixort-row-block ${exact ? "is-exact" : "is-moved"}">${txt}</span>`;
   }).join(`<span class="quixort-row-sep">→</span>`);
-  const trashedHtml = trashed.map((e) => `<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(" ");
+  const trashedHtml = trashed.map((e) => {
+    const txt = escapeHtml(getQuixortBlockText(qx, e));
+    if (e && e.t === "item") return `<span class="quixort-row-block is-misplaced">${txt} <small>(${getSnark("player.quixort.trashedRealNote", "real item −500")})</small></span>`;
+    return `<span class="quixort-row-block is-trashed-good">${txt}</span>`;
+  }).join(" ");
   const voidedHtml = voided.map((e) => `<span class="quixort-row-block is-voided">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(" ");
   return `<div class="quixort-reveal">
-    <strong>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</strong>
+    <div class="quixort-legend muted">${getSnark("player.quixort.revealLegend", "Green = exact spot · amber = moved · dashed red = misclassified · struck = timed out")}</div>
     <div class="quixort-reveal-lists">
       <div><span class="muted">${getSnark("player.quixort.correctOrderLabel", "Correct order")}</span><ol class="quixort-correct-list">${correctHtml}</ol></div>
       <div><span class="muted">${getSnark("player.quixort.yourRowLabel", "Your row")}</span><div class="quixort-row-wrap">${rowHtml || `<span class="muted">—</span>`}</div>
@@ -7803,6 +7820,13 @@ function renderQuixortHostPanel(settings, players) {
             <select id="quixort-block-sec">${blockOpts}</select>
             <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn.</p>
           </label>
+          <label>Audience sees live rows
+            <div class="toggle-switch">
+              <button type="button" class="toggle-switch-btn ${settings.quixortAudienceLive === true ? "is-active" : ""}" data-toggle-setting="quixortAudienceLive" data-value="true">On</button>
+              <button type="button" class="toggle-switch-btn ${settings.quixortAudienceLive === true ? "" : "is-active is-off-val"}" data-toggle-setting="quixortAudienceLive" data-value="false">Off</button>
+            </div>
+            <p class="setting-helper">Off shows counts only (no spoilers). On mirrors each track's row to the display.</p>
+          </label>
         </div>
         <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Ordered items (${filledItems.length}/${QUIXORT_MAX_ITEMS})</h3>
         <div class="quixort-setup-list">${itemInputs}</div>
@@ -7832,14 +7856,24 @@ function renderQuixortHostPanel(settings, players) {
     return { track, run, deckLen, remaining, turnName, scored };
   }).sort((a, b) => ((b.scored?.total || 0) - (a.scored?.total || 0)) || ((b.run.deckPos || 0) - (a.run.deckPos || 0)));
   const remainingMax = trackRows.reduce((m, r) => Math.max(m, r.run.finished ? 0 : r.remaining), 0);
-  const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }) => {
+  const rankMedal = (i) => (i === 0 ? "🥇 " : i === 1 ? "🥈 " : i === 2 ? "🥉 " : "");
+  const renderQuixortLiveRow = (run) => {
+    const row = Array.isArray(run.row) ? run.row : [];
+    if (!row.length) return `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`;
+    return row.map((e) => `<span class="quixort-row-block quixort-live-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
+  };
+  const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }, idx) => {
     const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
     if (scored) {
-      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})${renderQuixortBreakdownHtml(qx, run, scored)}${renderQuixortRevealHtml(qx, run)}</li>`;
+      const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
+      const bonusPill = !scored.clean && scored.bonus ? ` <span class="quixort-pill">+${scored.bonus}</span>` : "";
+      return `<li>${rankMedal(idx)}<strong>${quixortTrackLabel(track, participants, assignments)}</strong> — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})${perfectPill}${bonusPill}<details class="quixort-details"><summary>${getSnark("player.quixort.howScored", "How scored")}</summary>${renderQuixortBreakdownHtml(qx, run, scored)}</details><details class="quixort-details"><summary>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</summary>${renderQuixortRevealHtml(qx, run)}</details></li>`;
     }
     const live = scoreQuixortRun(qx, run);
     const liveTxt = getSnark("player.quixort.liveProj", `proj. ${live.total} pts (base ${live.base} + bonus ${live.bonus}, ×${normalizeQuixortMultiplier(qx.multiplier)})`, { total: live.total, base: live.base, bonus: live.bonus, mult: normalizeQuixortMultiplier(qx.multiplier) });
-    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span> <span class="muted quixort-proj">${liveTxt}</span></li>`;
+    const trashedCount = Array.isArray(run.trashed) ? run.trashed.length : 0;
+    const voidedCount = Array.isArray(run.voided) ? run.voided.length : 0;
+    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span> <span class="muted quixort-proj">${liveTxt}</span><div class="quixort-row-wrap quixort-live-row">${renderQuixortLiveRow(run)}</div><div class="muted quixort-live-meta">${getSnark("player.quixort.liveMeta", `Trashed ${trashedCount} · timed out ${voidedCount}`, { trashed: trashedCount, voided: voidedCount })}</div></li>`;
   }).join("");
   if (qx.phase === "results") {
     return `
@@ -7886,13 +7920,14 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
   const hasTrash = getQuixortTrash(qx).length > 0;
   if (qx.phase === "results") {
     const scored = scoreQuixortRun(qx, run);
+    const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
     return `
       <section class="card player-card">
         <h2>Quixort ${teamPill}</h2>
-        <h3>${getSnark("player.quixort.resultsTitle", "Results")} — <strong>${scored.total}</strong> pts</h3>
+        <h3>${getSnark("player.quixort.resultsTitle", "Results")} — <strong>${scored.total}</strong> pts${perfectPill}</h3>
         <p class="muted">${getSnark("player.quixort.pairsCount", `${scored.concordant}/${scored.totalPairs} pairs in order`, { good: scored.concordant, pairs: scored.totalPairs })}, ${scored.trashCorrect} trash sorted${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
-        ${renderQuixortBreakdownHtml(qx, run, scored)}
-        ${renderQuixortRevealHtml(qx, run)}
+        <details class="quixort-details" open><summary>${getSnark("player.quixort.howScored", "How scored")}</summary>${renderQuixortBreakdownHtml(qx, run, scored)}</details>
+        <details class="quixort-details"><summary>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</summary>${renderQuixortRevealHtml(qx, run)}</details>
         <p class="muted">${getSnark("player.quixort.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </section>`;
   }
@@ -7901,6 +7936,7 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
   }
   const entry = deck[Number(run.deckPos) || 0];
   const blockText = escapeHtml(getQuixortBlockText(qx, entry));
+  const blockPlain = getQuixortBlockText(qx, entry);
   const turnId = getQuixortTurnPlayerId(trackKey, run, participants, assignments);
   const myTurn = !turnId || turnId === mePlayer.id;
   const turnPlayer = participants.find((p) => p.id === turnId);
@@ -7908,20 +7944,49 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
     ? (myTurn
       ? `<p class="muted">${getSnark("player.quixort.yourTurn", "Your turn to place.")}</p>`
       : `<p class="muted">${getSnark("player.quixort.teammateTurn", `It's ${turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "a teammate"}'s turn to place.`, { player: turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "a teammate" })}</p>`)
-    : "";
-  const rowHtml = row.map((e) => `<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
-  const insertBtns = row.map((_, i) => `<button type="button" class="toggle-chip" data-quixort-place data-insert="${i}" ${myTurn ? "" : "disabled"}>${i === 0 ? "First" : `Before ${i + 1}`}</button>`).join("")
-    + `<button type="button" class="toggle-chip" data-quixort-place data-insert="${row.length}" ${myTurn ? "" : "disabled"}>${row.length === 0 ? "Place" : "Last"}</button>`;
+    : `<p class="muted">${getSnark("player.quixort.soloProgress", `Your sort — block ${Number(run.deckPos) + 1} of ${deck.length}, row has ${row.length}.`, { current: Number(run.deckPos) + 1, total: deck.length, placed: row.length })}</p>`;
+  const truncQx = (s, n = 16) => {
+    const t = String(s || "");
+    return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  };
+  const gapLabel = (i) => {
+    if (row.length === 0) return getSnark("player.quixort.gapFirst", "Place first block here");
+    const prevRaw = truncQx(getQuixortBlockText(qx, row[i - 1]));
+    const nextRaw = truncQx(getQuixortBlockText(qx, row[i]));
+    const prev = escapeHtml(prevRaw);
+    const next = escapeHtml(nextRaw);
+    if (i === 0) return getSnark("player.quixort.gapStart", `First — before “${next}”`, { next });
+    if (i === row.length) return getSnark("player.quixort.gapEnd", `Last — after “${prev}”`, { prev });
+    return getSnark("player.quixort.gapBetween", `Slot ${i + 1} — between “${prev}” → “${next}”`, { slot: i + 1, prev, next });
+  };
+  // Gap-target placement: each button sits in the row gap it fills, labeled
+  // with the actual neighbors, so the tap target maps 1:1 to the outcome.
+  // Same `data-quixort-place` RPC contract — placement stays one-shot.
+  const rowSegs = [];
+  for (let i = 0; i <= row.length; i++) {
+    const label = gapLabel(i);
+    rowSegs.push(`<button type="button" class="quixort-gap" data-quixort-place data-insert="${i}" ${myTurn ? "" : "disabled"} aria-label="${escapeHtml(`Place ${blockPlain} at position ${i + 1} of ${row.length + 1}`)}" title="${label}"><span aria-hidden="true">⌄</span> ${label}</button>`);
+    if (i < row.length) rowSegs.push(`<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, row[i]))}</span>`);
+  }
+  const deckPosNum = Number(run.deckPos) || 0;
+  const progressPct = deck.length ? Math.round((deckPosNum / deck.length) * 100) : 0;
+  const armKey = `${trackKey}:${deckPosNum}`;
+  const trashArmed = quixortTrashArmedKey === armKey;
+  const trashPlain = escapeHtml(blockPlain);
+  const trashLabel = trashArmed
+    ? getSnark("player.quixort.trashConfirm", `Tap again to trash “${trashPlain}”`, { block: trashPlain })
+    : getSnark("player.quixort.trashButton", "Trash it");
   return `
     <section class="card player-card">
       <h2>Quixort ${teamPill}</h2>
       ${turnBanner}
       <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s</strong></div>
+      <div class="quixort-progress" aria-hidden="true"><div class="quixort-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="quixort-block-card"><span class="muted">Sort this:</span><strong>${blockText}</strong></div>
-      <div class="quixort-row-wrap">${rowHtml || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
+      <div class="quixort-row-wrap quixort-row-gaps">${rowSegs.join("") || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
       <p class="muted">${getSnark("player.quixort.placePrompt", `Block ${Number(run.deckPos) + 1} of ${deck.length} — tap where it goes.`, { current: Number(run.deckPos) + 1, total: deck.length })}</p>
-      <div class="host-actions quixort-inserts">${insertBtns}</div>
-      ${hasTrash ? `<div class="host-actions"><button type="button" data-quixort-trash-block ${myTurn ? "" : "disabled"}>${getSnark("player.quixort.trashButton", "Trash it")}</button></div>` : ""}
+      <p class="muted quixort-keys">${getSnark("player.quixort.keysHint", "Keys 1–9 place · T trash. Placement is final — trash needs two taps.")}</p>
+      ${hasTrash ? `<div class="host-actions"><button type="button" class="${trashArmed ? "quixort-trash-armed" : ""}" data-quixort-trash-block ${myTurn ? "" : "disabled"}>${trashLabel}</button></div>` : ""}
     </section>`;
 }
 function renderQuixortAudienceDisplay(settings, players) {
@@ -7944,11 +8009,20 @@ function renderQuixortAudienceDisplay(settings, players) {
     const scored = qx.phase === "results" ? scoreQuixortRun(qx, run) : null;
     return { track, run, scored, total: scored ? scored.total : 0 };
   }).sort((a, b) => b.total - a.total || (b.run.deckPos || 0) - (a.run.deckPos || 0));
-  const standings = tracks.map(({ track, run, scored }) => {
+  const standings = tracks.map(({ track, run, scored }, idx) => {
     const deckLen = (run.deck || []).length;
+    const medal = idx === 0 ? "🥇 " : idx === 1 ? "🥈 " : idx === 2 ? "🥉 " : "";
     if (qx.phase === "results" && scored) {
       const summary = `${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash = ${scored.total} pts`;
-      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${summary}${renderQuixortBreakdownHtml(qx, run, scored)}${renderQuixortRevealHtml(qx, run)}</li>`;
+      const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
+      return `<li>${medal}<strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${summary}${perfectPill}<details class="quixort-details"><summary>${getSnark("player.quixort.howScored", "How scored")}</summary>${renderQuixortBreakdownHtml(qx, run, scored)}</details><details class="quixort-details"><summary>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</summary>${renderQuixortRevealHtml(qx, run)}</details></li>`;
+    }
+    if (settings.quixortAudienceLive === true) {
+      const row = Array.isArray(run.row) ? run.row : [];
+      const liveRow = row.length
+        ? row.map((e) => `<span class="quixort-row-block quixort-live-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`)
+        : `<span class="muted">—</span>`;
+      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks<div class="quixort-row-wrap quixort-live-row">${liveRow}</div></li>`;
     }
     return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks</li>`;
   }).join("");
@@ -11770,6 +11844,10 @@ function bindEvents() {
     document.addEventListener("keydown", handleBingoSpaceKeydown);
     bingoSpaceKeydownBound = true;
   }
+  if (!quixortKeydownBound) {
+    document.addEventListener("keydown", handleQuixortKeydown);
+    quixortKeydownBound = true;
+  }
 
   // --- Delegated handlers below ---
   delegate("pointerdown", "[data-buzz]", (e, btn) => {
@@ -12168,6 +12246,25 @@ function bindEvents() {
   });
   delegate("click", "[data-quixort-trash-block]", async () => {
     if (isControllerPlayer() || isProducer()) return;
+    // Two-tap confirm (client-local): first tap arms, second tap sends.
+    // Armed key includes deckPos so a new block auto-disarms a stale arm.
+    try {
+      const self = me();
+      if (self?.id) {
+        const qx = getQuixort();
+        const settings = getSettings();
+        const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+        const trackKey = getTeamTrackKey(self.id, settings, assignments);
+        const run = qx.runs?.[trackKey];
+        const armKey = `${trackKey}:${Number(run?.deckPos) || 0}`;
+        if (quixortTrashArmedKey !== armKey) {
+          quixortTrashArmedKey = armKey;
+          scheduleRender(render);
+          return;
+        }
+        quixortTrashArmedKey = null;
+      }
+    } catch {}
     try {
       const result = await RPC.call("quixort-place", { trash: true }, RPC.Mode.HOST);
       if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
@@ -12605,6 +12702,38 @@ function handleRouletteKeydown(event) {
 
   event.preventDefault();
   submitRouletteStop();
+}
+
+// =============================================================================
+// Quixort keyboard placement — 1..9 picks the gap button, T arms/confirms
+// trash (via the same delegated buttons, so disabled/turn/two-tap rules
+// apply untouched). Quixort is banned in coop, so no slot routing here.
+// =============================================================================
+function handleQuixortKeydown(event) {
+  if (event.repeat) return;
+  if (isEditingControl()) return;
+  const isDigit = /^Digit[1-9]$/.test(event.code || "") || /^[1-9]$/.test(event.key || "");
+  const isTrash = event.code === "KeyT" || event.key === "t" || event.key === "T";
+  if (!isDigit && !isTrash) return;
+  if (!isQuixortMode()) return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const mount = getApp() || app;
+  if (!mount) return;
+  try {
+    if (isTrash) {
+      const trashBtn = mount.querySelector("[data-quixort-trash-block]:not([disabled])");
+      if (!trashBtn) return;
+      event.preventDefault();
+      trashBtn.click();
+      return;
+    }
+    const n = Number(event.key);
+    if (!Number.isInteger(n) || n < 1 || n > 9) return;
+    const btn = mount.querySelector(`[data-quixort-place][data-insert="${n - 1}"]:not([disabled])`);
+    if (!btn) return;
+    event.preventDefault();
+    btn.click();
+  } catch {}
 }
 
 // Player submits their roulette stop (locks in current value)

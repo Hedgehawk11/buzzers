@@ -623,6 +623,7 @@ check("quixort started", S().quixort?.active === true && S().quixort?.phase === 
 check("quixort deck is items+trash", (S().quixort?.runs?.dev1?.deck || []).length === 5, JSON.stringify(S().quixort?.runs?.dev1?.deck?.length));
 check("quixort roster frozen", (S().quixort?.expectedTracks || []).includes("dev1"), JSON.stringify(S().quixort?.expectedTracks));
 check("quixort host playing shows live projection", mount.innerHTML.includes("proj."), "no live projection");
+check("quixort host playing shows live rows", mount.innerHTML.includes("quixort-live-row"), "no live row on host");
 // player view offers trash since host defined trash (true player branch:
 // harness hardcodes isHost, so drop privileges + ungated click to re-render)
 pk._store.isHost = false;
@@ -630,6 +631,8 @@ pk._store.self = dev1;
 clickBtn({}, "[data-f-you-close]");
 await sleep(20);
 check("quixort player sees trash button", mount.innerHTML.includes("data-quixort-trash-block"), "trash button missing");
+check("quixort player sees gap placement", mount.innerHTML.includes("quixort-gap") && mount.innerHTML.includes("data-quixort-place"), "gap buttons missing");
+check("quixort player sees keys hint", mount.innerHTML.includes("Keys 1"), "keys hint missing");
 pk._store.isHost = true;
 pk._store.self = pk._store.participants.host1;
 // perfect dev1 run: exact inserts + trash the trash -> clean bonus at mult 2
@@ -670,6 +673,9 @@ check("quixort log shows multiplier math", S().gameLog.filter((e) => e.type === 
 check("quixort log shows voided block", S().gameLog.filter((e) => e.type === "quixort").some((e) => /voided/.test(e.answerText || "")), "no voided in log");
 check("quixort host results show breakdown", mount.innerHTML.includes("quixort-breakdown") && mount.innerHTML.includes("Clean bonus"), "no breakdown in host results");
 check("quixort host results reveal correct order", mount.innerHTML.includes("Correct order vs your row") && mount.innerHTML.includes("Alpha"), "no reveal in host results");
+check("quixort host results tiered disclosure", mount.innerHTML.includes("quixort-details") && mount.innerHTML.includes("How scored"), "no details disclosure");
+check("quixort host results rank medals", mount.innerHTML.includes("🥇"), "no rank medal");
+check("quixort host results highlight legend", mount.innerHTML.includes("exact spot") && mount.innerHTML.includes("is-exact"), "no per-item highlight");
 // player results view carries the same breakdown + reveal for the own run
 pk._store.isHost = false;
 pk._store.self = dev1;
@@ -737,6 +743,11 @@ check(
 check("quixort all-trash logged", S().gameLog.filter((e) => e.type === "quixort").some((e) => /all-trash bonus/.test(e.answerText || "")), "no all-trash in log");
 await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setQuixortTrashItem", args: [1, ""] }, prod);
+check("quixort setup offers audience live-rows toggle", mount.innerHTML.includes("Audience sees live rows"), "no audience toggle in setup");
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["quixortAudienceLive", true] }, prod);
+check("quixort audience-live setting stored", S().settings?.quixortAudienceLive === true, JSON.stringify(S().settings?.quixortAudienceLive));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["quixortAudienceLive", false] }, prod);
+check("quixort audience-live defaults off", S().settings?.quixortAudienceLive === false, JSON.stringify(S().settings?.quixortAudienceLive));
 // shared-team rotation: teammates rotate per block, off-turn rejected
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);

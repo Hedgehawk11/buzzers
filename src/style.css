@@ -2176,6 +2176,123 @@ body:not([data-ui-anims="off"]) .roulette-locked-note {
   text-decoration: line-through;
 }
 
+/* Gap-target placement: each button sits in the row gap it fills. */
+.quixort-row-gaps {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.quixort-gap {
+  min-height: 44px;
+  padding: 0.55rem 0.7rem;
+  border: 1px dashed var(--panel-border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quixort-gap:hover:enabled {
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent, #ffd166) 14%, transparent);
+}
+
+.quixort-gap:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.quixort-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  margin: 0.35rem 0 0;
+  overflow: hidden;
+}
+
+.quixort-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent, #ffd166);
+}
+
+.quixort-keys {
+  font-size: 0.8rem;
+}
+
+.quixort-trash-armed {
+  border: 2px solid #ff5a5a;
+  font-weight: 700;
+}
+
+.quixort-live-row {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.quixort-live-block {
+  font-size: 0.8rem;
+  padding: 0.15rem 0.4rem;
+}
+
+.quixort-live-meta {
+  font-size: 0.8rem;
+  margin-top: 0.2rem;
+}
+
+.quixort-details {
+  margin: 0.35rem 0;
+  font-size: 0.85rem;
+}
+
+.quixort-details > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.quixort-pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  margin-left: 0.35rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  vertical-align: middle;
+}
+
+.quixort-pill-perfect {
+  border-color: var(--green, #4caf50);
+}
+
+.quixort-legend {
+  font-size: 0.78rem;
+  margin-bottom: 0.3rem;
+}
+
+/* Result per-item signal. */
+.quixort-row-block.is-exact {
+  border-color: var(--green, #4caf50);
+}
+
+.quixort-row-block.is-moved {
+  border-color: #e0a100;
+}
+
+.quixort-row-block.is-misplaced,
+.quixort-row-block.is-trashed-good {
+  border-style: dashed;
+}
+
+.quixort-row-block.is-misplaced {
+  border-color: #ff5a5a;
+}
+
+body:not([data-ui-anims="off"]) .quixort-gap:hover:enabled {
+  transition: background 160ms ease;
+}
+
 .disordat-progress div {
   font-size: 0.85rem;
   margin-bottom: 0.2rem;
