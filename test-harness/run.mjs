@@ -114,6 +114,12 @@ if (COOP) {
   check("locked with pending entry", S().round?.status === "locked" && !!entryId, `${S().round?.status} ${entryId}`);
   const entry = S().gameLog.find((e) => e.id === entryId);
   check("entry keyed to slot", entry?.scoreKey === "coop:dev1:0", JSON.stringify(entry?.scoreKey));
+  // Buzz holds (frozen last frame) while the ruling pends — past the fresh
+  // window, since the entry stays unresolved.
+  const T0 = globalThis.__BUZZER_TEST__;
+  check("buzz holds while ruling pends", T0.getCoopCharMoodForKey("coop:dev1:0", S().round) === "buzz", T0.getCoopCharMoodForKey("coop:dev1:0", S().round));
+  await sleep(1600);
+  check("buzz still holds while unresolved", T0.getCoopCharMoodForKey("coop:dev1:0", S().round) === "buzz", T0.getCoopCharMoodForKey("coop:dev1:0", S().round));
 
   // --- THE DEDUCTION TEST ---
   await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [entryId, -1000] }, prod);
@@ -230,6 +236,22 @@ if (COOP) {
 }
 await pk._store.rpc.buzz({ option: 2 }, dev3); // wrong vs preset 1
 const openEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+if (COOP) {
+  check("coop immediate wrong deducts while open", openEntry?.resolved === true && Number(openEntry?.awardedDelta || 0) < 0, JSON.stringify(openEntry?.awardedDelta));
+  check("coop immediate wrong keeps round open", S().round?.status === "open", S().round?.status);
+  check("coop immediate wrong sets no pending ruling", S().pendingLogId == null, JSON.stringify(S().pendingLogId));
+  check("coop buzz face first (wrong held for flip)", S().coopMoods?.dev3 === undefined, JSON.stringify(S().coopMoods));
+  await sleep(1100);
+  check("coop wrong face flips after buzz", S().coopMoods?.dev3 === "wrong", JSON.stringify(S().coopMoods));
+  // Wrong holds its last frame (no self-clear) until round reset.
+  await sleep(1800);
+  check("coop wrong holds last frame", S().coopMoods?.dev3 === "wrong", JSON.stringify(S().coopMoods));
+  check(
+    "coop wrong shown on avatar while held",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round) === "wrong",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round),
+  );
+}
 await pk._store.rpc["producer-action"](
   { fn: "updateScoresForLogEntry", args: [openEntry.id, -1000] },
   prod,
@@ -247,15 +269,24 @@ await pk._store.rpc["producer-action"](
   prod,
 );
 check("re-edit back to minus", S().scores?.dev3 === -1000, JSON.stringify(S().scores?.dev3));
-// --- toggle has no effect off-LAB: scoring waits for the close, round stays open ---
+// --- toggle has no effect off-LAB: non-coop scoring waits for the close,
+// round stays open; coop scores immediately and also stays open ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 if (COOP) {
   await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
 }
-await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1: held until close
+await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1
 const labOffEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
-check("off-LAB correct held while open", labOffEntry?.resolved !== true && Number(labOffEntry?.awardedDelta || 0) === 0, JSON.stringify(labOffEntry?.awardedDelta));
+if (COOP) {
+  check("coop immediate correct awards while open", labOffEntry?.resolved === true && Number(labOffEntry?.awardedDelta || 0) > 0, JSON.stringify(labOffEntry?.awardedDelta));
+  check("coop immediate correct sets no pending ruling", S().pendingLogId == null, JSON.stringify(S().pendingLogId));
+  check("coop buzz face first (correct held for flip)", S().coopMoods?.gate1 === undefined, JSON.stringify(S().coopMoods));
+  await sleep(1100);
+  check("coop correct face flips after buzz", S().coopMoods?.gate1 === "correct", JSON.stringify(S().coopMoods));
+} else {
+  check("off-LAB correct held while open", labOffEntry?.resolved !== true && Number(labOffEntry?.awardedDelta || 0) === 0, JSON.stringify(labOffEntry?.awardedDelta));
+}
 check("toggle has no effect off-LAB", S().round?.status === "open", S().round?.status);
 await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
 const labOffEntryClosed = S().gameLog.find((e) => e.id === labOffEntry.id);
@@ -273,6 +304,31 @@ try {
     if (k === "gate1" || String(k).startsWith("coop:gate1:")) delete S().scores[k];
   }
 } catch {}
+
+// --- face scope: buzz lights only the buzzing slot, never locked siblings ---
+// (sibling lockout shares buzzedPlayerIds, so the face must come from actual
+// log buzzes). Uses a throwaway 2-slot device, retired exactly like gate1.
+if (COOP) {
+  const devX = pk.makePlayer("devX", "GroupX");
+  pk._store.participants.devX = devX;
+  await pk._store.rpc["coop-roster"]({ group: "GroupX", count: 2, names: ["X1", "X2"] }, devX);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("reopen for face-scope probe", S().round?.status === "open", S().round?.status);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, devX);
+  await pk._store.rpc.buzz({ option: 1, coopSlot: 0 }, devX); // correct → instant + sibling lockout
+  const T = globalThis.__BUZZER_TEST__;
+  check("buzz face only on the buzzing slot", T.getCoopCharMoodForKey("coop:devX:0", S().round) === "buzz", T.getCoopCharMoodForKey("coop:devX:0", S().round));
+  check("locked sibling shows no buzz face", T.getCoopCharMoodForKey("coop:devX:1", S().round) === "idle", T.getCoopCharMoodForKey("coop:devX:1", S().round));
+  delete pk._store.participants.devX;
+  try {
+    const rosters = { ...(S().coopRosters || {}) };
+    delete rosters.devX;
+    pk._store.state.coopRosters = rosters;
+    for (const k of Object.keys(S().scores || {})) {
+      if (k === "devX" || String(k).startsWith("coop:devX:")) delete S().scores[k];
+    }
+  } catch {}
+}
 
 // --- text mode deduction ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);
@@ -533,7 +589,20 @@ if (COOP) {
   await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry.id, -1000] }, prod);
   check("wrong face set", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
   await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
-  check("reset clears faces", JSON.stringify(S().coopMoods) === "{}" || S().coopMoods === undefined, JSON.stringify(S().coopMoods));
+  const rewound = S().coopMoods || {};
+  check("reset rewinds held wrong faces", rewound.dev2 === "rewind" && !Object.values(rewound).includes("wrong"), JSON.stringify(rewound));
+  check(
+    "rewind shows reverse wrong on avatar",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "rewind",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round),
+  );
+  await sleep(1800);
+  check("rewind settles to idle", Object.keys(S().coopMoods || {}).length === 0, JSON.stringify(S().coopMoods));
+  check(
+    "idle end-state on avatar after rewind",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "idle",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round),
+  );
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   await pk._store.rpc.buzz({ option: 4 }, dev2);
   const moodEntry2 = S().gameLog.filter((e) => e.type === "buzz").pop();
@@ -541,6 +610,168 @@ if (COOP) {
   check("correct face set", S().coopMoods?.dev2 === "correct" || S().coopMoods?.["coop:dev2:0"] === "correct", JSON.stringify(S().coopMoods));
   await sleep(1800);
   check("correct face self-clears", !S().coopMoods?.dev2 && !S().coopMoods?.["coop:dev2:0"], JSON.stringify(S().coopMoods));
+  check(
+    "correct idle end-state on avatar",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "idle"
+      && globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("coop:dev2:0", S().round) === "idle",
+    "stale judged face",
+  );
+  // A new round (open, not just reset) rewinds held wrong faces too: reverse
+  // playback, then idle.
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  const moodEntry3 = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry3.id, -1000] }, prod);
+  check("wrong face set before new round", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("new round rewinds held wrong", S().coopMoods?.dev2 === "rewind", JSON.stringify(S().coopMoods));
+  await sleep(1500);
+  check("open rewind settles to idle", Object.keys(S().coopMoods || {}).length === 0, JSON.stringify(S().coopMoods));
+}
+
+// --- coop faces play once per action: repeats render frozen, new actions replay ---
+if (COOP) {
+  const fT = globalThis.__BUZZER_TEST__;
+  fT.setCoopCharArt(1, "base", "/1.png");
+  fT.setCoopCharArt(1, "buzz", "/1-buzz.png", 4);
+  fT.setCoopCharArt(1, "wrong", "/1-wrong.png", 4);
+  fT.setCoopCharArt(1, "correct", "/1-correct.png", 4);
+  fT.resetCoopFaceSeen();
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  const faceEntry0 = S().gameLog.filter((e) => e.type === "buzz").pop();
+  const faceKey = faceEntry0?.scoreKey || "dev2";
+  check("buzz mood for face test", fT.getCoopCharMoodForKey(faceKey, S().round) === "buzz", fT.getCoopCharMoodForKey(faceKey, S().round));
+  const buzzFirst = fT.getCoopCharHtml(0, "buzz", "", faceKey);
+  check("buzz strip plays on first render", buzzFirst.includes("coop-avatar-strip") && !buzzFirst.includes("is-held"), buzzFirst.slice(0, 160));
+  await sleep(200);
+  const buzzRepeat = fT.getCoopCharHtml(0, "buzz", "", faceKey);
+  check("buzz strip frozen on re-render", buzzRepeat.includes("is-held") && buzzRepeat.includes("animation:none"), buzzRepeat.slice(0, 200));
+  const faceEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [faceEntry.id, -1000] }, prod);
+  const wrongFirst = fT.getCoopCharHtml(0, "wrong", "", faceKey);
+  check("wrong strip plays once when judged", wrongFirst.includes("coop-avatar-strip") && !wrongFirst.includes("is-held"), wrongFirst.slice(0, 160));
+  await sleep(200);
+  const wrongRepeat = fT.getCoopCharHtml(0, "wrong", "", faceKey);
+  check("wrong strip holds frozen frame", wrongRepeat.includes("is-held") && wrongRepeat.includes("100% 50%"), wrongRepeat.slice(0, 200));
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  const rewindFirst = fT.getCoopCharHtml(0, "rewind", "", faceKey);
+  check("rewind plays once on reset", rewindFirst.includes("coop-avatar-strip") && !rewindFirst.includes("is-held"), rewindFirst.slice(0, 160));
+  await sleep(200);
+  const rewindRepeat = fT.getCoopCharHtml(0, "rewind", "", faceKey);
+  check("rewind frozen on re-render", rewindRepeat.includes("is-held"), rewindRepeat.slice(0, 200));
+  await sleep(1200);
+  fT.resetCoopFaceSeen();
+}
+
+// --- buzz handoff: keypress preview then host entry plays exactly once total ---
+// Uses a fresh device so no prior-round entry for its key can shadow the
+// optimistic preview path (round numbers are reused across tests).
+if (COOP) {
+  const hT = globalThis.__BUZZER_TEST__;
+  const devH = pk.makePlayer("devH", "GroupH");
+  pk._store.participants.devH = devH;
+  await pk._store.rpc["coop-roster"]({ group: "GroupH", count: 1, names: [] }, devH);
+  hT.resetCoopFaceSeen();
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  hT.noteCoopLocalBuzz("devH");
+  const prevHtml = hT.getCoopCharHtml(0, "buzz", "", "devH");
+  check("keypress preview plays once", prevHtml.includes("coop-avatar-strip") && !prevHtml.includes("is-held"), prevHtml.slice(0, 160));
+  await pk._store.rpc.buzz({ option: 3 }, devH);
+  const handHtml = hT.getCoopCharHtml(0, "buzz", "", "devH");
+  check("entry handoff holds final frame (no replay)", handHtml.includes("is-held"), handHtml.slice(0, 200));
+  hT.noteCoopLocalBuzz(null);
+  hT.resetCoopFaceSeen();
+  // Fixture cleanup: later tests (e.g. quixort shared tracks) require every
+  // live player assigned to a team, so the handoff device must leave.
+  delete pk._store.participants.devH;
+  try { delete S().coopRosters?.devH; } catch {}
+  try { delete S().scores?.devH; } catch {}
+  try { delete S().teamAssignments?.devH; } catch {}
+}
+
+// --- coop: lockout completing the eligible set closes the round ---
+// A solved group must not dangle the round OPEN for slots that can no
+// longer buzz. Narrow the field (snapshots restored after) so completion
+// is reachable with dev1 (2 slots) + dev2 (1 slot).
+if (COOP) {
+  const snapParts = { ...pk._store.participants };
+  const snapScores = JSON.parse(JSON.stringify(S().scores || {}));
+  const snapMoods = JSON.parse(JSON.stringify(S().coopMoods || {}));
+  const snapTeams = JSON.parse(JSON.stringify(S().teamAssignments || {}));
+  const snapRosters = JSON.parse(JSON.stringify(S().coopRosters || {}));
+  for (const pid of Object.keys(pk._store.participants)) {
+    if (pid !== "host1" && pid !== "prod1" && pid !== "dev1" && pid !== "dev2") {
+      delete pk._store.participants[pid];
+    }
+  }
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  if (!((S().round?.correctOptions || []).map(Number).includes(1))) {
+    await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+  }
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("completion round open", S().round?.status === "open", S().round?.status);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
+  const solveRes = await pk._store.rpc.buzz({ option: 1 }, dev1);
+  check("solve accepted", solveRes?.ok === true, JSON.stringify(solveRes));
+  check(
+    "solver siblings locked out",
+    (S().round?.buzzedPlayerIds || []).includes("coop:dev1:0") && (S().round?.buzzedPlayerIds || []).includes("coop:dev1:1"),
+    JSON.stringify(S().round?.buzzedPlayerIds),
+  );
+  check("round stays open for other groups", S().round?.status === "open", S().round?.status);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  check("round closes when eligible set complete", S().round?.status === "closed", `${S().round?.status} ${JSON.stringify(S().round?.buzzedPlayerIds)}`);
+  pk._store.participants = snapParts;
+  pk._store.state.scores = snapScores;
+  pk._store.state.coopMoods = snapMoods;
+  pk._store.state.teamAssignments = snapTeams;
+  pk._store.state.coopRosters = snapRosters;
+  // Leave an openable round behind: completed rounds are terminally closed
+  // (same as timeout/all-eligible closes), so reset to IDLE for the next block.
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
+}
+
+// --- coop analytics: hidden until the post-round; points land instantly ---
+if (COOP) {
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  if (!((S().round?.correctOptions || []).map(Number).includes(1))) {
+    await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+  }
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("coop analytics hidden while open", !_mount.innerHTML.includes("data-analytics-card"), "card leaked mid-round");
+  // Optimistic keypress preview lights the slot face before host state lands.
+  const cT = globalThis.__BUZZER_TEST__;
+  cT.noteCoopLocalBuzz("coop:dev1:1");
+  check("keypress preview lights buzz face", cT.getCoopCharMoodForKey("coop:dev1:1", S().round) === "buzz", cT.getCoopCharMoodForKey("coop:dev1:1", S().round));
+  cT.noteCoopLocalBuzz(null);
+  check("preview clears to idle", cT.getCoopCharMoodForKey("coop:dev1:1", S().round) === "idle", cT.getCoopCharMoodForKey("coop:dev1:1", S().round));
+  await pk._store.rpc.buzz({ option: 2 }, dev2);
+  await pk._store.rpc.buzz({ option: 2 }, dev3);
+  const coopAEntries = S().gameLog.filter((e) => e?.type === "buzz" && Number(e.roundId) === Number(S().round?.roundNumber));
+  check("coop instant scoring while open", coopAEntries.length === 2 && coopAEntries.every((e) => e.resolved === true && Number(e.awardedDelta || 0) < 0), JSON.stringify(coopAEntries.map((e) => e.awardedDelta)));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("coop analytics stays hidden with instant scores", !_mount.innerHTML.includes("data-analytics-card"), "card leaked after instant scoring");
+  await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+  check("coop post-round closed", S().round?.status === "closed", S().round?.status);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  let coopAHtml = "";
+  for (let i = 0; i < 20 && !coopAHtml.includes("2 picks"); i++) {
+    await sleep(50);
+    coopAHtml = _mount.innerHTML;
+  }
+  check("coop analytics shown post-round", coopAHtml.includes("data-analytics-card") && coopAHtml.includes("2 picks"), `len=${coopAHtml.length}`);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
 }
 
 // --- control mismatch: other slots/devices rejected while held (coop-only) ---
@@ -623,6 +854,7 @@ check("quixort started", S().quixort?.active === true && S().quixort?.phase === 
 check("quixort deck is items+trash", (S().quixort?.runs?.dev1?.deck || []).length === 5, JSON.stringify(S().quixort?.runs?.dev1?.deck?.length));
 check("quixort roster frozen", (S().quixort?.expectedTracks || []).includes("dev1"), JSON.stringify(S().quixort?.expectedTracks));
 check("quixort host playing shows live projection", mount.innerHTML.includes("proj."), "no live projection");
+check("quixort host playing shows live rows", mount.innerHTML.includes("quixort-live-row"), "no live row on host");
 // player view offers trash since host defined trash (true player branch:
 // harness hardcodes isHost, so drop privileges + ungated click to re-render)
 pk._store.isHost = false;
@@ -630,6 +862,8 @@ pk._store.self = dev1;
 clickBtn({}, "[data-f-you-close]");
 await sleep(20);
 check("quixort player sees trash button", mount.innerHTML.includes("data-quixort-trash-block"), "trash button missing");
+check("quixort player sees gap placement", mount.innerHTML.includes("quixort-gap") && mount.innerHTML.includes("data-quixort-place"), "gap buttons missing");
+check("quixort player sees keys hint", mount.innerHTML.includes("Keys 1"), "keys hint missing");
 pk._store.isHost = true;
 pk._store.self = pk._store.participants.host1;
 // perfect dev1 run: exact inserts + trash the trash -> clean bonus at mult 2
@@ -670,6 +904,10 @@ check("quixort log shows multiplier math", S().gameLog.filter((e) => e.type === 
 check("quixort log shows voided block", S().gameLog.filter((e) => e.type === "quixort").some((e) => /voided/.test(e.answerText || "")), "no voided in log");
 check("quixort host results show breakdown", mount.innerHTML.includes("quixort-breakdown") && mount.innerHTML.includes("Clean bonus"), "no breakdown in host results");
 check("quixort host results reveal correct order", mount.innerHTML.includes("Correct order vs your row") && mount.innerHTML.includes("Alpha"), "no reveal in host results");
+check("quixort host results tiered disclosure", mount.innerHTML.includes("quixort-details") && mount.innerHTML.includes("How scored"), "no details disclosure");
+  check("quixort host results rank badges", mount.innerHTML.includes("rank-badge") || mount.innerHTML.includes("1."), "no rank marker");
+  check("quixort host results no emoji medals", !mount.innerHTML.includes("🥇") && !mount.innerHTML.includes("🥈") && !mount.innerHTML.includes("🥉"), "emoji medal still present");
+check("quixort host results highlight legend", mount.innerHTML.includes("exact spot") && mount.innerHTML.includes("is-exact"), "no per-item highlight");
 // player results view carries the same breakdown + reveal for the own run
 pk._store.isHost = false;
 pk._store.self = dev1;
@@ -737,6 +975,11 @@ check(
 check("quixort all-trash logged", S().gameLog.filter((e) => e.type === "quixort").some((e) => /all-trash bonus/.test(e.answerText || "")), "no all-trash in log");
 await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setQuixortTrashItem", args: [1, ""] }, prod);
+check("quixort setup offers audience live-rows toggle", mount.innerHTML.includes("Audience sees live rows"), "no audience toggle in setup");
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["quixortAudienceLive", true] }, prod);
+check("quixort audience-live setting stored", S().settings?.quixortAudienceLive === true, JSON.stringify(S().settings?.quixortAudienceLive));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["quixortAudienceLive", false] }, prod);
+check("quixort audience-live defaults off", S().settings?.quixortAudienceLive === false, JSON.stringify(S().settings?.quixortAudienceLive));
 // shared-team rotation: teammates rotate per block, off-turn rejected
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);

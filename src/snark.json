@@ -679,7 +679,12 @@
         "snark2": ""
       },
       "orderLine": {
-        "en": "Order: {good} right × {w} minus {bad} flipped × {w} = {points}",
+        "en": "Pairs in order: {good} right − {bad} flipped (each ±{w}) = {points}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "pairWeightLine": {
+        "en": "Each ordered pair is worth {w} pts ({pairs} pairs total)",
         "snark1": "",
         "snark2": ""
       },
@@ -777,6 +782,66 @@
         "en": "All sorted! Wait for results.",
         "snark1": "Sorted! Waiting for slower players.",
         "snark2": "Done sorting! The other teams are still fumbling."
+      },
+      "soloProgress": {
+        "en": "Your sort — block {current} of {total}, row has {placed}.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "gapFirst": {
+        "en": "Place first block here",
+        "snark1": "",
+        "snark2": ""
+      },
+      "gapStart": {
+        "en": "First — before “{next}”",
+        "snark1": "",
+        "snark2": ""
+      },
+      "gapEnd": {
+        "en": "Last — after “{prev}”",
+        "snark1": "",
+        "snark2": ""
+      },
+      "gapBetween": {
+        "en": "Slot {slot} — between “{prev}” → “{next}”",
+        "snark1": "",
+        "snark2": ""
+      },
+      "trashConfirm": {
+        "en": "Tap again to trash “{block}”",
+        "snark1": "",
+        "snark2": ""
+      },
+      "keysHint": {
+        "en": "Keys 1–9 place · T trash. Placement is final — trash needs two taps.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "howScored": {
+        "en": "How scored",
+        "snark1": "",
+        "snark2": ""
+      },
+      "perfectPill": {
+        "en": "Perfect run",
+        "snark1": "",
+        "snark2": ""
+      },
+      "liveMeta": {
+        "en": "Trashed {trashed} · timed out {voided}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "revealLegend": {
+        "en": "Green = exact spot · amber = moved · dashed red = misclassified · struck = timed out",
+        "snark1": "",
+        "snark2": ""
+      },
+      "trashedRealNote": {
+        "en": "real item −500",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "fibbage": {

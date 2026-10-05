@@ -64,6 +64,7 @@ const DEFAULT_SETTINGS = {
   bingoAllowMultipleCorrect: true,
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
+  quixortAudienceLive: false,
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -180,6 +181,11 @@ let lastAudienceParticipantCount = 0;
 let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
 let bingoSpaceKeydownBound = false;
+let quixortKeydownBound = false;
+// Quixort trash two-tap confirm is client-local UI state (never shared —
+// one screen arming trash must not arm every screen). Keyed by
+// `${trackKey}:${deckPos}` so a new block auto-disarms a stale arm.
+let quixortTrashArmedKey = null;
 let coopTextSlot = 0;
 let coopEditing = false;
 // Room-code modal is module-local UI state (never shared PlayroomKit state —
@@ -750,6 +756,36 @@ function isAllEligibleBuzzed(buzzedPlayerIds, settings) {
   return eligible.length > 0 && eligible.every((id) => (buzzedPlayerIds || []).includes(id));
 }
 
+// Coop: close a completed round. Sibling lockout appends the solver's slots
+// to buzzedPlayerIds, which can complete the eligible set — but the no-lock
+// auto-close in the buzz path runs BEFORE lockout is applied, and the ruling
+// path never re-checks. Without this the round dangles OPEN demanding buzzes
+// from slots that can no longer buzz (a solved group with nowhere to go).
+// Only fires when nobody able to buzz remains: rebuzz off, no live screw,
+// no pending ruling, every eligible slot buzzed or locked out.
+function maybeCloseCompletedRound() {
+  try {
+    const settings = getSettings();
+    if (!isCoopMode(settings)) return false;
+    if (settings.rebuzzAllowed) return false;
+    const round = getRound();
+    if (round.status !== ROUND_STATUSES.OPEN) return false;
+    if (round.screw?.active) return false;
+    if (getSafeState("pendingLogId", null)) return false;
+    if (!isAllEligibleBuzzed(round.buzzedPlayerIds, settings)) return false;
+    setState(
+      "round",
+      { ...round, status: ROUND_STATUSES.CLOSED, closesAt: null, coopControl: null },
+      true,
+    );
+    try {
+      finalizeRoundScoring(currentRoundId());
+    } catch {}
+    render();
+    return true;
+  } catch { return false; }
+}
+
 function getPlayerOptionBuzzCount(round, playerId, option) {
   return Number((round.buzzCounts || {})?.[playerId]?.[option] || 0);
 }
@@ -889,13 +925,14 @@ function getRankBadgeHtml(rank) {
 // =============================================================================
 // Coopertition character art — /public holds per-slot images using the same
 // extensions as rank badges. Naming: 1.png (base/idle), 1-buzz.*, 1-dance.*,
-// 1-correct.*, 1-wrong.* (slots 1..3). Correct/wrong should be horizontal
-// spritesheets with square frames (frame count auto-detected); plain GIFs are
-// accepted as fallback but loop instead of freezing. See public/avatars.md.
+// 1-correct.*, 1-wrong.* (slots 1..3). Buzz/correct/wrong can be horizontal
+// filmstrip spritesheets with square frames (frame count auto-detected);
+// plain GIFs are accepted as fallback but loop instead of freezing.
+// See public/avatars.md.
 // =============================================================================
 const COOP_CHAR_STATES = ["base", "buzz", "dance", "correct", "wrong"];
 const coopCharUrls = { 1: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 2: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 3: { base: null, buzz: null, dance: null, correct: null, wrong: null } };
-const coopCharFrames = { 1: { correct: 0, wrong: 0 }, 2: { correct: 0, wrong: 0 }, 3: { correct: 0, wrong: 0 } };
+const coopCharFrames = { 1: { buzz: 0, correct: 0, wrong: 0 }, 2: { buzz: 0, correct: 0, wrong: 0 }, 3: { buzz: 0, correct: 0, wrong: 0 } };
 let coopCharsProbed = false;
 
 function coopCharFileBase(slot, state) {
@@ -916,7 +953,7 @@ function probeCoopCharCandidates(slot, state, index) {
   const img = new Image();
   img.onload = () => {
     coopCharUrls[slot][state] = url;
-    if ((state === "correct" || state === "wrong") && img.naturalHeight > 0 && img.naturalWidth > img.naturalHeight) {
+    if ((state === "buzz" || state === "correct" || state === "wrong") && img.naturalHeight > 0 && img.naturalWidth > img.naturalHeight) {
       coopCharFrames[slot][state] = Math.max(1, Math.round(img.naturalWidth / img.naturalHeight));
     }
     if (gameLaunched) render();
@@ -925,40 +962,220 @@ function probeCoopCharCandidates(slot, state, index) {
   img.src = url;
 }
 
+// Host-local epoch: bumped on round reset so pending face flips scheduled
+// before the reset never fire on the cleared board (reset preserves the
+// round number, so the round-id guard alone can't catch them).
+let coopFaceEpoch = 0;
+// Optimistic local buzz face: the pressing device lights its slot's buzz
+// animation the moment the key/button fires, without waiting for the host
+// round-trip to come back through shared state. Local-only (module var,
+// never shared) so only the pressing device shows it early — the host and
+// other screens pick the face up from the log entry as before.
+let coopLocalBuzz = null; // { key, roundId, ts } | null
+function noteCoopLocalBuzz(scoreKey) {
+  try {
+    if (scoreKey === null || scoreKey === undefined) { coopLocalBuzz = null; return; }
+    if (typeof scoreKey !== "string" || !scoreKey) return;
+    coopLocalBuzz = { key: scoreKey, roundId: currentRoundId(), ts: now() };
+    scheduleRender(render);
+  } catch {}
+}
+// Latest buzz entry per score key in the current round. Memoized on the log
+// array identity — setState replaces the array on every write (appends AND
+// edits), so ruling flips invalidate the cache while repeated slot lookups
+// within one render reuse it.
+let faceBuzzCache = { log: null, rid: -1, map: new Map() };
+function getCurrentRoundBuzzMap() {
+  let log = [];
+  try { log = getLog() || []; } catch {}
+  let rid = 0;
+  try { rid = currentRoundId(); } catch {}
+  if (faceBuzzCache.log !== log || faceBuzzCache.rid !== rid) {
+    const map = new Map();
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      if (!e || e.type !== "buzz") continue;
+      const erd = Number(e.roundId);
+      if (erd !== rid) {
+        if (Number.isFinite(erd) && erd < rid) break; // chronological: older rounds below
+        continue;
+      }
+      if (e.scoreKey && !map.has(e.scoreKey)) map.set(e.scoreKey, e);
+      if (e.coopKey && e.coopKey !== e.scoreKey && !map.has(e.coopKey)) map.set(e.coopKey, e);
+    }
+    faceBuzzCache = { log, rid, map };
+  }
+  return faceBuzzCache.map;
+}
+
+// Play-once tracker for coop face strips: full innerHTML re-renders recreate
+// <span class="coop-avatar-strip"> nodes, restarting the CSS steps() strip
+// from frame 0. Track the first render of each face action; repeats render
+// frozen on the final frame so each buzz/correct/wrong/rewind plays once.
+// Local-only (module vars, never shared) like coopLocalBuzz. Dance loops by
+// design while the rep telegraphs (see public/avatars.md) so it is untracked.
+let coopFaceSeen = new Map(); // faceKey -> firstSeenMs
+let coopFaceHeld = new Set(); // faceKeys held frozen (preview→entry handoff continuity)
+function getCoopFaceSourceId(scoreKey, mood, round) {
+  try {
+    if (mood !== "buzz" && mood !== "correct" && mood !== "wrong" && mood !== "rewind") return null;
+    if (mood === "rewind") return `epoch:${coopFaceEpoch}`;
+    if (mood === "buzz") {
+      const entry = getCurrentRoundBuzzMap().get(scoreKey);
+      if (entry?.id) return `buzz:${entry.id}`;
+      if (coopLocalBuzz?.key === scoreKey) return `local:${coopLocalBuzz.ts}`;
+      return null;
+    }
+    // Judged faces: latest resolved buzz entry for this key in this round
+    // with a matching sign. Including updatedAt/awardedDelta means a re-ruling
+    // (a new action) replays once instead of staying frozen.
+    const rid = currentRoundId();
+    const log = getLog() || [];
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      if (!e || e.type !== "buzz" || Number(e.roundId) !== Number(rid)) continue;
+      if (e.scoreKey !== scoreKey && e.coopKey !== scoreKey) continue;
+      if (e.resolved !== true) continue;
+      const d = Number(e.awardedDelta || 0);
+      if (mood === "correct" && !(d > 0)) continue;
+      if (mood === "wrong" && !(d < 0)) continue;
+      return `log:${e.id}:${e.updatedAt || d}`;
+    }
+    return null;
+  } catch { return null; }
+}
+function getCoopFaceKey(scoreKey, mood, round) {
+  if (!scoreKey || typeof scoreKey !== "string") return null;
+  const source = getCoopFaceSourceId(scoreKey, mood, round);
+  if (!source) return null;
+  let rid = 0;
+  try { rid = currentRoundId(); } catch {}
+  const key = `${rid}|${scoreKey}|${mood}|${source}`;
+  // Single play across the optimistic handoff: the pressing device already
+  // animated the keypress preview (local:ts); when the host entry lands a
+  // beat later it must hold the final frame, not replay the strip. Other
+  // screens never saw the preview, so the entry is their one play. Held
+  // (not seen-inherited): the same-pass grace in isFreshCoopFace must not
+  // treat a milliseconds-old handoff as a fresh play.
+  if (mood === "buzz" && source.startsWith("buzz:")) {
+    try {
+      let t = 0;
+      try { t = now(); } catch { t = Date.now(); }
+      const prefix = `${rid}|${scoreKey}|buzz|local:`;
+      for (const [k, seen] of coopFaceSeen) {
+        if (k.startsWith(prefix) && t - seen < 2500 && !coopFaceHeld.has(key)) {
+          coopFaceHeld.add(key);
+          if (coopFaceHeld.size > 500) {
+            const oldest = coopFaceHeld.values().next().value;
+            if (oldest) coopFaceHeld.delete(oldest);
+          }
+          break;
+        }
+      }
+    } catch {}
+  }
+  return key;
+}
+// First render of a faceKey animates; repeats within the same render pass
+// (microseconds apart) also animate, but later re-renders stay frozen.
+function isFreshCoopFace(faceKey) {
+  if (!faceKey) return false;
+  let t = 0;
+  try { t = now(); } catch { t = Date.now(); }
+  const seen = coopFaceSeen.get(faceKey);
+  if (seen === undefined) {
+    coopFaceSeen.set(faceKey, t);
+    if (coopFaceSeen.size > 500) {
+      const oldest = [...coopFaceSeen.entries()].sort((a, b) => a[1] - b[1])[0]?.[0];
+      if (oldest) coopFaceSeen.delete(oldest);
+    }
+    return true;
+  }
+  return (t - seen) < 150;
+}
+
 function getCoopCharMoodForKey(scoreKey, round) {
   // Audience/tablet displays stay idle 24/7 — faces are player/host only.
   try { if (isAudienceDisplayClient()) return "idle"; } catch {}
   const moods = getCoopMoods();
   const mood = moods?.[scoreKey];
-  if (mood === "correct" || mood === "wrong") {
+  let face = null;
+  if (mood === "correct" || mood === "wrong" || mood === "rewind") {
     // The active pick-a-value dancer wins over a stored face during roulette.
     if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
       const rep = getRouletteRepForDevice(round.roulette, scoreKey);
       if (rep) return "dance";
     }
-    return mood;
+    face = mood;
+  } else {
+    if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+      const rep = getRouletteRepForDevice(round.roulette, scoreKey);
+      if (rep) return "dance";
+    }
+    // Buzzed slots only — never the whole group. buzzedPlayerIds doubles as
+    // the sibling-lockout list (a correct ruling locks the solver's remaining
+    // slots), so the face must come from actual buzz entries in this round's
+    // log or every slot on the solving device lights up. Lifecycle: plays
+    // once on buzz (optimistically from the local keypress, then from the
+    // host log entry), holds (frozen last frame) while the ruling is pending
+    // or the judged face is still on its way, then releases to idle.
+    const buzzEntry = getCurrentRoundBuzzMap().get(scoreKey);
+    let localBuzzFresh = false;
+    try {
+      localBuzzFresh = Boolean(coopLocalBuzz)
+        && coopLocalBuzz.key === scoreKey
+        && Number(coopLocalBuzz.roundId) === Number(currentRoundId())
+        && now() - Number(coopLocalBuzz.ts || 0) < 2500;
+    } catch {}
+    if ((buzzEntry && (buzzEntry.resolved !== true || now() - Number(buzzEntry.ts || 0) < 1500)) || localBuzzFresh) face = "buzz";
   }
-  if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
-    const rep = getRouletteRepForDevice(round.roulette, scoreKey);
-    if (rep) return "dance";
+  if (!face) return "idle";
+  // One-shot faces (buzz/correct/wrong) play only on the owning device and
+  // on host/producer screens — other players just see the idle avatar.
+  // (Dance is a turn telegraph and stays visible to everyone.)
+  if (face !== "dance") {
+    try {
+      if (!hasHostPrivileges()) {
+        const myId = me()?.id;
+        const owner = parseCoopScoreKey(scoreKey)?.deviceId || scoreKey;
+        if (myId && owner && myId !== owner) return "idle";
+      }
+    } catch { /* fail-open: show the face */ }
   }
-  if ((round?.buzzedPlayerIds || []).includes(scoreKey)) return "buzz";
-  return "idle";
+  return face;
 }
 
 // Returns avatar HTML for a coop slot (1-based character number = slot+1).
-// Spritesheet moods (correct/wrong) render as stepped background divs that
-// freeze on the final frame; plain images render as <img>.
-function getCoopCharHtml(slot, mood = "idle", extraClass = "") {
+// Spritesheet moods (buzz/correct/wrong) render as stepped background divs
+// that freeze on the final frame; plain images render as <img>.
+// Pass scoreKey so strip faces play once per action: repeats of the same
+// faceKey render frozen (animation:none, final frame) instead of restarting.
+function getCoopCharHtml(slot, mood = "idle", extraClass = "", scoreKey = null) {
   const charNum = clamp(slot + 1, 1, 3);
   const entry = coopCharUrls[charNum] || {};
-  const want = mood === "correct" || mood === "wrong" ? mood : mood === "buzz" || mood === "dance" ? mood : "base";
+  // "rewind" plays the wrong strip backwards (reset theater) using the wrong art.
+  const rewinding = mood === "rewind";
+  const want = mood === "correct" || mood === "wrong" ? mood : rewinding ? "wrong" : mood === "buzz" || mood === "dance" ? mood : "base";
   const url = entry[want] || entry.base;
   if (!url) return "";
-  const cls = `coop-avatar coop-avatar-${want} ${extraClass}`.trim();
-  if ((want === "correct" || want === "wrong") && coopCharFrames[charNum][want] > 1) {
+  const cls = `coop-avatar coop-avatar-${rewinding ? "rewind" : want} ${extraClass}`.trim();
+  if ((want === "buzz" || want === "correct" || want === "wrong") && coopCharFrames[charNum][want] > 1) {
     const frames = coopCharFrames[charNum][want];
-    return `<span class="${cls} coop-avatar-strip" style="background-image:url('${url}');--coop-frames:${frames}" role="img" aria-label="player ${charNum} ${want}"></span>`;
+    // 0%→100% spans (frames - 1) gaps; the step count is inlined because
+    // steps(var()) is dropped as invalid by some browsers.
+    const steps = Math.max(1, frames - 1);
+    const direction = rewinding ? ";animation-direction:reverse" : "";
+    let round = null;
+    try { round = getRound(); } catch {}
+    const faceKey = scoreKey ? getCoopFaceKey(scoreKey, mood, round) : null;
+    const fresh = faceKey ? (isFreshCoopFace(faceKey) && !coopFaceHeld.has(faceKey)) : true;
+    if (!fresh) {
+      // Repeat render of an already-playing face: hold the final frame.
+      // Reverse (rewind) ends on the original first frame.
+      const heldPos = rewinding ? "0 50%" : "100% 50%";
+      return `<span class="${cls} coop-avatar-strip is-held" style="background-image:url('${url}');--coop-frames:${frames};animation:none;background-position:${heldPos}" role="img" aria-label="player ${charNum} ${want}${rewinding ? " rewind" : ""}"></span>`;
+    }
+    return `<span class="${cls} coop-avatar-strip" style="background-image:url('${url}');--coop-frames:${frames};animation-timing-function:steps(${steps})${direction}" role="img" aria-label="player ${charNum} ${want}${rewinding ? " rewind" : ""}"></span>`;
   }
   return `<img class="${cls}" src="${url}" alt="player ${charNum}" loading="lazy" />`;
 }
@@ -1590,6 +1807,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
       bingoLessRandom: settings.bingoLessRandom,
       bingoAllowMultipleCorrect: settings.bingoAllowMultipleCorrect,
       disOrDatTimedSeconds: settings.disOrDatTimedSeconds,
+      quixortAudienceLive: settings.quixortAudienceLive === true,
       snarkMode: settings.snarkMode,
     },
     coopRosters: getCoopRosters(),
@@ -2078,7 +2296,7 @@ function renderRoulettePanel(settings, round, mePlayer) {
     const repName = getCoopSlotName(mePlayer.id, repSlot, getPlayerName(mePlayer));
     coopRepLine = `
       <div class="coop-slot is-picker">
-        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round))}<strong>${escapeHtml(repName)}</strong><span class="muted">${getSnark("player.coop.repStopsShort", "stops for your group")}</span></div>
+        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round), "", repKey)}<strong>${escapeHtml(repName)}</strong><span class="muted">${getSnark("player.coop.repStopsShort", "stops for your group")}</span></div>
       </div>`;
   }
 
@@ -2100,10 +2318,26 @@ function renderRoulettePanel(settings, round, mePlayer) {
   `;
 }
 
+// One-shot coop face: plays once (~0.9s strip), then back to idle.
+function scheduleCoopFaceClear(entryScoreKey, face) {
+  setTimeout(() => {
+    try {
+      if (!isHost()) return;
+      const cur = getCoopMoods();
+      if (cur?.[entryScoreKey] === face) {
+        const nextMoods = { ...cur };
+        delete nextMoods[entryScoreKey];
+        setState("coopMoods", nextMoods, true);
+        render();
+      }
+    } catch {}
+  }, 1500);
+}
+
 // =============================================================================
 // Host applies/edits a scoring ruling for a log entry, handles screw reversal
 // =============================================================================
-function updateScoresForLogEntry(logId, newAwardedDelta) {
+function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "updateScoresForLogEntry", args: [logId, newAwardedDelta] }, RPC.Mode.HOST);
     return;
@@ -2177,22 +2411,45 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       if (parsedKey) setState("coopLastCorrect", { ...getCoopLastCorrect(), [parsedKey.deviceId]: parsedKey.slot }, true);
     }
     if (isCoopMode(settings) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && isCoopMoodKey(entryScoreKey, entry.playerId)) {
-      if (nextAwarded > 0) {
-        setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "correct" }, true);
-        // Correct plays once, then back to idle.
+      if (opts?.buzzFirst && nextAwarded !== 0) {
+        // Instant-scoring path: points are already final, but the buzz face
+        // (derived from buzzedPlayerIds) gets to play first — flip to the
+        // judged face once the 0.9s buzz strip has finished. Single write,
+        // so the judged face plays exactly once.
+        const face = nextAwarded > 0 ? "correct" : "wrong";
+        const roundId = currentRoundId();
+        const epoch = coopFaceEpoch;
         setTimeout(() => {
           try {
-            if (!isHost()) return;
+            if (!isHost() || epoch !== coopFaceEpoch) return;
+            if (currentRoundId() !== roundId) return;
+            const fresh = (getLog() || []).find((e) => e && e.id === logId);
+            if (!fresh || fresh.resolved !== true || Number(fresh.awardedDelta) !== nextAwarded) return;
+            // A newer buzz for the same key supersedes this flip (re-buzz).
+            const roundBuzzes = (getLog() || []).filter((e) => e && e.type === "buzz" && Number(e.roundId) === roundId
+              && (e.scoreKey === entryScoreKey || e.coopKey === entryScoreKey));
+            const latest = roundBuzzes[roundBuzzes.length - 1];
+            if (!latest || latest.id !== logId) return;
             const cur = getCoopMoods();
-            if (cur?.[entryScoreKey] === "correct") {
-              const nextMoods = { ...cur };
-              delete nextMoods[entryScoreKey];
-              setState("coopMoods", nextMoods, true);
-              render();
+            // A reset rewind ("rewind") never blocks a fresh face; anything
+            // else already showing wins.
+            if (!cur || (cur[entryScoreKey] !== undefined && cur[entryScoreKey] !== "rewind")) return;
+            if (face === "correct") {
+              setState("coopMoods", { ...cur, [entryScoreKey]: "correct" }, true);
+              scheduleCoopFaceClear(entryScoreKey, face);
+            } else {
+              // Wrong holds its last frame until round reset (which rewinds it).
+              setState("coopMoods", { ...cur, [entryScoreKey]: "wrong" }, true);
             }
+            render();
           } catch {}
-        }, 1500);
+        }, 1000);
+      } else if (nextAwarded > 0) {
+        setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "correct" }, true);
+        // Correct plays once, then back to idle.
+        scheduleCoopFaceClear(entryScoreKey, "correct");
       } else if (nextAwarded < 0) {
+        // Wrong plays once, then holds its last frame until round reset.
         setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "wrong" }, true);
       }
     }
@@ -2285,6 +2542,11 @@ function updateScoresForLogEntry(logId, newAwardedDelta) {
       }
     }
   } catch {}
+
+  // A correct ruling (via lockout above) may have completed the eligible
+  // set — the no-lock auto-close runs before lockout is applied, so close a
+  // completed round here instead of dangling OPEN for un-buzzable slots.
+  try { maybeCloseCompletedRound(); } catch {}
 
   render();
 }
@@ -2438,20 +2700,20 @@ function pushBuzzLogEntry(player, { option = null, answerText = null, coopSlot =
 // Both sides are judged: correct answers award, wrong answers deduct.
 // Without a preset there is nothing to judge against, so entries stay
 // unresolved for manual host ruling.
-function autoEvaluatePresetAnswer(logEntry, answerText, validOption) {
+function autoEvaluatePresetAnswer(logEntry, answerText, validOption, opts) {
   const currentRound = getRound();
   const settings = getSettings();
   if (settings.inputMode !== "text" && Array.isArray(currentRound.correctOptions) && currentRound.correctOptions.length > 0) {
     if (validOption !== null && validOption !== undefined) {
       const isCorrect = currentRound.correctOptions.map(Number).includes(Number(validOption));
-      updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints);
+      updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints, opts);
     }
     return;
   }
   if (settings.inputMode === "text" && currentRound.correctAnswer) {
     if (answerText) {
       const isCorrect = normalizeAnswerForCompare(answerText) === normalizeAnswerForCompare(currentRound.correctAnswer);
-      updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints);
+      updateScoresForLogEntry(logEntry.id, isCorrect ? logEntry.basePoints : -logEntry.basePoints, opts);
     }
   }
 }
@@ -2693,9 +2955,11 @@ function hostHandleBuzz(player, payload) {
       true,
     );
     setState("pendingLogId", logEntry.id, true);
-    // If the Host pre-set a correct answer for this round, auto-evaluate immediately
+    // If the Host pre-set a correct answer for this round, auto-evaluate immediately.
+    // buzzFirst keeps the full lifecycle in coop: buzz holds while locked, then
+    // the single judged-face flip plays once it resolves.
     try {
-      autoEvaluatePresetAnswer(logEntry, answerText, validOption);
+      autoEvaluatePresetAnswer(logEntry, answerText, validOption, coopActive ? { buzzFirst: true } : undefined);
     } catch (e) {
       // ignore auto-eval errors
     }
@@ -2711,10 +2975,19 @@ function hostHandleBuzz(player, payload) {
       },
       true,
     );
-    // Scores wait for the close: batch-judge presets only if this buzz just
-    // closed the round (all-eligible); otherwise the entry stays unresolved
-    // for manual ruling or a later close. finalizeRoundScoring no-ops unless
-    // the round is CLOSED.
+    // Coopertition: judge each buzz immediately against the preset (both
+    // sides — correct awards, wrong deducts) while the round stays open, so
+    // points land instantly and other groups keep playing. buzzFirst lets the
+    // buzz face play before the single judged-face flip. No pendingLogId is
+    // set; host re-ruling from the log still works via the diff logic.
+    // finalizeRoundScoring below then only covers the all-eligible CLOSED
+    // edge (already-resolved entries are skipped). Without a preset there is
+    // nothing to judge, so the entry stays unresolved for manual ruling.
+    try {
+      if (coopActive) autoEvaluatePresetAnswer(logEntry, answerText, validOption, { buzzFirst: true });
+    } catch (e) {
+      // ignore auto-eval errors
+    }
     try {
       finalizeRoundScoring(currentRoundId());
     } catch (e) {
@@ -2781,6 +3054,29 @@ async function submitResponse(payload) {
       buzzSendInFlight = true;
     }
   } catch {}
+  // Optimistic buzz face: light this slot's buzz animation the moment the
+  // key/button fires — host state lands a beat later through the log entry.
+  // Shared-grid taps carry no slot; attribute to our control holder then.
+  try {
+    if (isCoopMode(getSettings())) {
+      const myId = me()?.id;
+      if (myId) {
+        let previewSlot = Number(payload?.coopSlot);
+        if (!Number.isInteger(previewSlot) || previewSlot < 0) {
+          const count = getCoopSlotCount(myId);
+          if (count <= 1) {
+            previewSlot = 0;
+          } else {
+            const ctrl = parseCoopScoreKey(getRound()?.coopControl);
+            previewSlot = (ctrl && ctrl.deviceId === myId) ? ctrl.slot : null;
+          }
+        }
+        if (Number.isInteger(previewSlot) && previewSlot >= 0 && previewSlot < 3) {
+          noteCoopLocalBuzz(getCoopScoreKey(myId, previewSlot));
+        }
+      }
+    }
+  } catch {}
   try {
     const result = await RPC.call("buzz", payload, RPC.Mode.HOST);
     if (spamGuarded) {
@@ -2822,6 +3118,42 @@ async function submitResponse(payload) {
 // resumeBuzzers, openBuzzers), so anything else-but-"open" is terminal.
 function isTerminallyClosedRound(round) {
   return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== "open";
+}
+
+// New-round face sweep: held "wrong" faces flip to reverse playback
+// ("rewind") for ~1s, then drop to idle; every other stored face clears
+// instantly. Runs on both openBuzzers (new round) and resetRound (idle),
+// so a wrong always holds its last frame until the next round starts.
+function rewindCoopWrongFaces() {
+  try {
+    coopFaceEpoch++;
+    const moods = getCoopMoods();
+    const keys = Object.keys(moods || {});
+    if (keys.length === 0) return;
+    const wrongKeys = keys.filter((k) => moods[k] === "wrong");
+    if (wrongKeys.length === 0) {
+      setState("coopMoods", {}, true);
+      return;
+    }
+    const next = {};
+    for (const k of wrongKeys) next[k] = "rewind";
+    setState("coopMoods", next, true);
+    const epoch = coopFaceEpoch;
+    setTimeout(() => {
+      try {
+        if (!isHost() || epoch !== coopFaceEpoch) return;
+        const cur = getCoopMoods();
+        const stale = Object.keys(cur || {}).filter((k) => cur[k] === "rewind");
+        if (stale.length === 0) return;
+        const cleared = { ...cur };
+        for (const k of stale) delete cleared[k];
+        setState("coopMoods", cleared, true);
+        render();
+      } catch {}
+    }, 1000);
+  } catch {
+    try { setState("coopMoods", {}, true); } catch {}
+  }
 }
 
 function openBuzzers() {
@@ -2925,10 +3257,13 @@ function openBuzzers() {
   setState("pendingLogId", null, true);
   // A new round resets analytics: drop the audience mirror so the previous
   // round's results don't linger into the new round. Host card already follows
-  // the current round (waiting note while open). Only writes when active.
+  // the current round (post-round only in coop). Only writes when active.
   try {
     if (getAnalyticsSpotlight()) setState("analyticsSpotlight", { active: false, startedAt: 0 }, true);
   } catch {}
+  // A new round rewinds held wrong faces: reverse playback, then idle.
+  // Correct faces already self-cleared; anything left drops instantly.
+  try { rewindCoopWrongFaces(); } catch {}
   render();
 }
 // remainingCs). Only valid from OPEN — LOCKED already freezes the clock for
@@ -3951,7 +4286,8 @@ function renderQuixortBreakdownHtml(qx, run, scored) {
   const voided = Array.isArray(run?.voided) ? run.voided.length : 0;
   const orderPoints = (scored.concordant - scored.discordant) * scored.pairWeight;
   const lines = [
-    getSnark("player.quixort.orderLine", `Order: ${scored.concordant} right × ${scored.pairWeight} minus ${scored.discordant} flipped × ${scored.pairWeight} = ${orderPoints}`, { good: scored.concordant, w: scored.pairWeight, bad: scored.discordant, points: orderPoints }),
+    getSnark("player.quixort.orderLine", `Pairs in order: ${scored.concordant} right − ${scored.discordant} flipped (each ±${scored.pairWeight}) = ${orderPoints}`, { good: scored.concordant, w: scored.pairWeight, bad: scored.discordant, points: orderPoints }),
+    getSnark("player.quixort.pairWeightLine", `Each ordered pair is worth ${scored.pairWeight} pts (${scored.totalPairs} pairs total)`, { w: scored.pairWeight, pairs: scored.totalPairs }),
     getSnark("player.quixort.trashLine", `Trash kept: ${scored.trashCorrect} × 250 = ${scored.trashCorrect * QUIXORT_POINTS_TRASH}`, { count: scored.trashCorrect, points: scored.trashCorrect * QUIXORT_POINTS_TRASH }),
   ];
   if (scored.trashBonus) lines.push(getSnark("player.quixort.trashAllLine", `All trash sorted: +${scored.trashBonus}`, { bonus: scored.trashBonus }));
@@ -3975,15 +4311,24 @@ function renderQuixortRevealHtml(qx, run) {
   const trashed = Array.isArray(run?.trashed) ? run.trashed : [];
   const voided = Array.isArray(run?.voided) ? run.voided : [];
   const correctHtml = items.map((t, i) => `<li><span class="muted">${i + 1}.</span> ${escapeHtml(t)}</li>`).join("");
+  // Per-item signal: exact-position hits (green) vs moved reals (amber).
+  // Pairwise scoring is global, so the legend says "exact spot" — not "pair".
+  let realPos = -1;
   const rowHtml = row.map((e) => {
     const txt = escapeHtml(getQuixortBlockText(qx, e));
-    if (e && e.t === "trash") return `<span class="quixort-row-block is-trash">${txt} <small>(${getSnark("player.quixort.placedTrashNote", "trash in row −500")})</small></span>`;
-    return `<span class="quixort-row-block">${txt}</span>`;
+    if (e && e.t === "trash") return `<span class="quixort-row-block is-trash is-misplaced">${txt} <small>(${getSnark("player.quixort.placedTrashNote", "trash in row −500")})</small></span>`;
+    realPos += 1;
+    const exact = Number(e?.ref) === realPos;
+    return `<span class="quixort-row-block ${exact ? "is-exact" : "is-moved"}">${txt}</span>`;
   }).join(`<span class="quixort-row-sep">→</span>`);
-  const trashedHtml = trashed.map((e) => `<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(" ");
+  const trashedHtml = trashed.map((e) => {
+    const txt = escapeHtml(getQuixortBlockText(qx, e));
+    if (e && e.t === "item") return `<span class="quixort-row-block is-misplaced">${txt} <small>(${getSnark("player.quixort.trashedRealNote", "real item −500")})</small></span>`;
+    return `<span class="quixort-row-block is-trashed-good">${txt}</span>`;
+  }).join(" ");
   const voidedHtml = voided.map((e) => `<span class="quixort-row-block is-voided">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(" ");
   return `<div class="quixort-reveal">
-    <strong>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</strong>
+    <div class="quixort-legend muted">${getSnark("player.quixort.revealLegend", "Green = exact spot · amber = moved · dashed red = misclassified · struck = timed out")}</div>
     <div class="quixort-reveal-lists">
       <div><span class="muted">${getSnark("player.quixort.correctOrderLabel", "Correct order")}</span><ol class="quixort-correct-list">${correctHtml}</ol></div>
       <div><span class="muted">${getSnark("player.quixort.yourRowLabel", "Your row")}</span><div class="quixort-row-wrap">${rowHtml || `<span class="muted">—</span>`}</div>
@@ -4707,7 +5052,9 @@ function resetRound() {
     true,
   );
   setState("pendingLogId", null, true);
-  setState("coopMoods", {}, true);
+  // Reset rewinds held wrong faces: reverse playback for ~1s, then idle.
+  // Everything else clears instantly.
+  try { rewindCoopWrongFaces(); } catch {}
   render();
 }
 
@@ -7169,7 +7516,7 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
       : (locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : "");
     cols.push(`
       <div class="coop-slot${locked || scored ? " is-locked" : ""}">
-        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()))}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
+        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()), "", key)}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
         <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${statusMsg}</p>
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
       </div>`);
@@ -7803,6 +8150,13 @@ function renderQuixortHostPanel(settings, players) {
             <select id="quixort-block-sec">${blockOpts}</select>
             <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn.</p>
           </label>
+          <label>Audience sees live rows
+            <div class="toggle-switch">
+              <button type="button" class="toggle-switch-btn ${settings.quixortAudienceLive === true ? "is-active" : ""}" data-toggle-setting="quixortAudienceLive" data-value="true">On</button>
+              <button type="button" class="toggle-switch-btn ${settings.quixortAudienceLive === true ? "" : "is-active is-off-val"}" data-toggle-setting="quixortAudienceLive" data-value="false">Off</button>
+            </div>
+            <p class="setting-helper">Off shows counts only (no spoilers). On mirrors each track's row to the display.</p>
+          </label>
         </div>
         <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Ordered items (${filledItems.length}/${QUIXORT_MAX_ITEMS})</h3>
         <div class="quixort-setup-list">${itemInputs}</div>
@@ -7832,14 +8186,28 @@ function renderQuixortHostPanel(settings, players) {
     return { track, run, deckLen, remaining, turnName, scored };
   }).sort((a, b) => ((b.scored?.total || 0) - (a.scored?.total || 0)) || ((b.run.deckPos || 0) - (a.run.deckPos || 0)));
   const remainingMax = trackRows.reduce((m, r) => Math.max(m, r.run.finished ? 0 : r.remaining), 0);
-  const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }) => {
+  const rankMedal = (i) => {
+    if (i >= 3) return `${i + 1}. `;
+    const badge = getRankBadgeHtml(i + 1);
+    return badge ? `${badge} ` : `${i + 1}. `;
+  };
+  const renderQuixortLiveRow = (run) => {
+    const row = Array.isArray(run.row) ? run.row : [];
+    if (!row.length) return `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`;
+    return row.map((e) => `<span class="quixort-row-block quixort-live-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
+  };
+  const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }, idx) => {
     const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
     if (scored) {
-      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})${renderQuixortBreakdownHtml(qx, run, scored)}${renderQuixortRevealHtml(qx, run)}</li>`;
+      const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
+      const bonusPill = !scored.clean && scored.bonus ? ` <span class="quixort-pill">+${scored.bonus}</span>` : "";
+      return `<li>${rankMedal(idx)}<strong>${quixortTrackLabel(track, participants, assignments)}</strong> — <strong>${scored.total}</strong> pts (${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""})${perfectPill}${bonusPill}<details class="quixort-details"><summary>${getSnark("player.quixort.howScored", "How scored")}</summary>${renderQuixortBreakdownHtml(qx, run, scored)}</details><details class="quixort-details"><summary>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</summary>${renderQuixortRevealHtml(qx, run)}</details></li>`;
     }
     const live = scoreQuixortRun(qx, run);
     const liveTxt = getSnark("player.quixort.liveProj", `proj. ${live.total} pts (base ${live.base} + bonus ${live.bonus}, ×${normalizeQuixortMultiplier(qx.multiplier)})`, { total: live.total, base: live.base, bonus: live.bonus, mult: normalizeQuixortMultiplier(qx.multiplier) });
-    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span> <span class="muted quixort-proj">${liveTxt}</span></li>`;
+    const trashedCount = Array.isArray(run.trashed) ? run.trashed.length : 0;
+    const voidedCount = Array.isArray(run.voided) ? run.voided.length : 0;
+    return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks, turn: ${turnName}, <span data-quixort-time-left data-quixort-track="${escapeHtml(track)}">${timeLeft}</span> <span class="muted quixort-proj">${liveTxt}</span><div class="quixort-row-wrap quixort-live-row">${renderQuixortLiveRow(run)}</div><div class="muted quixort-live-meta">${getSnark("player.quixort.liveMeta", `Trashed ${trashedCount} · timed out ${voidedCount}`, { trashed: trashedCount, voided: voidedCount })}</div></li>`;
   }).join("");
   if (qx.phase === "results") {
     return `
@@ -7886,13 +8254,14 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
   const hasTrash = getQuixortTrash(qx).length > 0;
   if (qx.phase === "results") {
     const scored = scoreQuixortRun(qx, run);
+    const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
     return `
       <section class="card player-card">
         <h2>Quixort ${teamPill}</h2>
-        <h3>${getSnark("player.quixort.resultsTitle", "Results")} — <strong>${scored.total}</strong> pts</h3>
+        <h3>${getSnark("player.quixort.resultsTitle", "Results")} — <strong>${scored.total}</strong> pts${perfectPill}</h3>
         <p class="muted">${getSnark("player.quixort.pairsCount", `${scored.concordant}/${scored.totalPairs} pairs in order`, { good: scored.concordant, pairs: scored.totalPairs })}, ${scored.trashCorrect} trash sorted${scored.misclass ? `, ${scored.misclass} misclass` : ""}${scored.bonus ? ` + ${scored.bonus} bonus` : ""} = <strong>${scored.total}</strong> pts</p>
-        ${renderQuixortBreakdownHtml(qx, run, scored)}
-        ${renderQuixortRevealHtml(qx, run)}
+        <details class="quixort-details" open><summary>${getSnark("player.quixort.howScored", "How scored")}</summary>${renderQuixortBreakdownHtml(qx, run, scored)}</details>
+        <details class="quixort-details"><summary>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</summary>${renderQuixortRevealHtml(qx, run)}</details>
         <p class="muted">${getSnark("player.quixort.waitingHostContinue", "Waiting for the host to continue...")}</p>
       </section>`;
   }
@@ -7901,6 +8270,7 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
   }
   const entry = deck[Number(run.deckPos) || 0];
   const blockText = escapeHtml(getQuixortBlockText(qx, entry));
+  const blockPlain = getQuixortBlockText(qx, entry);
   const turnId = getQuixortTurnPlayerId(trackKey, run, participants, assignments);
   const myTurn = !turnId || turnId === mePlayer.id;
   const turnPlayer = participants.find((p) => p.id === turnId);
@@ -7908,20 +8278,52 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
     ? (myTurn
       ? `<p class="muted">${getSnark("player.quixort.yourTurn", "Your turn to place.")}</p>`
       : `<p class="muted">${getSnark("player.quixort.teammateTurn", `It's ${turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "a teammate"}'s turn to place.`, { player: turnPlayer ? escapeHtml(getPlayerName(turnPlayer)) : "a teammate" })}</p>`)
-    : "";
-  const rowHtml = row.map((e) => `<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
-  const insertBtns = row.map((_, i) => `<button type="button" class="toggle-chip" data-quixort-place data-insert="${i}" ${myTurn ? "" : "disabled"}>${i === 0 ? "First" : `Before ${i + 1}`}</button>`).join("")
-    + `<button type="button" class="toggle-chip" data-quixort-place data-insert="${row.length}" ${myTurn ? "" : "disabled"}>${row.length === 0 ? "Place" : "Last"}</button>`;
+    : `<p class="muted">${getSnark("player.quixort.soloProgress", `Your sort — block ${Number(run.deckPos) + 1} of ${deck.length}, row has ${row.length}.`, { current: Number(run.deckPos) + 1, total: deck.length, placed: row.length })}</p>`;
+  const truncQx = (s, n = 16) => {
+    const t = String(s || "");
+    return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  };
+  const gapLabel = (i) => {
+    if (row.length === 0) return getSnark("player.quixort.gapFirst", "Place first block here");
+    const prevRaw = truncQx(getQuixortBlockText(qx, row[i - 1]));
+    const nextRaw = truncQx(getQuixortBlockText(qx, row[i]));
+    const prev = escapeHtml(prevRaw);
+    const next = escapeHtml(nextRaw);
+    if (i === 0) return getSnark("player.quixort.gapStart", `First — before “${next}”`, { next });
+    if (i === row.length) return getSnark("player.quixort.gapEnd", `Last — after “${prev}”`, { prev });
+    return getSnark("player.quixort.gapBetween", `Slot ${i + 1} — between “${prev}” → “${next}”`, { slot: i + 1, prev, next });
+  };
+  // Gap-target placement: compact "+" buttons sit inline between blocks in a
+  // horizontal row, so neighbors are visible on either side. Full neighbor
+  // description stays in title/aria-label. Same `data-quixort-place` RPC
+  // contract — placement stays one-shot.
+  const rowSegs = [];
+  for (let i = 0; i <= row.length; i++) {
+    const label = gapLabel(i);
+    const isEmptyRow = row.length === 0;
+    const visible = isEmptyRow ? `<span aria-hidden="true">⌄</span> ${label}` : `<span aria-hidden="true">+</span>`;
+    rowSegs.push(`<button type="button" class="quixort-gap${isEmptyRow ? " is-empty" : ""}" data-quixort-place data-insert="${i}" ${myTurn ? "" : "disabled"} aria-label="${escapeHtml(`Place ${blockPlain} at position ${i + 1} of ${row.length + 1}`)}" title="${label}">${visible}</button>`);
+    if (i < row.length) rowSegs.push(`<span class="quixort-row-block">${escapeHtml(getQuixortBlockText(qx, row[i]))}</span>`);
+  }
+  const deckPosNum = Number(run.deckPos) || 0;
+  const progressPct = deck.length ? Math.round((deckPosNum / deck.length) * 100) : 0;
+  const armKey = `${trackKey}:${deckPosNum}`;
+  const trashArmed = quixortTrashArmedKey === armKey;
+  const trashPlain = escapeHtml(blockPlain);
+  const trashLabel = trashArmed
+    ? getSnark("player.quixort.trashConfirm", `Tap again to trash “${trashPlain}”`, { block: trashPlain })
+    : getSnark("player.quixort.trashButton", "Trash it");
   return `
     <section class="card player-card">
       <h2>Quixort ${teamPill}</h2>
       ${turnBanner}
       <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s</strong></div>
+      <div class="quixort-progress" aria-hidden="true"><div class="quixort-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="quixort-block-card"><span class="muted">Sort this:</span><strong>${blockText}</strong></div>
-      <div class="quixort-row-wrap">${rowHtml || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
+      <div class="quixort-row-wrap quixort-row-gaps">${rowSegs.join("") || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
       <p class="muted">${getSnark("player.quixort.placePrompt", `Block ${Number(run.deckPos) + 1} of ${deck.length} — tap where it goes.`, { current: Number(run.deckPos) + 1, total: deck.length })}</p>
-      <div class="host-actions quixort-inserts">${insertBtns}</div>
-      ${hasTrash ? `<div class="host-actions"><button type="button" data-quixort-trash-block ${myTurn ? "" : "disabled"}>${getSnark("player.quixort.trashButton", "Trash it")}</button></div>` : ""}
+      <p class="muted quixort-keys">${getSnark("player.quixort.keysHint", "Keys 1–9 place · T trash. Placement is final — trash needs two taps.")}</p>
+      ${hasTrash ? `<div class="host-actions"><button type="button" class="${trashArmed ? "quixort-trash-armed" : ""}" data-quixort-trash-block ${myTurn ? "" : "disabled"}>${trashLabel}</button></div>` : ""}
     </section>`;
 }
 function renderQuixortAudienceDisplay(settings, players) {
@@ -7944,11 +8346,21 @@ function renderQuixortAudienceDisplay(settings, players) {
     const scored = qx.phase === "results" ? scoreQuixortRun(qx, run) : null;
     return { track, run, scored, total: scored ? scored.total : 0 };
   }).sort((a, b) => b.total - a.total || (b.run.deckPos || 0) - (a.run.deckPos || 0));
-  const standings = tracks.map(({ track, run, scored }) => {
+  const standings = tracks.map(({ track, run, scored }, idx) => {
     const deckLen = (run.deck || []).length;
+    const badge = idx < 3 ? getRankBadgeHtml(idx + 1) : "";
+    const medal = badge ? `${badge} ` : `${idx + 1}. `;
     if (qx.phase === "results" && scored) {
       const summary = `${scored.concordant}/${scored.totalPairs} pairs, ${scored.trashCorrect} trash = ${scored.total} pts`;
-      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${summary}${renderQuixortBreakdownHtml(qx, run, scored)}${renderQuixortRevealHtml(qx, run)}</li>`;
+      const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
+      return `<li>${medal}<strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${summary}${perfectPill}<details class="quixort-details"><summary>${getSnark("player.quixort.howScored", "How scored")}</summary>${renderQuixortBreakdownHtml(qx, run, scored)}</details><details class="quixort-details"><summary>${getSnark("player.quixort.revealTitle", "Correct order vs your row")}</summary>${renderQuixortRevealHtml(qx, run)}</details></li>`;
+    }
+    if (settings.quixortAudienceLive === true) {
+      const row = Array.isArray(run.row) ? run.row : [];
+      const liveRow = row.length
+        ? row.map((e) => `<span class="quixort-row-block quixort-live-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`)
+        : `<span class="muted">—</span>`;
+      return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks<div class="quixort-row-wrap quixort-live-row">${liveRow}</div></li>`;
     }
     return `<li><strong>${quixortTrackLabel(track, participants, assignments)}</strong> — ${Number(run.deckPos) || 0}/${deckLen} blocks</li>`;
   }).join("");
@@ -8587,7 +8999,7 @@ function renderCoopStrip(settings, round, deviceId, count) {
     const picker = repKey === key ? " is-picker" : "";
     cells.push(`
       <div class="coop-strip-cell${picker}${muted ? " is-muted" : ""}" data-score-key="${escapeHtml(key)}">
-        ${getCoopCharHtml(slot, mood)}
+        ${getCoopCharHtml(slot, mood, "", key)}
         <span class="coop-strip-name">${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span>
         <strong data-score-value>${score}</strong>
       </div>`);
@@ -8758,7 +9170,7 @@ function renderCoopRoulettePanel(settings, round, mePlayer, count, group, editBt
       <h2>${getSnark("player.roulette.title", "Pick a Value")}</h2>
       <p class="muted">${getSnark("player.coop.repStops", `${repName} stops for ${group}.`, { rep: repName, group })}</p>
       <div class="coop-slot is-picker">
-        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round))}<strong>${escapeHtml(repName)}</strong></div>
+        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round), "", repKey)}<strong>${escapeHtml(repName)}</strong></div>
       </div>
       <div class="roulette-display" aria-live="polite">
         <span class="roulette-value">${displayedValue}</span>
@@ -9617,6 +10029,12 @@ function getLogEntryBadge(entry) {
 }
 
 function renderAnalyticsCard(audience = false) {
+  // Coopertition: analytics lives only in the post-round view. While a round
+  // is live (or idle) the card stays hidden entirely — no waiting note, no
+  // live percentages that would spoil correctness.
+  try {
+    if (isCoopMode() && getRound()?.status !== ROUND_STATUSES.CLOSED) return "";
+  } catch {}
   const data = getCurrentRoundAnalytics();
   const modeBadge = data.kind === "buttons"
     ? getSnark("shared.analytics.badgeButtons", "Buttons")
@@ -11237,7 +11655,7 @@ function renderCoopScores(players, scores, settings, controllerId, producerIds, 
       const subRows = slots
         .map(({ slot, key, name, score, mood, muted, frozen }) => {
           const hint = !frozen ? getCoopKeyHint(slot, slots.filter((s) => !s.frozen).length || getCoopSlotCount(deviceId)) : "";
-          return `<li class="coop-sub-row${muted ? " is-muted" : ""}${frozen ? " is-frozen" : ""}" data-score-key="${escapeHtml(key)}"><span>${getCoopCharHtml(slot, mood)}${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span><strong data-score-value>${score}</strong></li>`;
+          return `<li class="coop-sub-row${muted ? " is-muted" : ""}${frozen ? " is-frozen" : ""}" data-score-key="${escapeHtml(key)}"><span>${getCoopCharHtml(slot, mood, "", key)}${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span><strong data-score-value>${score}</strong></li>`;
         })
         .join("");
       return `<li class="coop-group" data-coop-group="${escapeHtml(deviceId)}"><div class="coop-group-head"><span>${getRankBadgeHtml(index + 1)}<strong>${escapeHtml(groupName)}</strong> ${teamPill}</span><strong>${total}</strong></div><ul class="coop-sub-list">${subRows || `<li class="muted">No players yet.</li>`}</ul></li>`;
@@ -11770,6 +12188,10 @@ function bindEvents() {
     document.addEventListener("keydown", handleBingoSpaceKeydown);
     bingoSpaceKeydownBound = true;
   }
+  if (!quixortKeydownBound) {
+    document.addEventListener("keydown", handleQuixortKeydown);
+    quixortKeydownBound = true;
+  }
 
   // --- Delegated handlers below ---
   delegate("pointerdown", "[data-buzz]", (e, btn) => {
@@ -12168,6 +12590,25 @@ function bindEvents() {
   });
   delegate("click", "[data-quixort-trash-block]", async () => {
     if (isControllerPlayer() || isProducer()) return;
+    // Two-tap confirm (client-local): first tap arms, second tap sends.
+    // Armed key includes deckPos so a new block auto-disarms a stale arm.
+    try {
+      const self = me();
+      if (self?.id) {
+        const qx = getQuixort();
+        const settings = getSettings();
+        const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+        const trackKey = getTeamTrackKey(self.id, settings, assignments);
+        const run = qx.runs?.[trackKey];
+        const armKey = `${trackKey}:${Number(run?.deckPos) || 0}`;
+        if (quixortTrashArmedKey !== armKey) {
+          quixortTrashArmedKey = armKey;
+          scheduleRender(render);
+          return;
+        }
+        quixortTrashArmedKey = null;
+      }
+    } catch {}
     try {
       const result = await RPC.call("quixort-place", { trash: true }, RPC.Mode.HOST);
       if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
@@ -12605,6 +13046,38 @@ function handleRouletteKeydown(event) {
 
   event.preventDefault();
   submitRouletteStop();
+}
+
+// =============================================================================
+// Quixort keyboard placement — 1..9 picks the gap button, T arms/confirms
+// trash (via the same delegated buttons, so disabled/turn/two-tap rules
+// apply untouched). Quixort is banned in coop, so no slot routing here.
+// =============================================================================
+function handleQuixortKeydown(event) {
+  if (event.repeat) return;
+  if (isEditingControl()) return;
+  const isDigit = /^Digit[1-9]$/.test(event.code || "") || /^[1-9]$/.test(event.key || "");
+  const isTrash = event.code === "KeyT" || event.key === "t" || event.key === "T";
+  if (!isDigit && !isTrash) return;
+  if (!isQuixortMode()) return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const mount = getApp() || app;
+  if (!mount) return;
+  try {
+    if (isTrash) {
+      const trashBtn = mount.querySelector("[data-quixort-trash-block]:not([disabled])");
+      if (!trashBtn) return;
+      event.preventDefault();
+      trashBtn.click();
+      return;
+    }
+    const n = Number(event.key);
+    if (!Number.isInteger(n) || n < 1 || n > 9) return;
+    const btn = mount.querySelector(`[data-quixort-place][data-insert="${n - 1}"]:not([disabled])`);
+    if (!btn) return;
+    event.preventDefault();
+    btn.click();
+  } catch {}
 }
 
 // Player submits their roulette stop (locks in current value)
@@ -13494,5 +13967,20 @@ try {
     },
     pruneGraceTicks: HOST_PRUNE_GRACE_TICKS,
     retainTicks: HOST_RETAIN_TICKS,
+    getCoopCharMoodForKey,
+    getCoopCharHtml,
+    getCoopFaceKey,
+    isFreshCoopFace,
+    resetCoopFaceSeen: () => { coopFaceSeen.clear(); coopFaceHeld.clear(); },
+    setCoopCharArt: (charNum, state, url, frames = 0) => {
+      const n = Number(charNum);
+      if (!coopCharUrls[n]) return;
+      coopCharUrls[n][state] = url;
+      if (coopCharFrames[n] && (state === "buzz" || state === "correct" || state === "wrong")) {
+        coopCharFrames[n][state] = Number(frames) || 0;
+      }
+    },
+    getCurrentRoundBuzzMap,
+    noteCoopLocalBuzz,
   });
 } catch {}
