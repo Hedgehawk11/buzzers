@@ -1631,5 +1631,19 @@
         "snark2": ""
       }
     }
+  },
+  "host": {
+    "results": {
+      "title": {
+        "en": "Game results",
+        "snark1": "",
+        "snark2": ""
+      },
+      "blurb": {
+        "en": "Export this game's scores + buzz log, or save to the cloud for 14 days.",
+        "snark1": "",
+        "snark2": ""
+      }
+    }
   }
 }

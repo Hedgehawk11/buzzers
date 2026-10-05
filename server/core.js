@@ -8,6 +8,15 @@
 import { randomInt, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { normalizeEpisode, validateEpisode } from "../src/episodes/schema.js";
+import {
+  RESULTS_TTL_MS,
+  RESULTS_TOO_LARGE_REASON,
+  RESULTS_MAX_LOG,
+  normalizeResultFile,
+  validateResultFile,
+} from "../src/results/schema.js";
+
+export { RESULTS_TTL_MS, RESULTS_TOO_LARGE_REASON };
 
 const scrypt = promisify(scryptCb);
 
@@ -98,4 +107,79 @@ export async function overwriteEpisodeOp(store, rawCode, { episode: rawEpisode, 
   }
   await store.updateOne({ code }, { $set: { episode, updatedAt: new Date().toISOString() } });
   return { status: 200, body: { ok: true, code } };
+}
+
+// ---------------------------------------------------------------------------
+// Game results (passwordless + immutable). Anyone with a code can load.
+// Non-persistent docs expire 14 days after last access: every successful load
+// refreshes expiresAt. Docs with persistent:true (set only via direct DB edit)
+// skip expiry and refresh writes. Deletion is enforced lazily here plus by a
+// partial Mongo TTL index (see server/db.js) so fakes/index-less deploys
+// still expire.
+// ---------------------------------------------------------------------------
+
+function checkedResult(raw) {
+  if (raw && typeof raw === "object") {
+    try {
+      const bytes = Buffer.byteLength(JSON.stringify(raw), "utf8");
+      if (bytes > 5 * 1024 * 1024) {
+        return { result: null, error: { status: 413, body: { ok: false, reason: RESULTS_TOO_LARGE_REASON } } };
+      }
+    } catch {}
+  }
+  const result = normalizeResultFile(raw);
+  const { ok, errors } = validateResultFile(result);
+  if (!ok) {
+    if (Array.isArray(result?.gameLog) && result.gameLog.length > RESULTS_MAX_LOG) {
+      return { result: null, error: { status: 413, body: { ok: false, reason: RESULTS_TOO_LARGE_REASON } } };
+    }
+    return { result: null, error: { status: 400, body: { ok: false, reason: "Invalid results file.", errors: errors.slice(0, 20) } } };
+  }
+  return { result, error: null };
+}
+
+export async function saveResultOp(store, { result: rawResult }) {
+  const { result, error } = checkedResult(rawResult);
+  if (error) return error;
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + RESULTS_TTL_MS).toISOString();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = makeShareCode();
+    try {
+      await store.insertOne({
+        code,
+        result,
+        persistent: false,
+        createdAt: now.toISOString(),
+        expiresAt,
+      });
+      return { status: 201, body: { ok: true, code, expiresAt } };
+    } catch (e) {
+      if (String(e?.code) === "11000" || /duplicate/i.test(String(e?.message))) continue;
+      throw e;
+    }
+  }
+  return { status: 503, body: { ok: false, reason: "Could not mint a share code — try again." } };
+}
+
+export async function loadResultOp(store, rawCode) {
+  const code = String(rawCode || "").toUpperCase();
+  if (!CODE_RE.test(code)) return { status: 404, body: { ok: false, reason: "Unknown code." } };
+  const doc = await store.findOne({ code });
+  if (!doc) return { status: 404, body: { ok: false, reason: "Unknown code." } };
+  if (!doc.persistent) {
+    const exp = Date.parse(doc.expiresAt);
+    if (!Number.isFinite(exp) || Date.now() > exp) {
+      try {
+        if (typeof store.deleteOne === "function") await store.deleteOne({ code });
+      } catch {}
+      return { status: 404, body: { ok: false, reason: "Expired." } };
+    }
+    const next = new Date(Date.now() + RESULTS_TTL_MS).toISOString();
+    try {
+      await store.updateOne({ code }, { $set: { expiresAt: next } });
+    } catch {}
+    return { status: 200, body: { ok: true, code, result: doc.result, expiresAt: next } };
+  }
+  return { status: 200, body: { ok: true, code, result: doc.result, expiresAt: doc.expiresAt || null } };
 }

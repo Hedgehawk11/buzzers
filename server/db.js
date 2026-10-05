@@ -1,9 +1,8 @@
-// server/db.js — MongoDB adapter for episode storage.
-//
+// server/db.js — MongoDB adapter for episode + results storage.
 // Reads MONGO_URL (+ optional MONGO_DB, default "buzzers") from the
 // environment. Exposes a minimal store interface { findOne, insertOne,
-// updateOne } shaped like a Mongo collection so tests can inject an
-// in-memory fake without touching this file.
+// updateOne, deleteOne } shaped like a Mongo collection so tests can inject
+// an in-memory fake without touching this file.
 //
 // Serverless note: the connect promise is cached on globalThis so warm
 // invocations reuse one connection instead of reconnecting per request.
@@ -57,6 +56,7 @@ export async function getEpisodesCollection() {
       findOne: (filter) => collection.findOne(filter),
       insertOne: (doc) => collection.insertOne(doc),
       updateOne: (filter, update) => collection.updateOne(filter, update),
+      deleteOne: (filter) => collection.deleteOne(filter),
     };
   })();
   setCached(pending);
@@ -64,6 +64,74 @@ export async function getEpisodesCollection() {
     return await pending;
   } catch (e) {
     if (getCached() === pending) clearCached();
+    throw e;
+  }
+}
+
+function getResultsTestStore() {
+  try {
+    return globalThis.__RESULTS_TEST_STORE__ || null;
+  } catch {
+    return null;
+  }
+}
+
+function getResultsCached() {
+  try {
+    return globalThis.__RESULTS_MONGO__ || null;
+  } catch {
+    return null;
+  }
+}
+
+function setResultsCached(promise) {
+  try {
+    globalThis.__RESULTS_MONGO__ = promise;
+  } catch {}
+}
+
+function clearResultsCached() {
+  try {
+    globalThis.__RESULTS_MONGO__ = null;
+  } catch {}
+}
+
+// Results collection: separate from episodes (different shape + TTL).
+// Expired non-persistent docs are removed by the partial TTL index; docs
+// with persistent:true (set only via direct DB edit, e.g.
+// db.results.updateOne({code:"ABC123"},{$set:{persistent:true}})) are
+// invisible to that index and live forever. Lazy expiry in core.js covers
+// index-less deploys and test fakes.
+export async function getResultsCollection() {
+  const testStore = getResultsTestStore();
+  if (testStore) return testStore;
+  const cached = getResultsCached();
+  if (cached) return cached;
+  const url = process.env.MONGO_URL;
+  if (!url) throw new Error("MONGO_URL is not set — results cloud storage is disabled.");
+  const pending = (async () => {
+    const client = new MongoClient(url);
+    await client.connect();
+    const db = client.db(process.env.MONGO_DB || "buzzers");
+    const collection = db.collection("results");
+    await collection.createIndex({ code: 1 }, { unique: true });
+    await collection.createIndex(
+      { expiresAt: 1 },
+      { expireAfterSeconds: 0, partialFilterExpression: { persistent: { $ne: true } } },
+    );
+    return {
+      __client: client,
+      findOne: (filter) => collection.findOne(filter),
+      insertOne: (doc) => collection.insertOne(doc),
+      updateOne: (filter, update) => collection.updateOne(filter, update),
+      deleteOne: (filter) => collection.deleteOne(filter),
+    };
+  })();
+  setResultsCached(pending);
+  try {
+    return await pending;
+  } catch (e) {
+    if (getResultsCached() === pending) clearResultsCached();
     throw e;
   }
 }

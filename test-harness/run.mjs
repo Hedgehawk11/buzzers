@@ -2230,8 +2230,190 @@ const epui = await import("../src/episodes/ui.js");
   check("diagnosis reports unreachable", (() => { const d = epApi.episodeCloudDiagnosis(); return d.url === "http://127.0.0.1:1" && d.ok === false && d.error !== ""; })(), JSON.stringify(epApi.episodeCloudDiagnosis()));
   epApi.configureEpisodeApiUrl("");
 }
-// --- episode creator opens pre-launch (regression: helpers must be
-// top-level scope — a nested-in-bindEvents helper broke this silently) ---
+// --- game results: schema + server core + routes + reviewer compute ---
+{
+  const resSchema = await import("../src/results/schema.js");
+  const resCore = await import("../server/core.js");
+  const resApi = await import("../src/results/api.js");
+  const T = globalThis.__BUZZER_TEST__;
+  const mkPayload = () => ({
+    kind: "buzzers-results",
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    scores: { alice: 2000, bob: -500, "team:red": 1500, "coop:dev1:0": 1000 },
+    customNames: { bob: "Bobby" },
+    coopRosters: { dev1: { group: "Duo", slots: ["Ann", "Ben"] } },
+    teamAssignments: {},
+    gameLog: [
+      { id: "e1", type: "buzz", roundId: 1, playerId: "alice", playerName: "Alice", scoreKey: "alice", option: 2, awardedDelta: 1000, resolved: true, basePoints: 1000 },
+      { id: "e2", type: "buzz", roundId: 1, playerId: "bob", playerName: "Bobby", scoreKey: "bob", option: 1, awardedDelta: -1000, resolved: true, basePoints: 1000 },
+      { id: "e3", type: "buzz", roundId: 2, playerId: "alice", playerName: "Alice", scoreKey: "alice", option: 3, awardedDelta: 0, resolved: false, basePoints: 1000 },
+      { id: "e4", type: "bingo", roundId: 2, playerId: "dev1", playerName: "Ann", scoreKey: "coop:dev1:0", coopKey: "coop:dev1:0", item: "A", result: "correct", basePoints: 500, awardedDelta: 500, resolved: true },
+      { id: "e5", type: "manual-adjust", roundId: 2, playerId: "bob", playerName: "Bobby", scoreKey: "bob", basePoints: 200, awardedDelta: 200, resolved: true },
+    ],
+    episode: { title: "Ep", items: [{ kind: "buttons", prompt: "2+2?", options: ["3", "4"] }, { kind: "bingo", prompt: "Letters?", word: "ABCDE" }] },
+  });
+  check("results schema accepts valid", resSchema.validateResultFile(resSchema.normalizeResultFile(mkPayload())).ok === true, "valid rejected");
+  check("results schema rejects kind", resSchema.validateResultFile({ ...mkPayload(), kind: "episode" }).ok === false, "bad kind accepted");
+  check("results schema rejects bad scores", resSchema.validateResultFile({ ...mkPayload(), scores: { a: NaN } }).ok === false, "NaN score accepted");
+  check("results schema caps log", resSchema.validateResultFile({ ...mkPayload(), gameLog: Array(5001).fill({ type: "buzz" }) }).ok === false, "oversize accepted");
+  check("results schema rejects bad type", resSchema.validateResultFile({ ...mkPayload(), gameLog: [{ type: "nope" }] }).ok === false, "bad type accepted");
+  const rmem = new Map();
+  const rstore = {
+    async findOne({ code }) { return rmem.get(code) || null; },
+    async insertOne(doc) {
+      if (rmem.has(doc.code)) { const e = new Error("duplicate key"); e.code = 11000; throw e; }
+      rmem.set(doc.code, { ...doc });
+      return { insertedId: doc.code };
+    },
+    async updateOne({ code }, { $set }) {
+      const cur = rmem.get(code);
+      if (cur) rmem.set(code, { ...cur, ...$set });
+      return { modifiedCount: cur ? 1 : 0 };
+    },
+    async deleteOne({ code }) { const had = rmem.has(code); rmem.delete(code); return { deletedCount: had ? 1 : 0 }; },
+  };
+  const saved = await resCore.saveResultOp(rstore, { result: mkPayload() });
+  check("results save mints", saved.status === 201 && /^[A-Z2-9]{6}$/.test(saved.body?.code) && !!saved.body?.expiresAt, JSON.stringify(saved.body));
+  check("results save sets 14d ttl", Math.abs(Date.parse(saved.body?.expiresAt) - Date.now() - 14 * 864e5) < 120000, saved.body?.expiresAt);
+  const rcode = saved.body.code;
+  const expBefore = rmem.get(rcode).expiresAt;
+  await new Promise((r) => setTimeout(r, 5));
+  const loaded = await resCore.loadResultOp(rstore, rcode.toLowerCase());
+  check("results load ok", loaded.status === 200 && loaded.body?.result?.scores?.alice === 2000, JSON.stringify(loaded.body?.result?.scores));
+  check("results load renews expiry", Date.parse(loaded.body?.expiresAt) >= Date.parse(expBefore), `${expBefore} -> ${loaded.body?.expiresAt}`);
+  check("results load rejects bad code", (await resCore.loadResultOp(rstore, "ZZZZZZ")).status === 404, "bad code loaded");
+  check("results save rejects invalid", (await resCore.saveResultOp(rstore, { result: { kind: "nope" } })).status === 400, "invalid saved");
+  check("results save 413s oversize", (await resCore.saveResultOp(rstore, { result: { ...mkPayload(), gameLog: Array(5001).fill({ type: "buzz" }) } })).status === 413, "oversize saved");
+  rmem.get(rcode).expiresAt = new Date(Date.now() - 1000).toISOString();
+  const gone = await resCore.loadResultOp(rstore, rcode);
+  check("results expired 404s", gone.status === 404 && /expired/i.test(gone.body?.reason || ""), JSON.stringify(gone.body));
+  check("results expired deleted", !rmem.has(rcode), "expired doc kept");
+  const saved2 = await resCore.saveResultOp(rstore, { result: mkPayload() });
+  const rcode2 = saved2.body.code;
+  const pastExp = new Date(Date.now() - 1000).toISOString();
+  rmem.get(rcode2).persistent = true;
+  rmem.get(rcode2).expiresAt = pastExp;
+  const pload = await resCore.loadResultOp(rstore, rcode2);
+  check("results persistent bypasses expiry", pload.status === 200 && !!pload.body?.result, JSON.stringify(pload.body?.reason));
+  check("results persistent skips refresh", rmem.get(rcode2).expiresAt === pastExp, rmem.get(rcode2).expiresAt);
+  // Express routes (results store isolated from episodes via options).
+  const epServer = await import("../server/index.js");
+  const rmem2 = new Map();
+  const rstore2 = {
+    async findOne({ code }) { return rmem2.get(code) || null; },
+    async insertOne(doc) {
+      if (rmem2.has(doc.code)) { const e = new Error("duplicate"); e.code = 11000; throw e; }
+      rmem2.set(doc.code, { ...doc });
+      return { insertedId: doc.code };
+    },
+    async updateOne({ code }, { $set }) { const cur = rmem2.get(code); if (cur) rmem2.set(code, { ...cur, ...$set }); return { modifiedCount: cur ? 1 : 0 }; },
+    async deleteOne({ code }) { const had = rmem2.has(code); rmem2.delete(code); return { deletedCount: had ? 1 : 0 }; },
+  };
+  const epMem = new Map();
+  const epFake = {
+    async findOne({ code }) { return epMem.get(code) || null; },
+    async insertOne(doc) { epMem.set(doc.code, { ...doc }); return { insertedId: doc.code }; },
+    async updateOne({ code }, { $set }) { const cur = epMem.get(code); if (cur) epMem.set(code, { ...cur, ...$set }); return { modifiedCount: 0 }; },
+    async deleteOne({ code }) { epMem.delete(code); return { deletedCount: 0 }; },
+  };
+  const rsrv = await new Promise((resolve) => {
+    const s = epServer.createApp(epFake, { resultsStore: rstore2 }).listen(0, "127.0.0.1", () => resolve(s));
+  });
+  const rbase = `http://127.0.0.1:${rsrv.address().port}`;
+  try {
+    let r = await (await fetch(`${rbase}/api/results`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ result: mkPayload() }) })).json();
+    check("results POST mints", /^[A-Z2-9]{6}$/.test(r?.code), JSON.stringify(r));
+    const httpCode = r?.code;
+    // Client wrapper round-trips over HTTP (shares the episode base URL).
+    resApi.configureEpisodeApiUrl(rbase);
+    const clientLoaded = await resApi.loadResult(httpCode);
+    check("results client loads", clientLoaded.result?.scores?.alice === 2000 && !!clientLoaded.expiresAt, JSON.stringify(Object.keys(clientLoaded)));
+    const clientSaved = await resApi.saveResult(mkPayload());
+    check("results client saves", /^[A-Z2-9]{6}$/.test(clientSaved.code), JSON.stringify(clientSaved));
+    let threw = null;
+    try { await resApi.loadResult("ZZZZZZ"); } catch (e) { threw = e; }
+    check("results client 404s", threw?.status === 404, String(threw?.status));
+    threw = null;
+    try { await resApi.saveResult({ kind: "nope" }); } catch (e) { threw = e; }
+    check("results client validates", threw?.status === 400, String(threw?.status));
+    const bigPayload = { ...mkPayload(), gameLog: Array(5001).fill({ type: "buzz" }) };
+    r = await (await fetch(`${rbase}/api/results`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ result: bigPayload }) })).json();
+    check("results POST 413s oversize", r?.reason === "Too large! download to save your game", JSON.stringify(r));
+    threw = null;
+    try { await resApi.saveResult(bigPayload); } catch (e) { threw = e; }
+    check("results client pre-checks size", threw?.message === "Too large! download to save your game", String(threw?.message));
+    const g = await (await fetch(`${rbase}/api/results/ZZZZZZ`)).json();
+    check("results GET 404s", g?.ok === false, JSON.stringify(g));
+  } finally {
+    resApi.configureEpisodeApiUrl("");
+    await new Promise((resolve) => rsrv.close(resolve));
+  }
+  // Vercel serverless handlers share the same core via the results seam.
+  globalThis.__RESULTS_TEST_STORE__ = rstore2;
+  try {
+    const saveFn = (await import("../api/results/index.js")).default;
+    const codeFn = (await import("../api/results/[code].js")).default;
+    const mockRes = () => ({
+      statusCode: 200, headers: {}, body: null,
+      setHeader(k, v) { this.headers[String(k).toLowerCase()] = String(v); return this; },
+      status(c) { this.statusCode = c; return this; },
+      json(b) { this.body = b; return this; },
+      end() { return this; },
+    });
+    const mockReq = ({ method = "GET", query = {}, body = {}, headers = {} } = {}) => ({
+      method, query, body, headers, socket: { remoteAddress: "127.0.0.1" },
+    });
+    let res = mockRes();
+    await saveFn(mockReq({ method: "POST", body: { result: mkPayload() } }), res);
+    check("results fn save mints", res.statusCode === 201 && /^[A-Z2-9]{6}$/.test(res.body?.code), `${res.statusCode}`);
+    const fnCode = res.body?.code;
+    res = mockRes();
+    await codeFn(mockReq({ method: "GET", query: { code: fnCode } }), res);
+    check("results fn load ok", res.statusCode === 200 && res.body?.result?.scores?.alice === 2000, `${res.statusCode}`);
+    res = mockRes();
+    await codeFn(mockReq({ method: "POST", query: { code: fnCode } }), res);
+    check("results fn rejects POST", res.statusCode === 405, String(res.statusCode));
+  } finally {
+    globalThis.__RESULTS_TEST_STORE__ = null;
+  }
+  // Reviewer compute: standings, accuracy (minigames in, unresolved/manual out).
+  const review = T.computeResultsReview(mkPayload());
+  check("reviewer standings sorted", review.standings[0]?.key === "alice" && review.standings[0]?.score === 2000, JSON.stringify(review.standings.map((s) => s.key)));
+  const alice = review.players.find((p) => p.key === "alice");
+  check("reviewer alice accuracy", alice?.attempts === 1 && alice?.correct === 1 && alice?.pct === 100, JSON.stringify(alice));
+  const bob = review.players.find((p) => p.key === "bob");
+  check("reviewer bob renamed + accuracy", bob?.name === "Bobby" && bob?.attempts === 1 && bob?.correct === 0 && bob?.pct === 0, JSON.stringify(bob));
+  const ann = review.players.find((p) => p.key === "coop:dev1:0");
+  check("reviewer coop slot named", ann?.name === "Ann" && ann?.attempts === 1 && ann?.correct === 1, JSON.stringify(ann));
+  check("reviewer manual excluded from attempts", !review.players.some((p) => p.attempts > 1 && p.key === "bob"), JSON.stringify(review.players));
+  const q1 = review.questions.find((q) => q.roundId === 1);
+  check("reviewer q1 matched + 50%", q1?.matched === true && /2\+2/.test(q1?.prompt) && q1?.attempts === 2 && q1?.correct === 1 && q1?.pct === 50, JSON.stringify(q1));
+  const q2 = review.questions.find((q) => q.roundId === 2);
+  check("reviewer q2 positional match", q2?.matched === true && /Letters/.test(q2?.prompt || ""), JSON.stringify(q2));
+  const noEp = T.computeResultsReview({ ...mkPayload(), episode: undefined });
+  check("reviewer unmatched honest", noEp.questions.every((q) => q.matched === false && q.prompt === ""), JSON.stringify(noEp.questions));
+  check("reviewer team named", T.resolveReviewerName("team:red", mkPayload()) === "Team Red", T.resolveReviewerName("team:red", mkPayload()));
+  check("reviewer buzz rows complete", review.buzzRows.length === 5 && review.buzzRows.filter((r) => r.resultLabel === "pending").length === 1 && review.buzzRows.filter((r) => r.resultLabel === "manual").length === 1, JSON.stringify(review.buzzRows.map((r) => r.resultLabel)));
+  // Reviewer screen renders pre-launch from landing (file path via the seam).
+  // parse schedules an async game-view render, so let it flush before
+  // opening the reviewer screen or it repaints over it.
+  T.parseReviewerText(JSON.stringify(mkPayload()), "night.results.json");
+  await sleep(600);
+  const opener = { dataset: { prejoinOpen: "reviewer" }, closest: (s) => (s === "[data-prejoin-open]" ? opener : null) };
+  for (const fn of _mount._listeners.click || []) await fn({ target: opener, preventDefault() {} });
+  await sleep(600);
+  check("reviewer screen shows standings", _mount.innerHTML.includes("Final scores") && _mount.innerHTML.includes("Alice"), "standings missing");
+  check("reviewer screen shows accuracy", _mount.innerHTML.includes("Accuracy per player") && _mount.innerHTML.includes("50%"), "accuracy missing");
+  check("reviewer screen shows questions", _mount.innerHTML.includes("Accuracy per question") && _mount.innerHTML.includes("Round 1"), "questions missing");
+  check("reviewer screen shows buzzes", _mount.innerHTML.includes("Per-player buzzes") && _mount.innerHTML.includes("Bobby"), "buzzes missing");
+  T.parseReviewerText("{not json", "bad.json");
+  await sleep(600);
+  for (const fn of _mount._listeners.click || []) await fn({ target: opener, preventDefault() {} });
+  await sleep(600);
+  check("reviewer screen shows import error", _mount.innerHTML.includes("not valid JSON"), "error missing");
+  check("no render warnings from reviewer", warnings.filter((w) => /reviewer|results/i.test(w)).length === 0, warnings.filter((w) => /reviewer|results/i.test(w)).join(" || ").slice(0, 200));
+}
 {
   const firePrejoin = async (selector, dataset = {}) => {
     const t = { dataset, closest: (s) => (s === selector ? t : null) };
