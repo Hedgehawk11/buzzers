@@ -932,6 +932,10 @@ function probeCoopCharCandidates(slot, state, index) {
   img.src = url;
 }
 
+// Host-local epoch: bumped on round reset so pending face flips scheduled
+// before the reset never fire on the cleared board (reset preserves the
+// round number, so the round-id guard alone can't catch them).
+let coopFaceEpoch = 0;
 // Latest buzz entry per score key in the current round. Memoized on the log
 // array identity — setState replaces the array on every write (appends AND
 // edits), so ruling flips invalidate the cache while repeated slot lookups
@@ -966,7 +970,7 @@ function getCoopCharMoodForKey(scoreKey, round) {
   const moods = getCoopMoods();
   const mood = moods?.[scoreKey];
   let face = null;
-  if (mood === "correct" || mood === "wrong") {
+  if (mood === "correct" || mood === "wrong" || mood === "rewind") {
     // The active pick-a-value dancer wins over a stored face during roulette.
     if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
       const rep = getRouletteRepForDevice(round.roulette, scoreKey);
@@ -1009,16 +1013,19 @@ function getCoopCharMoodForKey(scoreKey, round) {
 function getCoopCharHtml(slot, mood = "idle", extraClass = "") {
   const charNum = clamp(slot + 1, 1, 3);
   const entry = coopCharUrls[charNum] || {};
-  const want = mood === "correct" || mood === "wrong" ? mood : mood === "buzz" || mood === "dance" ? mood : "base";
+  // "rewind" plays the wrong strip backwards (reset theater) using the wrong art.
+  const rewinding = mood === "rewind";
+  const want = mood === "correct" || mood === "wrong" ? mood : rewinding ? "wrong" : mood === "buzz" || mood === "dance" ? mood : "base";
   const url = entry[want] || entry.base;
   if (!url) return "";
-  const cls = `coop-avatar coop-avatar-${want} ${extraClass}`.trim();
+  const cls = `coop-avatar coop-avatar-${rewinding ? "rewind" : want} ${extraClass}`.trim();
   if ((want === "buzz" || want === "correct" || want === "wrong") && coopCharFrames[charNum][want] > 1) {
     const frames = coopCharFrames[charNum][want];
     // 0%→100% spans (frames - 1) gaps; the step count is inlined because
     // steps(var()) is dropped as invalid by some browsers.
     const steps = Math.max(1, frames - 1);
-    return `<span class="${cls} coop-avatar-strip" style="background-image:url('${url}');--coop-frames:${frames};animation-timing-function:steps(${steps})" role="img" aria-label="player ${charNum} ${want}"></span>`;
+    const direction = rewinding ? ";animation-direction:reverse" : "";
+    return `<span class="${cls} coop-avatar-strip" style="background-image:url('${url}');--coop-frames:${frames};animation-timing-function:steps(${steps})${direction}" role="img" aria-label="player ${charNum} ${want}${rewinding ? " rewind" : ""}"></span>`;
   }
   return `<img class="${cls}" src="${url}" alt="player ${charNum}" loading="lazy" />`;
 }
@@ -2261,9 +2268,10 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
         // so the judged face plays exactly once.
         const face = nextAwarded > 0 ? "correct" : "wrong";
         const roundId = currentRoundId();
+        const epoch = coopFaceEpoch;
         setTimeout(() => {
           try {
-            if (!isHost()) return;
+            if (!isHost() || epoch !== coopFaceEpoch) return;
             if (currentRoundId() !== roundId) return;
             const fresh = (getLog() || []).find((e) => e && e.id === logId);
             if (!fresh || fresh.resolved !== true || Number(fresh.awardedDelta) !== nextAwarded) return;
@@ -2273,13 +2281,16 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
             const latest = roundBuzzes[roundBuzzes.length - 1];
             if (!latest || latest.id !== logId) return;
             const cur = getCoopMoods();
-            if (!cur || cur[entryScoreKey] !== undefined) return;
+            // A reset rewind ("rewind") never blocks a fresh face; anything
+            // else already showing wins.
+            if (!cur || (cur[entryScoreKey] !== undefined && cur[entryScoreKey] !== "rewind")) return;
             if (face === "correct") {
               setState("coopMoods", { ...cur, [entryScoreKey]: "correct" }, true);
+              scheduleCoopFaceClear(entryScoreKey, face);
             } else {
+              // Wrong holds its last frame until round reset (which rewinds it).
               setState("coopMoods", { ...cur, [entryScoreKey]: "wrong" }, true);
             }
-            scheduleCoopFaceClear(entryScoreKey, face);
             render();
           } catch {}
         }, 1000);
@@ -2288,9 +2299,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
         // Correct plays once, then back to idle.
         scheduleCoopFaceClear(entryScoreKey, "correct");
       } else if (nextAwarded < 0) {
+        // Wrong plays once, then holds its last frame until round reset.
         setState("coopMoods", { ...getCoopMoods(), [entryScoreKey]: "wrong" }, true);
-        // Wrong plays once, then back to idle.
-        scheduleCoopFaceClear(entryScoreKey, "wrong");
       }
     }
   } catch {}
@@ -4825,7 +4835,35 @@ function resetRound() {
     true,
   );
   setState("pendingLogId", null, true);
-  setState("coopMoods", {}, true);
+  // Wrong faces rewind on reset: held wrong slots flip to reverse playback
+  // for ~1s, then drop to idle. Everything else clears instantly.
+  try {
+    coopFaceEpoch++;
+    const moods = getCoopMoods();
+    const wrongKeys = Object.keys(moods || {}).filter((k) => moods[k] === "wrong");
+    if (wrongKeys.length > 0) {
+      const next = {};
+      for (const k of wrongKeys) next[k] = "rewind";
+      setState("coopMoods", next, true);
+      const epoch = coopFaceEpoch;
+      setTimeout(() => {
+        try {
+          if (!isHost() || epoch !== coopFaceEpoch) return;
+          const cur = getCoopMoods();
+          const stale = Object.keys(cur || {}).filter((k) => cur[k] === "rewind");
+          if (stale.length === 0) return;
+          const cleared = { ...cur };
+          for (const k of stale) delete cleared[k];
+          setState("coopMoods", cleared, true);
+          render();
+        } catch {}
+      }, 1000);
+    } else {
+      setState("coopMoods", {}, true);
+    }
+  } catch {
+    try { setState("coopMoods", {}, true); } catch {}
+  }
   render();
 }
 

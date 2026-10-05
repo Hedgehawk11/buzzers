@@ -243,11 +243,12 @@ if (COOP) {
   check("coop buzz face first (wrong held for flip)", S().coopMoods?.dev3 === undefined, JSON.stringify(S().coopMoods));
   await sleep(1100);
   check("coop wrong face flips after buzz", S().coopMoods?.dev3 === "wrong", JSON.stringify(S().coopMoods));
+  // Wrong holds its last frame (no self-clear) until round reset.
   await sleep(1800);
-  check("coop wrong returns to idle after playing", S().coopMoods?.dev3 === undefined, JSON.stringify(S().coopMoods));
+  check("coop wrong holds last frame", S().coopMoods?.dev3 === "wrong", JSON.stringify(S().coopMoods));
   check(
-    "coop wrong idle end-state on avatar",
-    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round) === "idle",
+    "coop wrong shown on avatar while held",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round) === "wrong",
     globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round),
   );
 }
@@ -588,7 +589,20 @@ if (COOP) {
   await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry.id, -1000] }, prod);
   check("wrong face set", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
   await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
-  check("reset clears faces", JSON.stringify(S().coopMoods) === "{}" || S().coopMoods === undefined, JSON.stringify(S().coopMoods));
+  const rewound = S().coopMoods || {};
+  check("reset rewinds held wrong faces", rewound.dev2 === "rewind" && !Object.values(rewound).includes("wrong"), JSON.stringify(rewound));
+  check(
+    "rewind shows reverse wrong on avatar",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "rewind",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round),
+  );
+  await sleep(1800);
+  check("rewind settles to idle", Object.keys(S().coopMoods || {}).length === 0, JSON.stringify(S().coopMoods));
+  check(
+    "idle end-state on avatar after rewind",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "idle",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round),
+  );
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   await pk._store.rpc.buzz({ option: 4 }, dev2);
   const moodEntry2 = S().gameLog.filter((e) => e.type === "buzz").pop();
