@@ -629,6 +629,114 @@ if (COOP) {
   check("open rewind settles to idle", Object.keys(S().coopMoods || {}).length === 0, JSON.stringify(S().coopMoods));
 }
 
+// --- coop faces play once per action: repeats render frozen, new actions replay ---
+if (COOP) {
+  const fT = globalThis.__BUZZER_TEST__;
+  fT.setCoopCharArt(1, "base", "/1.png");
+  fT.setCoopCharArt(1, "buzz", "/1-buzz.png", 4);
+  fT.setCoopCharArt(1, "wrong", "/1-wrong.png", 4);
+  fT.setCoopCharArt(1, "correct", "/1-correct.png", 4);
+  fT.resetCoopFaceSeen();
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  const faceEntry0 = S().gameLog.filter((e) => e.type === "buzz").pop();
+  const faceKey = faceEntry0?.scoreKey || "dev2";
+  check("buzz mood for face test", fT.getCoopCharMoodForKey(faceKey, S().round) === "buzz", fT.getCoopCharMoodForKey(faceKey, S().round));
+  const buzzFirst = fT.getCoopCharHtml(0, "buzz", "", faceKey);
+  check("buzz strip plays on first render", buzzFirst.includes("coop-avatar-strip") && !buzzFirst.includes("is-held"), buzzFirst.slice(0, 160));
+  await sleep(200);
+  const buzzRepeat = fT.getCoopCharHtml(0, "buzz", "", faceKey);
+  check("buzz strip frozen on re-render", buzzRepeat.includes("is-held") && buzzRepeat.includes("animation:none"), buzzRepeat.slice(0, 200));
+  const faceEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [faceEntry.id, -1000] }, prod);
+  const wrongFirst = fT.getCoopCharHtml(0, "wrong", "", faceKey);
+  check("wrong strip plays once when judged", wrongFirst.includes("coop-avatar-strip") && !wrongFirst.includes("is-held"), wrongFirst.slice(0, 160));
+  await sleep(200);
+  const wrongRepeat = fT.getCoopCharHtml(0, "wrong", "", faceKey);
+  check("wrong strip holds frozen frame", wrongRepeat.includes("is-held") && wrongRepeat.includes("100% 50%"), wrongRepeat.slice(0, 200));
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  const rewindFirst = fT.getCoopCharHtml(0, "rewind", "", faceKey);
+  check("rewind plays once on reset", rewindFirst.includes("coop-avatar-strip") && !rewindFirst.includes("is-held"), rewindFirst.slice(0, 160));
+  await sleep(200);
+  const rewindRepeat = fT.getCoopCharHtml(0, "rewind", "", faceKey);
+  check("rewind frozen on re-render", rewindRepeat.includes("is-held"), rewindRepeat.slice(0, 200));
+  await sleep(1200);
+  fT.resetCoopFaceSeen();
+}
+
+// --- buzz handoff: keypress preview then host entry plays exactly once total ---
+// Uses a fresh device so no prior-round entry for its key can shadow the
+// optimistic preview path (round numbers are reused across tests).
+if (COOP) {
+  const hT = globalThis.__BUZZER_TEST__;
+  const devH = pk.makePlayer("devH", "GroupH");
+  pk._store.participants.devH = devH;
+  await pk._store.rpc["coop-roster"]({ group: "GroupH", count: 1, names: [] }, devH);
+  hT.resetCoopFaceSeen();
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  hT.noteCoopLocalBuzz("devH");
+  const prevHtml = hT.getCoopCharHtml(0, "buzz", "", "devH");
+  check("keypress preview plays once", prevHtml.includes("coop-avatar-strip") && !prevHtml.includes("is-held"), prevHtml.slice(0, 160));
+  await pk._store.rpc.buzz({ option: 3 }, devH);
+  const handHtml = hT.getCoopCharHtml(0, "buzz", "", "devH");
+  check("entry handoff holds final frame (no replay)", handHtml.includes("is-held"), handHtml.slice(0, 200));
+  hT.noteCoopLocalBuzz(null);
+  hT.resetCoopFaceSeen();
+  // Fixture cleanup: later tests (e.g. quixort shared tracks) require every
+  // live player assigned to a team, so the handoff device must leave.
+  delete pk._store.participants.devH;
+  try { delete S().coopRosters?.devH; } catch {}
+  try { delete S().scores?.devH; } catch {}
+  try { delete S().teamAssignments?.devH; } catch {}
+}
+
+// --- coop: lockout completing the eligible set closes the round ---
+// A solved group must not dangle the round OPEN for slots that can no
+// longer buzz. Narrow the field (snapshots restored after) so completion
+// is reachable with dev1 (2 slots) + dev2 (1 slot).
+if (COOP) {
+  const snapParts = { ...pk._store.participants };
+  const snapScores = JSON.parse(JSON.stringify(S().scores || {}));
+  const snapMoods = JSON.parse(JSON.stringify(S().coopMoods || {}));
+  const snapTeams = JSON.parse(JSON.stringify(S().teamAssignments || {}));
+  const snapRosters = JSON.parse(JSON.stringify(S().coopRosters || {}));
+  for (const pid of Object.keys(pk._store.participants)) {
+    if (pid !== "host1" && pid !== "prod1" && pid !== "dev1" && pid !== "dev2") {
+      delete pk._store.participants[pid];
+    }
+  }
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  if (!((S().round?.correctOptions || []).map(Number).includes(1))) {
+    await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+  }
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("completion round open", S().round?.status === "open", S().round?.status);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, dev1);
+  const solveRes = await pk._store.rpc.buzz({ option: 1 }, dev1);
+  check("solve accepted", solveRes?.ok === true, JSON.stringify(solveRes));
+  check(
+    "solver siblings locked out",
+    (S().round?.buzzedPlayerIds || []).includes("coop:dev1:0") && (S().round?.buzzedPlayerIds || []).includes("coop:dev1:1"),
+    JSON.stringify(S().round?.buzzedPlayerIds),
+  );
+  check("round stays open for other groups", S().round?.status === "open", S().round?.status);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  check("round closes when eligible set complete", S().round?.status === "closed", `${S().round?.status} ${JSON.stringify(S().round?.buzzedPlayerIds)}`);
+  pk._store.participants = snapParts;
+  pk._store.state.scores = snapScores;
+  pk._store.state.coopMoods = snapMoods;
+  pk._store.state.teamAssignments = snapTeams;
+  pk._store.state.coopRosters = snapRosters;
+  // Leave an openable round behind: completed rounds are terminally closed
+  // (same as timeout/all-eligible closes), so reset to IDLE for the next block.
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
+}
+
 // --- coop analytics: hidden until the post-round; points land instantly ---
 if (COOP) {
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);

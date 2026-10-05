@@ -2839,6 +2839,11 @@ body[data-ui-anims="off"] .coop-avatar-strip {
   animation: none;
   background-position: 100% 50%;
 }
+/* Repeat renders of an already-played face hold the final frame so each
+   buzz/correct/wrong/rewind plays once per action (see coopFaceSeen). */
+.coop-avatar-strip.is-held {
+  animation: none;
+}
 
 /* Grouped scoreboard. */
 .coop-group-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }

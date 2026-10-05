@@ -756,6 +756,36 @@ function isAllEligibleBuzzed(buzzedPlayerIds, settings) {
   return eligible.length > 0 && eligible.every((id) => (buzzedPlayerIds || []).includes(id));
 }
 
+// Coop: close a completed round. Sibling lockout appends the solver's slots
+// to buzzedPlayerIds, which can complete the eligible set — but the no-lock
+// auto-close in the buzz path runs BEFORE lockout is applied, and the ruling
+// path never re-checks. Without this the round dangles OPEN demanding buzzes
+// from slots that can no longer buzz (a solved group with nowhere to go).
+// Only fires when nobody able to buzz remains: rebuzz off, no live screw,
+// no pending ruling, every eligible slot buzzed or locked out.
+function maybeCloseCompletedRound() {
+  try {
+    const settings = getSettings();
+    if (!isCoopMode(settings)) return false;
+    if (settings.rebuzzAllowed) return false;
+    const round = getRound();
+    if (round.status !== ROUND_STATUSES.OPEN) return false;
+    if (round.screw?.active) return false;
+    if (getSafeState("pendingLogId", null)) return false;
+    if (!isAllEligibleBuzzed(round.buzzedPlayerIds, settings)) return false;
+    setState(
+      "round",
+      { ...round, status: ROUND_STATUSES.CLOSED, closesAt: null, coopControl: null },
+      true,
+    );
+    try {
+      finalizeRoundScoring(currentRoundId());
+    } catch {}
+    render();
+    return true;
+  } catch { return false; }
+}
+
 function getPlayerOptionBuzzCount(round, playerId, option) {
   return Number((round.buzzCounts || {})?.[playerId]?.[option] || 0);
 }
@@ -978,6 +1008,92 @@ function getCurrentRoundBuzzMap() {
   return faceBuzzCache.map;
 }
 
+// Play-once tracker for coop face strips: full innerHTML re-renders recreate
+// <span class="coop-avatar-strip"> nodes, restarting the CSS steps() strip
+// from frame 0. Track the first render of each face action; repeats render
+// frozen on the final frame so each buzz/correct/wrong/rewind plays once.
+// Local-only (module vars, never shared) like coopLocalBuzz. Dance loops by
+// design while the rep telegraphs (see public/avatars.md) so it is untracked.
+let coopFaceSeen = new Map(); // faceKey -> firstSeenMs
+let coopFaceHeld = new Set(); // faceKeys held frozen (preview→entry handoff continuity)
+function getCoopFaceSourceId(scoreKey, mood, round) {
+  try {
+    if (mood !== "buzz" && mood !== "correct" && mood !== "wrong" && mood !== "rewind") return null;
+    if (mood === "rewind") return `epoch:${coopFaceEpoch}`;
+    if (mood === "buzz") {
+      const entry = getCurrentRoundBuzzMap().get(scoreKey);
+      if (entry?.id) return `buzz:${entry.id}`;
+      if (coopLocalBuzz?.key === scoreKey) return `local:${coopLocalBuzz.ts}`;
+      return null;
+    }
+    // Judged faces: latest resolved buzz entry for this key in this round
+    // with a matching sign. Including updatedAt/awardedDelta means a re-ruling
+    // (a new action) replays once instead of staying frozen.
+    const rid = currentRoundId();
+    const log = getLog() || [];
+    for (let i = log.length - 1; i >= 0; i--) {
+      const e = log[i];
+      if (!e || e.type !== "buzz" || Number(e.roundId) !== Number(rid)) continue;
+      if (e.scoreKey !== scoreKey && e.coopKey !== scoreKey) continue;
+      if (e.resolved !== true) continue;
+      const d = Number(e.awardedDelta || 0);
+      if (mood === "correct" && !(d > 0)) continue;
+      if (mood === "wrong" && !(d < 0)) continue;
+      return `log:${e.id}:${e.updatedAt || d}`;
+    }
+    return null;
+  } catch { return null; }
+}
+function getCoopFaceKey(scoreKey, mood, round) {
+  if (!scoreKey || typeof scoreKey !== "string") return null;
+  const source = getCoopFaceSourceId(scoreKey, mood, round);
+  if (!source) return null;
+  let rid = 0;
+  try { rid = currentRoundId(); } catch {}
+  const key = `${rid}|${scoreKey}|${mood}|${source}`;
+  // Single play across the optimistic handoff: the pressing device already
+  // animated the keypress preview (local:ts); when the host entry lands a
+  // beat later it must hold the final frame, not replay the strip. Other
+  // screens never saw the preview, so the entry is their one play. Held
+  // (not seen-inherited): the same-pass grace in isFreshCoopFace must not
+  // treat a milliseconds-old handoff as a fresh play.
+  if (mood === "buzz" && source.startsWith("buzz:")) {
+    try {
+      let t = 0;
+      try { t = now(); } catch { t = Date.now(); }
+      const prefix = `${rid}|${scoreKey}|buzz|local:`;
+      for (const [k, seen] of coopFaceSeen) {
+        if (k.startsWith(prefix) && t - seen < 2500 && !coopFaceHeld.has(key)) {
+          coopFaceHeld.add(key);
+          if (coopFaceHeld.size > 500) {
+            const oldest = coopFaceHeld.values().next().value;
+            if (oldest) coopFaceHeld.delete(oldest);
+          }
+          break;
+        }
+      }
+    } catch {}
+  }
+  return key;
+}
+// First render of a faceKey animates; repeats within the same render pass
+// (microseconds apart) also animate, but later re-renders stay frozen.
+function isFreshCoopFace(faceKey) {
+  if (!faceKey) return false;
+  let t = 0;
+  try { t = now(); } catch { t = Date.now(); }
+  const seen = coopFaceSeen.get(faceKey);
+  if (seen === undefined) {
+    coopFaceSeen.set(faceKey, t);
+    if (coopFaceSeen.size > 500) {
+      const oldest = [...coopFaceSeen.entries()].sort((a, b) => a[1] - b[1])[0]?.[0];
+      if (oldest) coopFaceSeen.delete(oldest);
+    }
+    return true;
+  }
+  return (t - seen) < 150;
+}
+
 function getCoopCharMoodForKey(scoreKey, round) {
   // Audience/tablet displays stay idle 24/7 — faces are player/host only.
   try { if (isAudienceDisplayClient()) return "idle"; } catch {}
@@ -1032,7 +1148,9 @@ function getCoopCharMoodForKey(scoreKey, round) {
 // Returns avatar HTML for a coop slot (1-based character number = slot+1).
 // Spritesheet moods (buzz/correct/wrong) render as stepped background divs
 // that freeze on the final frame; plain images render as <img>.
-function getCoopCharHtml(slot, mood = "idle", extraClass = "") {
+// Pass scoreKey so strip faces play once per action: repeats of the same
+// faceKey render frozen (animation:none, final frame) instead of restarting.
+function getCoopCharHtml(slot, mood = "idle", extraClass = "", scoreKey = null) {
   const charNum = clamp(slot + 1, 1, 3);
   const entry = coopCharUrls[charNum] || {};
   // "rewind" plays the wrong strip backwards (reset theater) using the wrong art.
@@ -1047,6 +1165,16 @@ function getCoopCharHtml(slot, mood = "idle", extraClass = "") {
     // steps(var()) is dropped as invalid by some browsers.
     const steps = Math.max(1, frames - 1);
     const direction = rewinding ? ";animation-direction:reverse" : "";
+    let round = null;
+    try { round = getRound(); } catch {}
+    const faceKey = scoreKey ? getCoopFaceKey(scoreKey, mood, round) : null;
+    const fresh = faceKey ? (isFreshCoopFace(faceKey) && !coopFaceHeld.has(faceKey)) : true;
+    if (!fresh) {
+      // Repeat render of an already-playing face: hold the final frame.
+      // Reverse (rewind) ends on the original first frame.
+      const heldPos = rewinding ? "0 50%" : "100% 50%";
+      return `<span class="${cls} coop-avatar-strip is-held" style="background-image:url('${url}');--coop-frames:${frames};animation:none;background-position:${heldPos}" role="img" aria-label="player ${charNum} ${want}${rewinding ? " rewind" : ""}"></span>`;
+    }
     return `<span class="${cls} coop-avatar-strip" style="background-image:url('${url}');--coop-frames:${frames};animation-timing-function:steps(${steps})${direction}" role="img" aria-label="player ${charNum} ${want}${rewinding ? " rewind" : ""}"></span>`;
   }
   return `<img class="${cls}" src="${url}" alt="player ${charNum}" loading="lazy" />`;
@@ -2168,7 +2296,7 @@ function renderRoulettePanel(settings, round, mePlayer) {
     const repName = getCoopSlotName(mePlayer.id, repSlot, getPlayerName(mePlayer));
     coopRepLine = `
       <div class="coop-slot is-picker">
-        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round))}<strong>${escapeHtml(repName)}</strong><span class="muted">${getSnark("player.coop.repStopsShort", "stops for your group")}</span></div>
+        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round), "", repKey)}<strong>${escapeHtml(repName)}</strong><span class="muted">${getSnark("player.coop.repStopsShort", "stops for your group")}</span></div>
       </div>`;
   }
 
@@ -2414,6 +2542,11 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
       }
     }
   } catch {}
+
+  // A correct ruling (via lockout above) may have completed the eligible
+  // set — the no-lock auto-close runs before lockout is applied, so close a
+  // completed round here instead of dangling OPEN for un-buzzable slots.
+  try { maybeCloseCompletedRound(); } catch {}
 
   render();
 }
@@ -7383,7 +7516,7 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
       : (locked ? getSnark("player.coop.bingoSiblingLocked", "Teammate collected — wait for the next round.") : "");
     cols.push(`
       <div class="coop-slot${locked || scored ? " is-locked" : ""}">
-        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()))}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
+        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()), "", key)}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
         <p class="muted">${isWenDitHapnMode() ? "" : `${collected}/${bingo.items.length} · `}${statusMsg}</p>
         <button type="button" class="bingo-buzz-btn" data-bingo-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
       </div>`);
@@ -8866,7 +8999,7 @@ function renderCoopStrip(settings, round, deviceId, count) {
     const picker = repKey === key ? " is-picker" : "";
     cells.push(`
       <div class="coop-strip-cell${picker}${muted ? " is-muted" : ""}" data-score-key="${escapeHtml(key)}">
-        ${getCoopCharHtml(slot, mood)}
+        ${getCoopCharHtml(slot, mood, "", key)}
         <span class="coop-strip-name">${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span>
         <strong data-score-value>${score}</strong>
       </div>`);
@@ -9037,7 +9170,7 @@ function renderCoopRoulettePanel(settings, round, mePlayer, count, group, editBt
       <h2>${getSnark("player.roulette.title", "Pick a Value")}</h2>
       <p class="muted">${getSnark("player.coop.repStops", `${repName} stops for ${group}.`, { rep: repName, group })}</p>
       <div class="coop-slot is-picker">
-        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round))}<strong>${escapeHtml(repName)}</strong></div>
+        <div class="coop-slot-head">${getCoopCharHtml(repSlot, getCoopCharMoodForKey(repKey, round), "", repKey)}<strong>${escapeHtml(repName)}</strong></div>
       </div>
       <div class="roulette-display" aria-live="polite">
         <span class="roulette-value">${displayedValue}</span>
@@ -11522,7 +11655,7 @@ function renderCoopScores(players, scores, settings, controllerId, producerIds, 
       const subRows = slots
         .map(({ slot, key, name, score, mood, muted, frozen }) => {
           const hint = !frozen ? getCoopKeyHint(slot, slots.filter((s) => !s.frozen).length || getCoopSlotCount(deviceId)) : "";
-          return `<li class="coop-sub-row${muted ? " is-muted" : ""}${frozen ? " is-frozen" : ""}" data-score-key="${escapeHtml(key)}"><span>${getCoopCharHtml(slot, mood)}${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span><strong data-score-value>${score}</strong></li>`;
+          return `<li class="coop-sub-row${muted ? " is-muted" : ""}${frozen ? " is-frozen" : ""}" data-score-key="${escapeHtml(key)}"><span>${getCoopCharHtml(slot, mood, "", key)}${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span><strong data-score-value>${score}</strong></li>`;
         })
         .join("");
       return `<li class="coop-group" data-coop-group="${escapeHtml(deviceId)}"><div class="coop-group-head"><span>${getRankBadgeHtml(index + 1)}<strong>${escapeHtml(groupName)}</strong> ${teamPill}</span><strong>${total}</strong></div><ul class="coop-sub-list">${subRows || `<li class="muted">No players yet.</li>`}</ul></li>`;
@@ -13835,6 +13968,18 @@ try {
     pruneGraceTicks: HOST_PRUNE_GRACE_TICKS,
     retainTicks: HOST_RETAIN_TICKS,
     getCoopCharMoodForKey,
+    getCoopCharHtml,
+    getCoopFaceKey,
+    isFreshCoopFace,
+    resetCoopFaceSeen: () => { coopFaceSeen.clear(); coopFaceHeld.clear(); },
+    setCoopCharArt: (charNum, state, url, frames = 0) => {
+      const n = Number(charNum);
+      if (!coopCharUrls[n]) return;
+      coopCharUrls[n][state] = url;
+      if (coopCharFrames[n] && (state === "buzz" || state === "correct" || state === "wrong")) {
+        coopCharFrames[n][state] = Number(frames) || 0;
+      }
+    },
     getCurrentRoundBuzzMap,
     noteCoopLocalBuzz,
   });
