@@ -936,6 +936,20 @@ function probeCoopCharCandidates(slot, state, index) {
 // before the reset never fire on the cleared board (reset preserves the
 // round number, so the round-id guard alone can't catch them).
 let coopFaceEpoch = 0;
+// Optimistic local buzz face: the pressing device lights its slot's buzz
+// animation the moment the key/button fires, without waiting for the host
+// round-trip to come back through shared state. Local-only (module var,
+// never shared) so only the pressing device shows it early — the host and
+// other screens pick the face up from the log entry as before.
+let coopLocalBuzz = null; // { key, roundId, ts } | null
+function noteCoopLocalBuzz(scoreKey) {
+  try {
+    if (scoreKey === null || scoreKey === undefined) { coopLocalBuzz = null; return; }
+    if (typeof scoreKey !== "string" || !scoreKey) return;
+    coopLocalBuzz = { key: scoreKey, roundId: currentRoundId(), ts: now() };
+    scheduleRender(render);
+  } catch {}
+}
 // Latest buzz entry per score key in the current round. Memoized on the log
 // array identity — setState replaces the array on every write (appends AND
 // edits), so ruling flips invalidate the cache while repeated slot lookups
@@ -986,10 +1000,18 @@ function getCoopCharMoodForKey(scoreKey, round) {
     // the sibling-lockout list (a correct ruling locks the solver's remaining
     // slots), so the face must come from actual buzz entries in this round's
     // log or every slot on the solving device lights up. Lifecycle: plays
-    // once on buzz, holds (frozen last frame) while the ruling is pending or
-    // the judged face is still on its way, then releases to idle.
+    // once on buzz (optimistically from the local keypress, then from the
+    // host log entry), holds (frozen last frame) while the ruling is pending
+    // or the judged face is still on its way, then releases to idle.
     const buzzEntry = getCurrentRoundBuzzMap().get(scoreKey);
-    if (buzzEntry && (buzzEntry.resolved !== true || now() - Number(buzzEntry.ts || 0) < 1500)) face = "buzz";
+    let localBuzzFresh = false;
+    try {
+      localBuzzFresh = Boolean(coopLocalBuzz)
+        && coopLocalBuzz.key === scoreKey
+        && Number(coopLocalBuzz.roundId) === Number(currentRoundId())
+        && now() - Number(coopLocalBuzz.ts || 0) < 2500;
+    } catch {}
+    if ((buzzEntry && (buzzEntry.resolved !== true || now() - Number(buzzEntry.ts || 0) < 1500)) || localBuzzFresh) face = "buzz";
   }
   if (!face) return "idle";
   // One-shot faces (buzz/correct/wrong) play only on the owning device and
@@ -2899,6 +2921,29 @@ async function submitResponse(payload) {
       buzzSendInFlight = true;
     }
   } catch {}
+  // Optimistic buzz face: light this slot's buzz animation the moment the
+  // key/button fires — host state lands a beat later through the log entry.
+  // Shared-grid taps carry no slot; attribute to our control holder then.
+  try {
+    if (isCoopMode(getSettings())) {
+      const myId = me()?.id;
+      if (myId) {
+        let previewSlot = Number(payload?.coopSlot);
+        if (!Number.isInteger(previewSlot) || previewSlot < 0) {
+          const count = getCoopSlotCount(myId);
+          if (count <= 1) {
+            previewSlot = 0;
+          } else {
+            const ctrl = parseCoopScoreKey(getRound()?.coopControl);
+            previewSlot = (ctrl && ctrl.deviceId === myId) ? ctrl.slot : null;
+          }
+        }
+        if (Number.isInteger(previewSlot) && previewSlot >= 0 && previewSlot < 3) {
+          noteCoopLocalBuzz(getCoopScoreKey(myId, previewSlot));
+        }
+      }
+    }
+  } catch {}
   try {
     const result = await RPC.call("buzz", payload, RPC.Mode.HOST);
     if (spamGuarded) {
@@ -2940,6 +2985,42 @@ async function submitResponse(payload) {
 // resumeBuzzers, openBuzzers), so anything else-but-"open" is terminal.
 function isTerminallyClosedRound(round) {
   return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== "open";
+}
+
+// New-round face sweep: held "wrong" faces flip to reverse playback
+// ("rewind") for ~1s, then drop to idle; every other stored face clears
+// instantly. Runs on both openBuzzers (new round) and resetRound (idle),
+// so a wrong always holds its last frame until the next round starts.
+function rewindCoopWrongFaces() {
+  try {
+    coopFaceEpoch++;
+    const moods = getCoopMoods();
+    const keys = Object.keys(moods || {});
+    if (keys.length === 0) return;
+    const wrongKeys = keys.filter((k) => moods[k] === "wrong");
+    if (wrongKeys.length === 0) {
+      setState("coopMoods", {}, true);
+      return;
+    }
+    const next = {};
+    for (const k of wrongKeys) next[k] = "rewind";
+    setState("coopMoods", next, true);
+    const epoch = coopFaceEpoch;
+    setTimeout(() => {
+      try {
+        if (!isHost() || epoch !== coopFaceEpoch) return;
+        const cur = getCoopMoods();
+        const stale = Object.keys(cur || {}).filter((k) => cur[k] === "rewind");
+        if (stale.length === 0) return;
+        const cleared = { ...cur };
+        for (const k of stale) delete cleared[k];
+        setState("coopMoods", cleared, true);
+        render();
+      } catch {}
+    }, 1000);
+  } catch {
+    try { setState("coopMoods", {}, true); } catch {}
+  }
 }
 
 function openBuzzers() {
@@ -3043,10 +3124,13 @@ function openBuzzers() {
   setState("pendingLogId", null, true);
   // A new round resets analytics: drop the audience mirror so the previous
   // round's results don't linger into the new round. Host card already follows
-  // the current round (waiting note while open). Only writes when active.
+  // the current round (post-round only in coop). Only writes when active.
   try {
     if (getAnalyticsSpotlight()) setState("analyticsSpotlight", { active: false, startedAt: 0 }, true);
   } catch {}
+  // A new round rewinds held wrong faces: reverse playback, then idle.
+  // Correct faces already self-cleared; anything left drops instantly.
+  try { rewindCoopWrongFaces(); } catch {}
   render();
 }
 // remainingCs). Only valid from OPEN — LOCKED already freezes the clock for
@@ -4835,35 +4919,9 @@ function resetRound() {
     true,
   );
   setState("pendingLogId", null, true);
-  // Wrong faces rewind on reset: held wrong slots flip to reverse playback
-  // for ~1s, then drop to idle. Everything else clears instantly.
-  try {
-    coopFaceEpoch++;
-    const moods = getCoopMoods();
-    const wrongKeys = Object.keys(moods || {}).filter((k) => moods[k] === "wrong");
-    if (wrongKeys.length > 0) {
-      const next = {};
-      for (const k of wrongKeys) next[k] = "rewind";
-      setState("coopMoods", next, true);
-      const epoch = coopFaceEpoch;
-      setTimeout(() => {
-        try {
-          if (!isHost() || epoch !== coopFaceEpoch) return;
-          const cur = getCoopMoods();
-          const stale = Object.keys(cur || {}).filter((k) => cur[k] === "rewind");
-          if (stale.length === 0) return;
-          const cleared = { ...cur };
-          for (const k of stale) delete cleared[k];
-          setState("coopMoods", cleared, true);
-          render();
-        } catch {}
-      }, 1000);
-    } else {
-      setState("coopMoods", {}, true);
-    }
-  } catch {
-    try { setState("coopMoods", {}, true); } catch {}
-  }
+  // Reset rewinds held wrong faces: reverse playback for ~1s, then idle.
+  // Everything else clears instantly.
+  try { rewindCoopWrongFaces(); } catch {}
   render();
 }
 
@@ -9838,6 +9896,12 @@ function getLogEntryBadge(entry) {
 }
 
 function renderAnalyticsCard(audience = false) {
+  // Coopertition: analytics lives only in the post-round view. While a round
+  // is live (or idle) the card stays hidden entirely — no waiting note, no
+  // live percentages that would spoil correctness.
+  try {
+    if (isCoopMode() && getRound()?.status !== ROUND_STATUSES.CLOSED) return "";
+  } catch {}
   const data = getCurrentRoundAnalytics();
   const modeBadge = data.kind === "buttons"
     ? getSnark("shared.analytics.badgeButtons", "Buttons")
@@ -13772,5 +13836,6 @@ try {
     retainTicks: HOST_RETAIN_TICKS,
     getCoopCharMoodForKey,
     getCurrentRoundBuzzMap,
+    noteCoopLocalBuzz,
   });
 } catch {}

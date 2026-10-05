@@ -616,6 +616,54 @@ if (COOP) {
       && globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("coop:dev2:0", S().round) === "idle",
     "stale judged face",
   );
+  // A new round (open, not just reset) rewinds held wrong faces too: reverse
+  // playback, then idle.
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  await pk._store.rpc.buzz({ option: 3 }, dev2);
+  const moodEntry3 = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [moodEntry3.id, -1000] }, prod);
+  check("wrong face set before new round", S().coopMoods?.dev2 === "wrong", JSON.stringify(S().coopMoods));
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("new round rewinds held wrong", S().coopMoods?.dev2 === "rewind", JSON.stringify(S().coopMoods));
+  await sleep(1500);
+  check("open rewind settles to idle", Object.keys(S().coopMoods || {}).length === 0, JSON.stringify(S().coopMoods));
+}
+
+// --- coop analytics: hidden until the post-round; points land instantly ---
+if (COOP) {
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  if (!((S().round?.correctOptions || []).map(Number).includes(1))) {
+    await pk._store.rpc["producer-action"]({ fn: "toggleCorrectOption", args: [1] }, prod);
+  }
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("coop analytics hidden while open", !_mount.innerHTML.includes("data-analytics-card"), "card leaked mid-round");
+  // Optimistic keypress preview lights the slot face before host state lands.
+  const cT = globalThis.__BUZZER_TEST__;
+  cT.noteCoopLocalBuzz("coop:dev1:1");
+  check("keypress preview lights buzz face", cT.getCoopCharMoodForKey("coop:dev1:1", S().round) === "buzz", cT.getCoopCharMoodForKey("coop:dev1:1", S().round));
+  cT.noteCoopLocalBuzz(null);
+  check("preview clears to idle", cT.getCoopCharMoodForKey("coop:dev1:1", S().round) === "idle", cT.getCoopCharMoodForKey("coop:dev1:1", S().round));
+  await pk._store.rpc.buzz({ option: 2 }, dev2);
+  await pk._store.rpc.buzz({ option: 2 }, dev3);
+  const coopAEntries = S().gameLog.filter((e) => e?.type === "buzz" && Number(e.roundId) === Number(S().round?.roundNumber));
+  check("coop instant scoring while open", coopAEntries.length === 2 && coopAEntries.every((e) => e.resolved === true && Number(e.awardedDelta || 0) < 0), JSON.stringify(coopAEntries.map((e) => e.awardedDelta)));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("coop analytics stays hidden with instant scores", !_mount.innerHTML.includes("data-analytics-card"), "card leaked after instant scoring");
+  await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+  check("coop post-round closed", S().round?.status === "closed", S().round?.status);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  let coopAHtml = "";
+  for (let i = 0; i < 20 && !coopAHtml.includes("2 picks"); i++) {
+    await sleep(50);
+    coopAHtml = _mount.innerHTML;
+  }
+  check("coop analytics shown post-round", coopAHtml.includes("data-analytics-card") && coopAHtml.includes("2 picks"), `len=${coopAHtml.length}`);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
 }
 
 // --- control mismatch: other slots/devices rejected while held (coop-only) ---
