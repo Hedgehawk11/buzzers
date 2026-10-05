@@ -114,6 +114,12 @@ if (COOP) {
   check("locked with pending entry", S().round?.status === "locked" && !!entryId, `${S().round?.status} ${entryId}`);
   const entry = S().gameLog.find((e) => e.id === entryId);
   check("entry keyed to slot", entry?.scoreKey === "coop:dev1:0", JSON.stringify(entry?.scoreKey));
+  // Buzz holds (frozen last frame) while the ruling pends — past the fresh
+  // window, since the entry stays unresolved.
+  const T0 = globalThis.__BUZZER_TEST__;
+  check("buzz holds while ruling pends", T0.getCoopCharMoodForKey("coop:dev1:0", S().round) === "buzz", T0.getCoopCharMoodForKey("coop:dev1:0", S().round));
+  await sleep(1600);
+  check("buzz still holds while unresolved", T0.getCoopCharMoodForKey("coop:dev1:0", S().round) === "buzz", T0.getCoopCharMoodForKey("coop:dev1:0", S().round));
 
   // --- THE DEDUCTION TEST ---
   await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [entryId, -1000] }, prod);
@@ -230,6 +236,21 @@ if (COOP) {
 }
 await pk._store.rpc.buzz({ option: 2 }, dev3); // wrong vs preset 1
 const openEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+if (COOP) {
+  check("coop immediate wrong deducts while open", openEntry?.resolved === true && Number(openEntry?.awardedDelta || 0) < 0, JSON.stringify(openEntry?.awardedDelta));
+  check("coop immediate wrong keeps round open", S().round?.status === "open", S().round?.status);
+  check("coop immediate wrong sets no pending ruling", S().pendingLogId == null, JSON.stringify(S().pendingLogId));
+  check("coop buzz face first (wrong held for flip)", S().coopMoods?.dev3 === undefined, JSON.stringify(S().coopMoods));
+  await sleep(1100);
+  check("coop wrong face flips after buzz", S().coopMoods?.dev3 === "wrong", JSON.stringify(S().coopMoods));
+  await sleep(1800);
+  check("coop wrong returns to idle after playing", S().coopMoods?.dev3 === undefined, JSON.stringify(S().coopMoods));
+  check(
+    "coop wrong idle end-state on avatar",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round) === "idle",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev3", S().round),
+  );
+}
 await pk._store.rpc["producer-action"](
   { fn: "updateScoresForLogEntry", args: [openEntry.id, -1000] },
   prod,
@@ -247,15 +268,24 @@ await pk._store.rpc["producer-action"](
   prod,
 );
 check("re-edit back to minus", S().scores?.dev3 === -1000, JSON.stringify(S().scores?.dev3));
-// --- toggle has no effect off-LAB: scoring waits for the close, round stays open ---
+// --- toggle has no effect off-LAB: non-coop scoring waits for the close,
+// round stays open; coop scores immediately and also stays open ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["closeBuzzersOnPointsGiven", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 if (COOP) {
   await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, gate);
 }
-await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1: held until close
+await pk._store.rpc.buzz({ option: 1 }, gate); // correct vs preset 1
 const labOffEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
-check("off-LAB correct held while open", labOffEntry?.resolved !== true && Number(labOffEntry?.awardedDelta || 0) === 0, JSON.stringify(labOffEntry?.awardedDelta));
+if (COOP) {
+  check("coop immediate correct awards while open", labOffEntry?.resolved === true && Number(labOffEntry?.awardedDelta || 0) > 0, JSON.stringify(labOffEntry?.awardedDelta));
+  check("coop immediate correct sets no pending ruling", S().pendingLogId == null, JSON.stringify(S().pendingLogId));
+  check("coop buzz face first (correct held for flip)", S().coopMoods?.gate1 === undefined, JSON.stringify(S().coopMoods));
+  await sleep(1100);
+  check("coop correct face flips after buzz", S().coopMoods?.gate1 === "correct", JSON.stringify(S().coopMoods));
+} else {
+  check("off-LAB correct held while open", labOffEntry?.resolved !== true && Number(labOffEntry?.awardedDelta || 0) === 0, JSON.stringify(labOffEntry?.awardedDelta));
+}
 check("toggle has no effect off-LAB", S().round?.status === "open", S().round?.status);
 await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
 const labOffEntryClosed = S().gameLog.find((e) => e.id === labOffEntry.id);
@@ -273,6 +303,31 @@ try {
     if (k === "gate1" || String(k).startsWith("coop:gate1:")) delete S().scores[k];
   }
 } catch {}
+
+// --- face scope: buzz lights only the buzzing slot, never locked siblings ---
+// (sibling lockout shares buzzedPlayerIds, so the face must come from actual
+// log buzzes). Uses a throwaway 2-slot device, retired exactly like gate1.
+if (COOP) {
+  const devX = pk.makePlayer("devX", "GroupX");
+  pk._store.participants.devX = devX;
+  await pk._store.rpc["coop-roster"]({ group: "GroupX", count: 2, names: ["X1", "X2"] }, devX);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("reopen for face-scope probe", S().round?.status === "open", S().round?.status);
+  await pk._store.rpc.buzz({ coopSlot: 0, buzzIn: true }, devX);
+  await pk._store.rpc.buzz({ option: 1, coopSlot: 0 }, devX); // correct → instant + sibling lockout
+  const T = globalThis.__BUZZER_TEST__;
+  check("buzz face only on the buzzing slot", T.getCoopCharMoodForKey("coop:devX:0", S().round) === "buzz", T.getCoopCharMoodForKey("coop:devX:0", S().round));
+  check("locked sibling shows no buzz face", T.getCoopCharMoodForKey("coop:devX:1", S().round) === "idle", T.getCoopCharMoodForKey("coop:devX:1", S().round));
+  delete pk._store.participants.devX;
+  try {
+    const rosters = { ...(S().coopRosters || {}) };
+    delete rosters.devX;
+    pk._store.state.coopRosters = rosters;
+    for (const k of Object.keys(S().scores || {})) {
+      if (k === "devX" || String(k).startsWith("coop:devX:")) delete S().scores[k];
+    }
+  } catch {}
+}
 
 // --- text mode deduction ---
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "text"] }, prod);
@@ -541,6 +596,12 @@ if (COOP) {
   check("correct face set", S().coopMoods?.dev2 === "correct" || S().coopMoods?.["coop:dev2:0"] === "correct", JSON.stringify(S().coopMoods));
   await sleep(1800);
   check("correct face self-clears", !S().coopMoods?.dev2 && !S().coopMoods?.["coop:dev2:0"], JSON.stringify(S().coopMoods));
+  check(
+    "correct idle end-state on avatar",
+    globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "idle"
+      && globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("coop:dev2:0", S().round) === "idle",
+    "stale judged face",
+  );
 }
 
 // --- control mismatch: other slots/devices rejected while held (coop-only) ---
@@ -674,7 +735,8 @@ check("quixort log shows voided block", S().gameLog.filter((e) => e.type === "qu
 check("quixort host results show breakdown", mount.innerHTML.includes("quixort-breakdown") && mount.innerHTML.includes("Clean bonus"), "no breakdown in host results");
 check("quixort host results reveal correct order", mount.innerHTML.includes("Correct order vs your row") && mount.innerHTML.includes("Alpha"), "no reveal in host results");
 check("quixort host results tiered disclosure", mount.innerHTML.includes("quixort-details") && mount.innerHTML.includes("How scored"), "no details disclosure");
-check("quixort host results rank medals", mount.innerHTML.includes("🥇"), "no rank medal");
+  check("quixort host results rank badges", mount.innerHTML.includes("rank-badge") || mount.innerHTML.includes("1."), "no rank marker");
+  check("quixort host results no emoji medals", !mount.innerHTML.includes("🥇") && !mount.innerHTML.includes("🥈") && !mount.innerHTML.includes("🥉"), "emoji medal still present");
 check("quixort host results highlight legend", mount.innerHTML.includes("exact spot") && mount.innerHTML.includes("is-exact"), "no per-item highlight");
 // player results view carries the same breakdown + reveal for the own run
 pk._store.isHost = false;

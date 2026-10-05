@@ -1946,6 +1946,14 @@ body:not([data-ui-anims="off"]) .roulette-locked-note {
   border-radius: 10px;
   padding: 0.55rem 0.7rem;
 }
+.bingo-standings li .rank-badge {
+  width: 1.6rem;
+  height: 1.6rem;
+  object-fit: contain;
+  flex: none;
+  border-radius: 4px;
+  vertical-align: middle;
+}
 .bingo-progress {
   margin-top: 1rem;
 }
@@ -2176,22 +2184,35 @@ body:not([data-ui-anims="off"]) .roulette-locked-note {
   text-decoration: line-through;
 }
 
-/* Gap-target placement: each button sits in the row gap it fills. */
+/* Gap-target placement: gaps sit inline between blocks in a horizontal row. */
 .quixort-row-gaps {
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  align-items: center;
 }
 
 .quixort-gap {
-  min-height: 44px;
-  padding: 0.55rem 0.7rem;
+  min-height: 32px;
+  padding: 0.25rem 0.55rem;
   border: 1px dashed var(--panel-border);
-  border-radius: 8px;
+  border-radius: 999px;
   background: transparent;
   color: inherit;
   font-size: 0.9rem;
-  text-align: left;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+  flex: 0 0 auto;
   cursor: pointer;
+}
+
+.quixort-gap.is-empty {
+  flex: 1 1 auto;
+  min-height: 44px;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
 }
 
 .quixort-gap:hover:enabled {
@@ -2801,11 +2822,22 @@ body:has([data-screw-active]) {
   display: inline-block;
   background-repeat: no-repeat;
   background-size: auto 100%;
-  animation: coopFacePlay 0.9s steps(var(--coop-frames, 4)) forwards;
+  background-position: 0 50%;
+  animation-name: coopFacePlay;
+  animation-duration: 0.9s;
+  animation-fill-mode: forwards;
+  /* steps() count is set inline per-strip (steps(frames - 1)): var()
+     inside steps() fails on some browsers and drops the whole animation. */
+  animation-timing-function: steps(3);
 }
 @keyframes coopFacePlay {
-  from { background-position-x: 0; }
-  to { background-position-x: 100%; }
+  from { background-position: 0 50%; }
+  to { background-position: 100% 50%; }
+}
+/* Anims-off shows the final frame instead of freezing on the first. */
+body[data-ui-anims="off"] .coop-avatar-strip {
+  animation: none;
+  background-position: 100% 50%;
 }
 
 /* Grouped scoreboard. */

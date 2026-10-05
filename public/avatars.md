@@ -43,8 +43,11 @@ should be horizontal filmstrip spritesheets (PNG or WebP recommended):
   sidecar or metadata files needed.
 - Playback is ~0.9s with a stepped timing function and `forwards` fill, so
   the strip freezes on its final frame.
-- `correct` plays once then returns to idle; `wrong` holds its final frame
-  until the round is reset, pick-a-value is left, or that player buzzes again.
+- `buzz` plays once on buzz-in and holds its final frame while the ruling is
+  pending (or until the instant judged face flips in, ~1s in fast coop
+  rounds); `correct` and `wrong` each play once when judged, then return to
+  idle. Faces are player-specific: one-shot states animate only on the acting
+  slot's own device (plus host screens) — other devices keep the idle avatar.
 - Transparent backgrounds preferred. Keep strips under ~2MB so the audience
   and player screens stay snappy. 256px+ frame height looks best.
 
@@ -57,10 +60,10 @@ toggle show the final frame without animating.
 | State | Trigger | Lifetime | Where |
 |-------|---------|----------|-------|
 | idle (base) | default | — | everywhere, incl. audience 24/7 |
-| buzz | slot buzzes in | ~1.5s, then idle | player + host screens |
+| buzz | slot buzzes in | plays once, holds last frame until judged | buzzing device + host screens |
 | dance | slot is pick-a-value rep | whole roulette phase | player + host screens (highlight glow on audience) |
-| correct | positive ruling, multiple-choice only | plays once, then idle | player + host screens |
-| wrong | negative ruling, multiple-choice only | holds until reset / roulette exit / re-buzz | player + host screens |
+| correct | positive ruling, multiple-choice only | plays once, then idle | buzzing device + host screens |
+| wrong | negative ruling, multiple-choice only | plays once, then idle | buzzing device + host screens |
 
 Zero-point rulings stay neutral (no face). Text answers advance the
 last-correct rep but never show faces. Bingo, Dis-or-Dat and Fibbage never
