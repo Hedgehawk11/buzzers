@@ -2412,11 +2412,56 @@ const epui = await import("../src/episodes/ui.js");
   check("reviewer screen shows accuracy", _mount.innerHTML.includes("Accuracy per player") && _mount.innerHTML.includes("50%"), "accuracy missing");
   check("reviewer screen shows questions", _mount.innerHTML.includes("Accuracy per question") && _mount.innerHTML.includes("Round 1"), "questions missing");
   check("reviewer screen shows buzzes", _mount.innerHTML.includes("Per-player buzzes") && _mount.innerHTML.includes("Bobby"), "buzzes missing");
+  check("reviewer screen offers download", _mount.innerHTML.includes("data-reviewer-download"), "download button missing");
+  check("reviewer cloud filename", T.reviewerDownloadFileName() === "night.results.json", T.reviewerDownloadFileName());
   T.parseReviewerText("{not json", "bad.json");
   await sleep(600);
   for (const fn of _mount._listeners.click || []) await fn({ target: opener, preventDefault() {} });
   await sleep(600);
   check("reviewer screen shows import error", _mount.innerHTML.includes("not valid JSON"), "error missing");
+  // Reviewer cloud load end-to-end (isolated server) + cloud download name.
+  {
+    const resCore2 = await import("../server/core.js");
+    const epServer2 = await import("../server/index.js");
+    const resApi2 = await import("../src/results/api.js");
+    const cmem = new Map();
+    const cstore = {
+      async findOne({ code }) { return cmem.get(code) || null; },
+      async insertOne(doc) {
+        if (cmem.has(doc.code)) { const e = new Error("duplicate"); e.code = 11000; throw e; }
+        cmem.set(doc.code, { ...doc });
+        return { insertedId: doc.code };
+      },
+      async updateOne({ code }, { $set }) { const cur = cmem.get(code); if (cur) cmem.set(code, { ...cur, ...$set }); return { modifiedCount: cur ? 1 : 0 }; },
+      async deleteOne({ code }) { const had = cmem.has(code); cmem.delete(code); return { deletedCount: had ? 1 : 0 }; },
+    };
+    const epEmpty = {
+      async findOne() { return null; },
+      async insertOne(doc) { return { insertedId: doc.code }; },
+      async updateOne() { return { modifiedCount: 0 }; },
+      async deleteOne() { return { deletedCount: 0 }; },
+    };
+    const csrv = await new Promise((resolve) => {
+      const s = epServer2.createApp(epEmpty, { resultsStore: cstore }).listen(0, "127.0.0.1", () => resolve(s));
+    });
+    try {
+      const seeded = await resCore2.saveResultOp(cstore, { result: mkPayload() });
+      resApi2.configureEpisodeApiUrl(`http://127.0.0.1:${csrv.address().port}`);
+      queryMap["#reviewer-code"] = { value: seeded.body.code };
+      const loadBtn = { dataset: {}, closest: (s) => (s === "[data-reviewer-code-load]" ? loadBtn : null) };
+      for (const fn of _mount._listeners.click || []) await fn({ target: loadBtn, preventDefault() {} });
+      await sleep(600);
+      for (const fn of _mount._listeners.click || []) await fn({ target: opener, preventDefault() {} });
+      await sleep(600);
+      check("reviewer cloud load shows data", _mount.innerHTML.includes("Final scores") && _mount.innerHTML.includes("Alice"), "cloud data missing");
+      check("reviewer cloud download name", T.reviewerDownloadFileName() === `results-${seeded.body.code}.results.json`, T.reviewerDownloadFileName());
+      check("reviewer cloud offers download", _mount.innerHTML.includes("data-reviewer-download"), "cloud download button missing");
+    } finally {
+      resApi2.configureEpisodeApiUrl("");
+      delete queryMap["#reviewer-code"];
+      await new Promise((resolve) => csrv.close(resolve));
+    }
+  }
   check("no render warnings from reviewer", warnings.filter((w) => /reviewer|results/i.test(w)).length === 0, warnings.filter((w) => /reviewer|results/i.test(w)).join(" || ").slice(0, 200));
 }
 {

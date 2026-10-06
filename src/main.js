@@ -10581,6 +10581,37 @@ async function loadReviewerByCode() {
   scheduleRender(render);
 }
 
+function reviewerDownloadFileName() {
+  const loaded = String(reviewerFileName || "");
+  if (loaded.startsWith("cloud:")) {
+    const code = loaded.slice(6).trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "game";
+    return `results-${code}.results.json`;
+  }
+  if (/\.json$/i.test(loaded)) return loaded;
+  return resultsExportFileName();
+}
+
+function downloadReviewerJson() {
+  if (!reviewerData) {
+    showToast("Nothing to download — load a results file or code first.", { variant: "error" });
+    return;
+  }
+  try {
+    const blob = new Blob([JSON.stringify(reviewerData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = reviewerDownloadFileName();
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
+  } catch {
+    showToast("Download failed in this browser.", { variant: "error" });
+    return;
+  }
+  showToast(`Downloaded ${reviewerDownloadFileName()}.`);
+}
+
 function renderReviewerResults(data) {
   const review = computeResultsReview(data);
   const standingsRows = review.standings.length
@@ -10648,6 +10679,7 @@ function renderReviewerScreen(error = "") {
           <div class="ep-attach-actions">
             <button class="secondary-action" data-reviewer-file-btn type="button">Attach results file</button>
             <input type="file" id="reviewer-file" accept="application/json,.json" hidden />
+            ${reviewerData ? `<button class="secondary-action" data-reviewer-download type="button">Download JSON</button>` : ""}
             ${reviewerData ? `<button class="secondary-action" data-reviewer-clear type="button">Clear</button>` : ""}
           </div>
           <div class="ep-attach-actions">
@@ -13490,8 +13522,8 @@ function bindEvents() {
       scheduleRender(render);
     }
   });
-  delegate("click", "[data-reviewer-clear]", () => {
-    reviewerData = null;
+  delegate("click", "[data-reviewer-download]", () => { downloadReviewerJson(); });
+  delegate("click", "[data-reviewer-clear]", () => {    reviewerData = null;
     reviewerError = "";
     reviewerFileName = "";
     reviewerExpiresAt = null;
@@ -14531,5 +14563,7 @@ try {
     parseReviewerText,
     renderReviewerScreen,
     loadReviewerByCode,
+    downloadReviewerJson,
+    reviewerDownloadFileName,
   });
 } catch {}
