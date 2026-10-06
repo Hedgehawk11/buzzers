@@ -142,7 +142,9 @@ export async function saveResultOp(store, { result: rawResult }) {
   const { result, error } = checkedResult(rawResult);
   if (error) return error;
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + RESULTS_TTL_MS).toISOString();
+  // BSON Dates (not ISO strings): the Mongo TTL monitor only acts on Date
+  // values. Bodies still carry ISO strings (JSON has no Date type).
+  const expiresAt = new Date(now.getTime() + RESULTS_TTL_MS);
   for (let attempt = 0; attempt < 10; attempt++) {
     const code = makeShareCode();
     try {
@@ -150,10 +152,10 @@ export async function saveResultOp(store, { result: rawResult }) {
         code,
         result,
         persistent: false,
-        createdAt: now.toISOString(),
+        createdAt: now,
         expiresAt,
       });
-      return { status: 201, body: { ok: true, code, expiresAt } };
+      return { status: 201, body: { ok: true, code, expiresAt: expiresAt.toISOString() } };
     } catch (e) {
       if (String(e?.code) === "11000" || /duplicate/i.test(String(e?.message))) continue;
       throw e;
@@ -162,24 +164,35 @@ export async function saveResultOp(store, { result: rawResult }) {
   return { status: 503, body: { ok: false, reason: "Could not mint a share code — try again." } };
 }
 
+function resultExpiryMs(value) {
+  if (value instanceof Date) {
+    const t = value.getTime();
+    return Number.isFinite(t) ? t : NaN;
+  }
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? t : NaN;
+}
+
 export async function loadResultOp(store, rawCode) {
   const code = String(rawCode || "").toUpperCase();
   if (!CODE_RE.test(code)) return { status: 404, body: { ok: false, reason: "Unknown code." } };
   const doc = await store.findOne({ code });
   if (!doc) return { status: 404, body: { ok: false, reason: "Unknown code." } };
   if (!doc.persistent) {
-    const exp = Date.parse(doc.expiresAt);
+    const exp = resultExpiryMs(doc.expiresAt);
     if (!Number.isFinite(exp) || Date.now() > exp) {
       try {
         if (typeof store.deleteOne === "function") await store.deleteOne({ code });
       } catch {}
       return { status: 404, body: { ok: false, reason: "Expired." } };
     }
-    const next = new Date(Date.now() + RESULTS_TTL_MS).toISOString();
+    // Refresh as a Date (also migrates pre-fix ISO-string docs to Dates so
+    // the TTL index picks them up).
+    const next = new Date(Date.now() + RESULTS_TTL_MS);
     try {
       await store.updateOne({ code }, { $set: { expiresAt: next } });
     } catch {}
-    return { status: 200, body: { ok: true, code, result: doc.result, expiresAt: next } };
+    return { status: 200, body: { ok: true, code, result: doc.result, expiresAt: next.toISOString() } };
   }
   return { status: 200, body: { ok: true, code, result: doc.result, expiresAt: doc.expiresAt || null } };
 }

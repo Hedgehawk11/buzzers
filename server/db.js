@@ -115,9 +115,14 @@ export async function getResultsCollection() {
     const db = client.db(process.env.MONGO_DB || "buzzers");
     const collection = db.collection("results");
     await collection.createIndex({ code: 1 }, { unique: true });
+    // Partial TTL: equality-only filters ($ne is rejected by some Mongo
+    // versions — "Expression not supported in partial index"). persistent
+    // docs (persistent:false never matches them) are invisible to it.
+    // expiresAt must be a BSON Date for the TTL monitor to act; string
+    // values are ignored (lazy expiry in core.js still catches them).
     await collection.createIndex(
       { expiresAt: 1 },
-      { expireAfterSeconds: 0, partialFilterExpression: { persistent: { $ne: true } } },
+      { expireAfterSeconds: 0, partialFilterExpression: { persistent: false } },
     );
     return {
       __client: client,
