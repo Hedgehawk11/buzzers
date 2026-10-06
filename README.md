@@ -90,6 +90,7 @@ IDK possibly
 - Coopertition mode
 - Credits roll
 - Per-round Analytics
+- Post-Game Review
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
 - and probably more (soon!)
