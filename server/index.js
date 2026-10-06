@@ -14,9 +14,17 @@
 // Run: MONGO_URL="mongodb+srv://..." PORT=3001 node server/index.js
 // The listener only starts when run directly; importing this module (tests)
 // just yields createApp(). The `store` param defaults to Mongo and accepts an
-// in-memory fake with the same { findOne, insertOne, updateOne } shape.
+// in-memory fake with the same { findOne, insertOne, updateOne, deleteOne }
+// shape. `options.resultsStore` (or globalThis.__RESULTS_TEST_STORE__ via
+// getResultsCollection) backs results when provided.
 // Deploying to Vercel? Use api/ (serverless functions sharing server/core.js)
 // instead — this persistent process has nowhere to run there.
+//
+// Results (passwordless + immutable, separate from episodes):
+//   POST /api/results             { result } -> { code, expiresAt }
+//   GET  /api/results/:code       -> { code, result, expiresAt }
+// Non-persistent results expire 14 days after last access (each GET renews).
+// Keep-forever: db.results.updateOne({code:"X"},{$set:{persistent:true}}).
 
 // Load .env (repo root) when present so `npm run episode-server` picks up
 // MONGO_URL/PORT without inline env vars. Never overrides real environment
@@ -27,11 +35,13 @@ import "dotenv/config";
 export { makeShareCode, hashOwnerPassword, verifyOwnerPassword } from "./core.js";
 
 import express from "express";
-import { loadEpisodeOp, overwriteEpisodeOp, saveEpisodeOp } from "./core.js";
-import { getEpisodesCollection, closeDb } from "./db.js";
+import { loadEpisodeOp, overwriteEpisodeOp, saveEpisodeOp, loadResultOp, saveResultOp } from "./core.js";
+import { getEpisodesCollection, getResultsCollection, closeDb } from "./db.js";
 import { createRateLimiter } from "./ratelimit.js";
 
-const MAX_BODY = "1mb"; // episodes are text-only; schema caps at 200 items
+// Episodes are text-only (schema caps 200 items); results carry full gameLog
+// so they get headroom up to the schema's 5MB cap. One parser for both.
+const MAX_BODY = "6mb";
 
 export function createApp(store, options = {}) {
   const app = express();
@@ -53,6 +63,7 @@ export function createApp(store, options = {}) {
   app.use(express.json({ limit: MAX_BODY }));
 
   const getStore = async () => store || getEpisodesCollection();
+  const getResultsStore = async () => options.resultsStore || getResultsCollection();
 
   // Rate limits: generous general bucket, tight buckets on DB-writing /
   // password-guessing routes. Env-tunable (options.limits wins in tests).
@@ -65,12 +76,14 @@ export function createApp(store, options = {}) {
     general: { windowMs: WINDOW_MS, max: envMax("RATE_GENERAL_MAX", 300), ...(options.limits?.general || {}) },
     save: { windowMs: WINDOW_MS, max: envMax("RATE_SAVE_MAX", 30), ...(options.limits?.save || {}) },
     overwrite: { windowMs: WINDOW_MS, max: envMax("RATE_OVERWRITE_MAX", 15), ...(options.limits?.overwrite || {}) },
+    resultsSave: { windowMs: WINDOW_MS, max: envMax("RATE_RESULTS_SAVE_MAX", 30), ...(options.limits?.resultsSave || {}) },
   };
   const clientIp = (req) => req.ip || req.socket?.remoteAddress || "unknown";
   // Limiter-first ordering matters: rejected requests never reach validation
   // or scrypt, so abuse can't burn CPU/Mongo either.
   app.use("/api/", createRateLimiter({ ...limits.general, key: clientIp }));
   const saveLimiter = createRateLimiter({ ...limits.save, key: clientIp, message: "Too many saves — try again later." });
+  const resultsSaveLimiter = createRateLimiter({ ...limits.resultsSave, key: clientIp, message: "Too many saves — try again later." });
   const overwriteLimiter = createRateLimiter({
     ...limits.overwrite,
     key: (req) => `${clientIp(req)}:${String(req.params.code || "").toUpperCase()}`,
@@ -106,6 +119,26 @@ export function createApp(store, options = {}) {
     } catch (e) {
       console.warn("[episodes] overwrite failed", e?.message || e);
       return res.status(500).json({ ok: false, reason: "Overwrite failed." });
+    }
+  });
+
+  app.post("/api/results", resultsSaveLimiter, async (req, res) => {
+    try {
+      const { status, body } = await saveResultOp(await getResultsStore(), req.body || {});
+      return res.status(status).json(body);
+    } catch (e) {
+      console.warn("[results] save failed", e?.message || e);
+      return res.status(500).json({ ok: false, reason: "Save failed." });
+    }
+  });
+
+  app.get("/api/results/:code", async (req, res) => {
+    try {
+      const { status, body } = await loadResultOp(await getResultsStore(), req.params.code);
+      return res.status(status).json(body);
+    } catch (e) {
+      console.warn("[results] load failed", e?.message || e);
+      return res.status(500).json({ ok: false, reason: "Load failed." });
     }
   });
 

@@ -25,6 +25,15 @@ import {
 import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
 import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
 import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
+import {
+  RESULTS_KIND as RESULTS_KIND_CONST,
+  RESULTS_SCHEMA_VERSION as RESULTS_SCHEMA_VERSION_CONST,
+  RESULTS_MAX_BODY_BYTES as RESULTS_MAX_BODY_BYTES_CONST,
+  RESULTS_TOO_LARGE_REASON as RESULTS_TOO_LARGE_REASON_CONST,
+  normalizeResultFile as normalizeResultFileFn,
+  validateResultFile as validateResultFileFn,
+} from "./results/schema.js";
+import { loadResult as cloudLoadResult, saveResult as cloudSaveResult } from "./results/api.js";
 
 // =============================================================================
 // Default game configuration — merged with live PlayroomKit state
@@ -154,6 +163,17 @@ let creatorImportErrors = [];
 let episodeCloudEnabled = false;
 let episodeCloudError = "";
 let cloudView = null;
+// Result reviewer + results cloud (all local-only, never shared state):
+// reviewerData holds the parsed payload, reviewerError the last import/load
+// problem. resultsCloudCode/ExpiresAt track the last successful cloud save.
+let reviewerData = null;
+let reviewerError = "";
+let reviewerFileName = "";
+let reviewerCodeInput = "";
+let reviewerExpiresAt = null;
+let resultsCloudCode = "";
+let resultsCloudExpiresAt = null;
+let resultsCloudBusy = false;
 // Episode runtime (host-local only, never mirrored): pendingEpisode is picked
 // on the host prejoin form, attachedEpisode is consumed once by
 // ensureHostInit, activeEpisode/episodeIndex drive the host runner card. The
@@ -2668,11 +2688,22 @@ function pushBuzzLogEntry(player, { option = null, answerText = null, coopSlot =
       : getCoopGroupName(player.id, getPlayerName(player));
   }
   const points = computeBasePoints(settings, timeLeftCs);
+  // Forward-compat stamp for the Result Reviewer: when an episode is loaded,
+  // record which playlist position this buzz belongs to. Reviewer v1 matches
+  // per-question rows positionally and never depends on this field.
+  let qIndex = null;
+  try {
+    if (activeEpisode && Array.isArray(activeEpisode.items) && activeEpisode.items.length) {
+      const qi = Number(episodeIndex);
+      if (Number.isInteger(qi) && qi >= 0 && qi < activeEpisode.items.length) qIndex = qi;
+    }
+  } catch {}
   const entry = {
     id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: "buzz",
     ts: now(),
     roundId: currentRoundId(),
+    qIndex,
     playerId: player.id,
     playerName: displayName,
     teamColor,
@@ -10179,6 +10210,491 @@ function downloadEpisodeJson() {
 }
 
 // =============================================================================
+// Game-results export + Result Reviewer (local-only unless cloud-saved)
+// Payload shape: {kind,schemaVersion,exportedAt,scores,customNames,
+// coopRosters,teamAssignments,gameLog[],episode?}. gameLog entries are the
+// exact shared objects (see pushBuzzLogEntry + ruling/bingo/manual paths).
+// Reviewer state below is module-local — never shared PlayroomKit state.
+// =============================================================================
+function getReviewerSafeState(key, fallback) {
+  try {
+    if (typeof getSafeState === "function") return getSafeState(key, fallback);
+  } catch {}
+  return fallback;
+}
+
+function slimEpisodeItemForResults(item) {
+  if (!item || typeof item !== "object") return null;
+  const out = { kind: String(item.kind || ""), prompt: String(item.prompt || "") };
+  if (Array.isArray(item.options)) out.options = item.options.map((s) => String(s ?? "")).slice(0, 8);
+  if (Array.isArray(item.questions)) out.questions = item.questions.map((s) => String(s ?? "")).slice(0, 7);
+  if (typeof item.truth === "string" && item.truth.trim()) out.truth = item.truth.trim().slice(0, 120);
+  if (typeof item.word === "string" && item.word.trim()) out.word = item.word.trim().slice(0, 12);
+  if (Array.isArray(item.rounds)) {
+    out.rounds = item.rounds.slice(0, 12).map((r) => ({
+      prompt: String(r?.prompt || ""),
+      answer: String(r?.answer || ""),
+    }));
+  }
+  return out;
+}
+
+function buildResultsPayload() {
+  let scores = {};
+  try { scores = { ...getScores() }; } catch {}
+  let customNames = {};
+  try { customNames = { ...(typeof getCustomNames === "function" ? getCustomNames() : getReviewerSafeState("customNames", {})) }; } catch {}
+  let coopRosters = {};
+  try { coopRosters = { ...getReviewerSafeState("coopRosters", {}) }; } catch {}
+  let teamAssignments = {};
+  try { teamAssignments = { ...(typeof getTeamAssignments === "function" ? getTeamAssignments() : {}) }; } catch {}
+  let log = [];
+  try { log = [...(getLog() || [])]; } catch {}
+  let episode = null;
+  try {
+    if (activeEpisode && Array.isArray(activeEpisode.items) && activeEpisode.items.length) {
+      episode = {
+        title: String(activeEpisode.meta?.title || ""),
+        items: activeEpisode.items.map(slimEpisodeItemForResults).filter(Boolean),
+      };
+    }
+  } catch {}
+  return {
+    kind: RESULTS_KIND_CONST,
+    schemaVersion: RESULTS_SCHEMA_VERSION_CONST,
+    exportedAt: new Date().toISOString(),
+    scores,
+    customNames,
+    coopRosters,
+    teamAssignments,
+    gameLog: log,
+    ...(episode ? { episode } : {}),
+  };
+}
+
+function resultsExportFileName() {
+  const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-").replace("T", "-");
+  return `results-${stamp}.results.json`;
+}
+
+function downloadResultsJson() {
+  const payload = buildResultsPayload();
+  try {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = resultsExportFileName();
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
+  } catch {
+    showToast("Export failed in this browser.", { variant: "error" });
+    return;
+  }
+  const n = (payload.gameLog || []).length;
+  showToast(`Exported results (${Object.keys(payload.scores || {}).length} scores, ${n} log entries).`);
+}
+
+async function saveResultsToCloud() {
+  if (resultsCloudBusy) return;
+  resultsCloudBusy = true;
+  scheduleRender(render);
+  try {
+    const payload = buildResultsPayload();
+    try {
+      const bytes = new Blob([JSON.stringify(payload)]).size;
+      if (bytes > RESULTS_MAX_BODY_BYTES_CONST) {
+        showToast(RESULTS_TOO_LARGE_REASON_CONST, { variant: "error" });
+        return;
+      }
+    } catch {}
+    if (!episodeCloudEnabled) {
+      try { await probeEpisodeCloud(true); } catch {}
+      if (!episodeCloudEnabled) {
+        showToast("Cloud codes need the results server — file export still works.", { variant: "error" });
+        return;
+      }
+    }
+    const { code, expiresAt } = await cloudSaveResult(payload);
+    resultsCloudCode = code;
+    resultsCloudExpiresAt = expiresAt;
+    showToast(`Saved to cloud: ${code} (lasts 14 days, renewed on view).`);
+  } catch (e) {
+    const reason = String(e?.message || "Save failed.");
+    if (reason === RESULTS_TOO_LARGE_REASON_CONST) {
+      showToast(`${RESULTS_TOO_LARGE_REASON_CONST} — use Export file instead.`, { variant: "error" });
+    } else {
+      showToast(reason, { variant: "error" });
+    }
+  } finally {
+    resultsCloudBusy = false;
+    scheduleRender(render);
+  }
+}
+
+function renderResultsExportCard() {
+  try {
+    if (typeof isHost === "function" && !isHost()) return "";
+  } catch {}
+  const codeRow = resultsCloudCode
+    ? `<p class="muted">Cloud code: <strong>${escapeHtml(resultsCloudCode)}</strong>${resultsCloudExpiresAt ? ` · expires ${escapeHtml(String(resultsCloudExpiresAt).slice(0, 10))}` : ""} <button type="button" class="secondary-action" data-results-cloud-copy>Copy</button></p>`
+    : "";
+  return `
+    <section class="card results-export-card" data-results-export-card>
+      <h2>${escapeHtml(getSnark("host.results.title", "Game results"))}</h2>
+      <p class="muted">${escapeHtml(getSnark("host.results.blurb", "Export this game's scores + buzz log, or save to the cloud for 14 days."))}</p>
+      <div class="prejoin-actions">
+        <button type="button" class="secondary-action" data-results-export>Export file</button>
+        <button type="button" class="secondary-action" data-results-cloud-save ${resultsCloudBusy ? "disabled" : ""}>${resultsCloudBusy ? "Saving…" : "Save to cloud"}</button>
+      </div>
+      ${codeRow}
+      ${!episodeCloudEnabled ? `<p class="muted">Cloud unavailable — file export still works.</p>` : ""}
+    </section>`;
+}
+
+// ---------------------------------------------------------------------------
+// Result Reviewer: pure compute over a results payload (no PlayroomKit).
+// Accuracy covers buzz + bingo/disordat/quixort/fibbage; manual-* and
+// unresolved entries are listed but excluded from the denominator.
+// ---------------------------------------------------------------------------
+const REVIEW_ACCURACY_TYPES = ["buzz", "bingo", "disordat", "quixort", "fibbage"];
+
+function reviewerEntryCorrect(e) {
+  if (!e || typeof e !== "object") return false;
+  if (e.result === "correct") return true;
+  if (e.result === "incorrect") return false;
+  const d = Number(e.awardedDelta);
+  if (Number.isFinite(d) && d !== 0) return d > 0;
+  return false;
+}
+
+function reviewerEntryAttempted(e) {
+  if (!e || typeof e !== "object") return false;
+  if (!REVIEW_ACCURACY_TYPES.includes(String(e.type))) return false;
+  if (e.resolved !== true) return false;
+  return true;
+}
+
+function resolveReviewerName(scoreKey, data) {
+  const key = String(scoreKey || "");
+  if (!key) return "Unknown";
+  try {
+    if (key.startsWith("team:")) {
+      const color = key.slice(5) || "team";
+      return `Team ${color.charAt(0).toUpperCase()}${color.slice(1)}`;
+    }
+    const names = (data && data.customNames) || {};
+    const rosters = (data && data.coopRosters) || {};
+    if (key.startsWith("coop:")) {
+      const parts = key.split(":");
+      const dev = parts[1] || "";
+      const slot = Number(parts[2]);
+      const roster = rosters[dev];
+      if (roster && Array.isArray(roster.slots) && Number.isInteger(slot) && roster.slots[slot]) {
+        return String(roster.slots[slot]);
+      }
+      if (roster && roster.group) return `${String(roster.group)} #${Number.isInteger(slot) ? slot + 1 : ""}`.trim();
+    } else if (names[key]) {
+      return String(names[key]);
+    }
+  } catch {}
+  try {
+    const log = (data && data.gameLog) || [];
+    for (const e of log) {
+      if (!e || typeof e !== "object") continue;
+      if (e.scoreKey === key || e.coopKey === key || e.playerId === key) {
+        if (e.playerName) return String(e.playerName);
+        if (e.scoreTarget) return String(e.scoreTarget);
+      }
+    }
+  } catch {}
+  return key;
+}
+
+function reviewerQuestionLabel(item) {
+  if (!item) return "";
+  const bits = [String(item.prompt || "").trim()];
+  if (Array.isArray(item.options) && item.options.some((s) => String(s || "").trim())) {
+    bits.push(`Options: ${item.options.map((s) => String(s || "").trim()).filter(Boolean).join(" / ").slice(0, 120)}`);
+  }
+  if (Array.isArray(item.questions) && item.questions.some((s) => String(s || "").trim())) {
+    bits.push(`Things: ${item.questions.map((s) => String(s || "").trim()).filter(Boolean).slice(0, 3).join(" · ")}`);
+  }
+  if (item.truth) bits.push(`Truth: ${String(item.truth).slice(0, 80)}`);
+  if (item.word) bits.push(`Word: ${String(item.word)}`);
+  return bits.filter(Boolean).join(" — ").slice(0, 220);
+}
+
+function computeResultsReview(data) {
+  const log = Array.isArray(data?.gameLog) ? data.gameLog : [];
+  const scores = (data && typeof data.scores === "object" && data.scores !== null) ? data.scores : {};
+  const episodeItems = Array.isArray(data?.episode?.items) ? data.episode.items : [];
+
+  const standings = Object.entries(scores)
+    .map(([key, v]) => ({ key: String(key), name: resolveReviewerName(key, data), score: Number(v) || 0 }))
+    .sort((a, b) => b.score - a.score);
+
+  // Per-player accuracy.
+  const byPlayer = new Map();
+  const ensurePlayer = (key) => {
+    if (!byPlayer.has(key)) byPlayer.set(key, { key, name: resolveReviewerName(key, data), attempts: 0, correct: 0 });
+    return byPlayer.get(key);
+  };
+  for (const key of Object.keys(scores)) ensurePlayer(String(key));
+  for (const e of log) {
+    if (!reviewerEntryAttempted(e)) continue;
+    const key = String(e.scoreKey || e.coopKey || e.playerId || "");
+    if (!key) continue;
+    const row = ensurePlayer(key);
+    row.attempts += 1;
+    if (reviewerEntryCorrect(e)) row.correct += 1;
+  }
+  const players = [...byPlayer.values()]
+    .map((r) => ({ ...r, pct: r.attempts ? Math.round((r.correct / r.attempts) * 100) : null }))
+    .sort((a, b) => b.correct - a.correct || (b.pct ?? -1) - (a.pct ?? -1));
+
+  // Per-question accuracy, grouped by roundId. Prompt matching: prefer the
+  // qIndex stamp when a round maps to exactly one episode position; else
+  // positional fallback when counts line up; else unmatched (honest Round N).
+  const roundIds = [...new Set(log.map((e) => Number(e?.roundId)).filter((n) => Number.isFinite(n)))].sort((a, b) => a - b);
+  const positional = episodeItems.length > 0 && episodeItems.length === roundIds.length;
+  const questions = roundIds.map((rid, orderIdx) => {
+    const entries = log.filter((e) => Number(e?.roundId) === rid);
+    const attempted = entries.filter(reviewerEntryAttempted);
+    const correct = attempted.filter(reviewerEntryCorrect).length;
+    let prompt = "";
+    let matched = false;
+    const qis = [...new Set(entries.map((e) => Number(e?.qIndex)).filter((n) => Number.isInteger(n) && n >= 0 && n < episodeItems.length))];
+    if (qis.length === 1) {
+      prompt = reviewerQuestionLabel(episodeItems[qis[0]]);
+      matched = !!prompt;
+    } else if (positional && episodeItems[orderIdx]) {
+      prompt = reviewerQuestionLabel(episodeItems[orderIdx]);
+      matched = !!prompt;
+    }
+    return {
+      roundId: rid,
+      prompt,
+      matched,
+      attempts: attempted.length,
+      correct,
+      pct: attempted.length ? Math.round((correct / attempted.length) * 100) : null,
+    };
+  });
+
+  // Full per-player buzz table (every entry with attribution, incl. manual).
+  const buzzRows = log
+    .filter((e) => e && typeof e === "object")
+    .map((e) => {
+      const key = String(e.scoreKey || e.coopKey || e.playerId || "");
+      const delta = Number(e.awardedDelta);
+      let resultLabel = "pending";
+      if (e.type === "manual-reset" || e.type === "manual-adjust") resultLabel = "manual";
+      else if (e.resolved === true) resultLabel = reviewerEntryCorrect(e) ? "correct" : "wrong";
+      const badge = getLogEntryBadge(e);
+      const pick = e.option !== null && e.option !== undefined && String(e.option) !== ""
+        ? `Option ${e.option}`
+        : e.answerText !== null && e.answerText !== undefined && String(e.answerText) !== ""
+          ? String(e.answerText)
+          : e.item !== null && e.item !== undefined && String(e.item) !== ""
+            ? String(e.item)
+            : "—";
+      return {
+        roundId: Number(e.roundId),
+        type: String(e.type || "buzz"),
+        badge: badge.label,
+        badgeSlug: badge.slug,
+        playerKey: key,
+        playerName: key ? resolveReviewerName(key, data) : String(e.playerName || "Unknown"),
+        pick: String(pick).slice(0, 160),
+        resultLabel,
+        delta: Number.isFinite(delta) ? delta : 0,
+      };
+    })
+    .sort((a, b) => (a.roundId || 0) - (b.roundId || 0));
+
+  return { standings, players, questions, buzzRows };
+}
+
+function parseReviewerText(text, fileName) {
+  let raw = null;
+  try {
+    raw = JSON.parse(String(text || ""));
+  } catch {
+    reviewerData = null;
+    reviewerError = "That file is not valid JSON.";
+    reviewerFileName = String(fileName || "");
+    scheduleRender(render);
+    return;
+  }
+  const normalized = normalizeResultFileFn(raw);
+  const { ok, errors } = validateResultFileFn(normalized);
+  if (!ok) {
+    reviewerData = null;
+    reviewerError = errors?.[0]?.message
+      ? `Not a results file: ${errors[0].message}`
+      : "Not a results file.";
+    reviewerFileName = String(fileName || "");
+    scheduleRender(render);
+    return;
+  }
+  reviewerData = normalized;
+  reviewerError = "";
+  reviewerFileName = String(fileName || "");
+  reviewerExpiresAt = null;
+  scheduleRender(render);
+  const n = (normalized.gameLog || []).length;
+  showToast(`Loaded results (${n} log entr${n === 1 ? "y" : "ies"}).`);
+}
+
+async function loadReviewerByCode() {
+  const code = String(reviewerCodeInput || "").trim().toUpperCase();
+  if (!code) {
+    reviewerError = "Enter a share code.";
+    scheduleRender(render);
+    return;
+  }
+  reviewerError = "";
+  scheduleRender(render);
+  try {
+    if (!episodeCloudEnabled) {
+      try { await probeEpisodeCloud(true); } catch {}
+    }
+    const { result, expiresAt } = await cloudLoadResult(code);
+    const normalized = normalizeResultFileFn(result);
+    const { ok, errors } = validateResultFileFn(normalized);
+    if (!ok) {
+      reviewerData = null;
+      reviewerError = errors?.[0]?.message ? `Cloud file invalid: ${errors[0].message}` : "Cloud file invalid.";
+      scheduleRender(render);
+      return;
+    }
+    reviewerData = normalized;
+    reviewerExpiresAt = expiresAt;
+    reviewerFileName = `cloud:${code}`;
+    showToast(`Loaded cloud results ${code}.`);
+  } catch (e) {
+    reviewerData = null;
+    reviewerError = String(e?.message || "Load failed.");
+  }
+  scheduleRender(render);
+}
+
+function reviewerDownloadFileName() {
+  const loaded = String(reviewerFileName || "");
+  if (loaded.startsWith("cloud:")) {
+    const code = loaded.slice(6).trim().toUpperCase().replace(/[^A-Z0-9]/g, "") || "game";
+    return `results-${code}.results.json`;
+  }
+  if (/\.json$/i.test(loaded)) return loaded;
+  return resultsExportFileName();
+}
+
+function downloadReviewerJson() {
+  if (!reviewerData) {
+    showToast("Nothing to download — load a results file or code first.", { variant: "error" });
+    return;
+  }
+  try {
+    const blob = new Blob([JSON.stringify(reviewerData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = reviewerDownloadFileName();
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { try { URL.revokeObjectURL(url); a.remove(); } catch {} }, 1000);
+  } catch {
+    showToast("Download failed in this browser.", { variant: "error" });
+    return;
+  }
+  showToast(`Downloaded ${reviewerDownloadFileName()}.`);
+}
+
+function renderReviewerResults(data) {
+  const review = computeResultsReview(data);
+  const standingsRows = review.standings.length
+    ? review.standings.map((s, i) => `
+        <tr><td>${i + 1}</td><td>${escapeHtml(s.name)}</td><td>${escapeHtml(String(s.score))}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">No scores recorded.</td></tr>`;
+  const playerRows = review.players.length
+    ? review.players.map((p) => `
+        <tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(String(p.score ?? review.standings.find((s) => s.key === p.key)?.score ?? 0))}</td><td>${p.correct}/${p.attempts}</td><td>${p.pct === null ? "—" : `${p.pct}%`}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">No buzzes recorded.</td></tr>`;
+  const questionRows = review.questions.length
+    ? review.questions.map((q) => `
+        <tr><td>Round ${escapeHtml(String(q.roundId))}</td><td>${q.prompt ? escapeHtml(q.prompt) : `<span class="muted">No prompt recorded${q.matched ? "" : " (ad-hoc / unmatched)"}.</span>`}</td><td>${q.correct}/${q.attempts}</td><td>${q.pct === null ? "—" : `${q.pct}%`}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted">No rounds recorded.</td></tr>`;
+  const byPlayer = new Map();
+  for (const row of review.buzzRows) {
+    if (!byPlayer.has(row.playerKey)) byPlayer.set(row.playerKey, []);
+    byPlayer.get(row.playerKey).push(row);
+  }
+  const detailSections = [...byPlayer.entries()].map(([key, rows], idx) => {
+    const name = rows[0]?.playerName || key || "Unknown";
+    const body = rows.map((r) => `
+      <tr><td>Round ${escapeHtml(String(Number.isFinite(r.roundId) ? r.roundId : 0))}</td><td><span class="log-badge log-badge-${escapeHtml(r.badgeSlug)}">${escapeHtml(r.badge)}</span></td><td>${escapeHtml(r.pick)}</td><td>${escapeHtml(r.resultLabel)}</td><td>${escapeHtml(String(r.delta))}</td></tr>`).join("");
+    return `
+      <details class="reviewer-details" ${idx === 0 ? "open" : ""}>
+        <summary>${escapeHtml(name)} — ${rows.length} buzz${rows.length === 1 ? "" : "es"}</summary>
+        <table class="reviewer-table"><thead><tr><th>Round</th><th>Type</th><th>Pick / answer</th><th>Result</th><th>Points</th></tr></thead><tbody>${body}</tbody></table>
+      </details>`;
+  }).join("") || `<p class="muted">No buzzes recorded.</p>`;
+  const expiryNote = reviewerExpiresAt ? `<p class="muted">Cloud copy expires ${escapeHtml(String(reviewerExpiresAt).slice(0, 10))} (renewed on view).</p>` : "";
+  return `
+    <section class="card reviewer-card" data-reviewer-standings>
+      <h2>Final scores</h2>
+      <table class="reviewer-table"><thead><tr><th>#</th><th>Player</th><th>Score</th></tr></thead><tbody>${standingsRows}</tbody></table>
+    </section>
+    <section class="card reviewer-card" data-reviewer-accuracy>
+      <h2>Accuracy per player</h2>
+      <table class="reviewer-table"><thead><tr><th>Player</th><th>Score</th><th>Correct / attempts</th><th>Accuracy</th></tr></thead><tbody>${playerRows}</tbody></table>
+    </section>
+    <section class="card reviewer-card" data-reviewer-questions>
+      <h2>Accuracy per question</h2>
+      <table class="reviewer-table"><thead><tr><th>Round</th><th>Question</th><th>Correct / attempts</th><th>Accuracy</th></tr></thead><tbody>${questionRows}</tbody></table>
+    </section>
+    <section class="card reviewer-card" data-reviewer-buzzes>
+      <h2>Per-player buzzes</h2>
+      ${expiryNote}
+      ${detailSections}
+    </section>`;
+}
+
+function renderReviewerScreen(error = "") {
+  const errText = error || reviewerError;
+  const body = reviewerData ? renderReviewerResults(reviewerData) : `<p class="muted">Pick a <strong>.results.json</strong> file exported from a game, or load one by cloud code. Nothing joins a room — this works offline.</p>`;
+  return `
+      <main class="prejoin-layout">
+        <section class="card prejoin-panel">
+          <div class="prejoin-header">
+            <button class="prejoin-back" data-prejoin-back type="button">Back</button>
+            <div>
+              <p class="prejoin-kicker">Result reviewer</p>
+              <h1>Review a game</h1>
+              <p class="muted">${reviewerFileName ? `Loaded: <strong>${escapeHtml(reviewerFileName)}</strong>` : "Final scores, accuracy, and every buzz."}</p>
+            </div>
+          </div>
+          <div class="ep-attach-actions">
+            <button class="secondary-action" data-reviewer-file-btn type="button">Attach results file</button>
+            <input type="file" id="reviewer-file" accept="application/json,.json" hidden />
+            ${reviewerData ? `<button class="secondary-action" data-reviewer-download type="button">Download JSON</button>` : ""}
+            ${reviewerData ? `<button class="secondary-action" data-reviewer-clear type="button">Clear</button>` : ""}
+          </div>
+          <div class="ep-attach-actions">
+            <input id="reviewer-code" type="text" maxlength="12" placeholder="Cloud code (ABC123)" value="${escapeHtml(reviewerCodeInput)}" data-reviewer-code-input />
+            <button class="secondary-action" data-reviewer-code-load type="button">Load by code</button>
+          </div>
+          ${!episodeCloudEnabled ? `<p class="muted">Cloud codes need the results server — file import still works.</p>` : ""}
+          ${errText ? `<p class="error-text">${escapeHtml(errText)}</p>` : ""}
+          ${body}
+        </section>
+      </main>
+    `;
+}
+
+// =============================================================================
 // Episode runner — ordered playlist loaded from the creator (host-local
 // activeEpisode/episodeIndex; only the current prompt is shared state).
 // "Load" switches inputMode first (which resets per-mode setup), then seeds
@@ -12151,6 +12667,7 @@ function render() {
 
       ${showAdminData ? renderAnalyticsCard(false) : ""}
       ${renderLockedRuling(settings, pendingEntry)}
+      ${showAdminData ? renderResultsExportCard() : ""}
       ${showAdminData ? renderLog(gameLog, settings) : ""}
     </main>
   `;
@@ -12629,6 +13146,7 @@ function bindEvents() {
     // Fire-and-forget: enables the host form's cloud row in place (no
     // re-render, so typed input survives).
     if (next === "host") probeEpisodeCloud(false);
+    if (next === "reviewer") probeEpisodeCloud(false);
   });
   delegate("click", "[data-prejoin-switch]", (e, btn) => renderPrejoinScreen(btn.dataset.prejoinSwitch || "landing"));
   delegate("click", "[data-prejoin-back]", () => renderPrejoinScreen());
@@ -12971,6 +13489,52 @@ function bindEvents() {
       clientMode: mode === "display" ? "display" : mode === "tablet_timer" ? "tablet_timer" : "player",
       producerPassword: mode === "producer" ? producerPassword : undefined,
     });
+  });
+  delegate("click", "[data-results-export]", () => downloadResultsJson());
+  delegate("click", "[data-results-cloud-save]", () => { saveResultsToCloud(); });
+  delegate("click", "[data-results-cloud-copy]", () => {
+    try {
+      const done = () => showToast("Code copied.");
+      if (navigator?.clipboard?.writeText) navigator.clipboard.writeText(resultsCloudCode).then(done, done);
+      else showToast(resultsCloudCode);
+    } catch { showToast(resultsCloudCode); }
+  });
+  delegate("click", "[data-reviewer-file-btn]", () => {
+    try { document.querySelector("#reviewer-file")?.click(); } catch {}
+  });
+  delegate("change", "#reviewer-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      parseReviewerText(String(reader.result || ""), file.name || "file");
+      try { input.value = ""; } catch {}
+    };
+    reader.onerror = () => {
+      reviewerData = null;
+      reviewerError = "Could not read that file.";
+      try { input.value = ""; } catch {}
+      scheduleRender(render);
+    };
+    try { reader.readAsText(file); } catch {
+      reviewerData = null;
+      reviewerError = "Could not read that file.";
+      scheduleRender(render);
+    }
+  });
+  delegate("click", "[data-reviewer-download]", () => { downloadReviewerJson(); });
+  delegate("click", "[data-reviewer-clear]", () => {    reviewerData = null;
+    reviewerError = "";
+    reviewerFileName = "";
+    reviewerExpiresAt = null;
+    renderPrejoinScreen("reviewer");
+  });
+  delegate("click", "[data-reviewer-code-load]", () => {
+    try { reviewerCodeInput = document.querySelector("#reviewer-code")?.value || ""; } catch {}
+    loadReviewerByCode();
+  });
+  delegate("change", "#reviewer-code", (e, input) => {
+    try { reviewerCodeInput = input?.value || ""; } catch {}
   });
   // forms submit handled via submit listener below
   return;
@@ -13484,6 +14048,8 @@ function renderPrejoinScreen(mode = "landing", error = "") {
         </section>
       </main>
     `;
+  } else if (mode === "reviewer") {
+    prejoinHtml = renderReviewerScreen(error);
   } else {
     prejoinHtml = `
       <main class="prejoin-layout">
@@ -13512,6 +14078,10 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             <button class="prejoin-choice" data-prejoin-open="creator" type="button">
               <span class="prejoin-choice-label">Episode creator</span>
               <span class="muted">Build a question playlist to run when hosting.</span>
+            </button>
+            <button class="prejoin-choice" data-prejoin-open="reviewer" type="button">
+              <span class="prejoin-choice-label">Review results</span>
+              <span class="muted">Open a saved game file or cloud code.</span>
             </button>
           </div>
         </section>
@@ -13982,5 +14552,18 @@ try {
     },
     getCurrentRoundBuzzMap,
     noteCoopLocalBuzz,
+    computeResultsReview,
+    resolveReviewerName,
+    reviewerEntryCorrect,
+    reviewerEntryAttempted,
+    reviewerQuestionLabel,
+    buildResultsPayload,
+    normalizeResultFileFn,
+    validateResultFileFn,
+    parseReviewerText,
+    renderReviewerScreen,
+    loadReviewerByCode,
+    downloadReviewerJson,
+    reviewerDownloadFileName,
   });
 } catch {}
