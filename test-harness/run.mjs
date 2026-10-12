@@ -1868,19 +1868,19 @@ const epui = await import("../src/episodes/ui.js");
   pk._store.self = pk._store.participants.host1;
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "episodeRunLoad", args: [1] }, prod);
-  check("load blocked while open", S().episodePrompt?.index === 0, JSON.stringify(S().episodePrompt));
-  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  check("load locked while live", S().episodePrompt?.index === 0 && S().round?.status === "open", JSON.stringify({ p: S().episodePrompt, s: S().round?.status }));
+  await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+  check("round closed", S().round?.status === "closed", String(S().round?.status));
   await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
-  check("step loads text preset", S().round?.correctAnswer === "Paris" && S().episodePrompt?.index === 1, JSON.stringify({ a: S().round?.correctAnswer, p: S().episodePrompt }));
+  check("closed load auto-freshes round", S().episodePrompt?.index === 1 && S().round?.status === "idle" && S().round?.correctAnswer === "Paris", JSON.stringify({ p: S().episodePrompt, s: S().round?.status, a: S().round?.correctAnswer }));
+  check("auto-fresh clears buzz state", Array.isArray(S().round?.buzzedPlayerIds) && S().round.buzzedPlayerIds.length === 0 && S().round?.winnerId == null, JSON.stringify({ b: S().round?.buzzedPlayerIds, w: S().round?.winnerId }));
   check("step falls back to default points", S().settings?.uniformPoints === 777, String(S().settings?.uniformPoints));
   check("step applies time override", S().settings?.timeOpen === 45, String(S().settings?.timeOpen));
   check("unlabeled clears broadcast labels", S().episodePrompt?.optionLabels === null && S().episodePrompt?.optionKeys === null, JSON.stringify({ l: S().episodePrompt?.optionLabels, k: S().episodePrompt?.optionKeys }));
-  if (!COOP) {
-    await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
-    check("step loads fibbage truth", S().fibbage?.truth === "real" && S().episodePrompt?.index === 2, JSON.stringify({ t: S().fibbage?.truth, p: S().episodePrompt }));
-    await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
-    check("step stops at end", S().episodePrompt?.index === 2, JSON.stringify(S().episodePrompt));
-  }
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+  check("step loads fibbage truth", S().fibbage?.truth === "real" && S().episodePrompt?.index === 2, JSON.stringify({ t: S().fibbage?.truth, p: S().episodePrompt }));
+  await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
+  check("step stops at end", S().episodePrompt?.index === 2, JSON.stringify(S().episodePrompt));
   await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
   check("end clears prompt", S().episodePrompt === null, JSON.stringify(S().episodePrompt));
   pk._store.self = pk._store.participants.disp1;

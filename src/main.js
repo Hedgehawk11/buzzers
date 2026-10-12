@@ -10843,11 +10843,72 @@ function episodeRunLoad(index) {
   }
   const item = ep.items[Number(index)];
   if (!item) return false;
-  const round = getRound();
-  if (round.status !== ROUND_STATUSES.IDLE && round.status !== ROUND_STATUSES.CLOSED) {
+  // Loading is locked while a round is live — the host must close/reset
+  // first so a live round can never be wiped by a question load. Loading
+  // from a closed round automatically drops into a fresh round (next round):
+  // stale winner/buzz state is cleared to IDLE so the new question always
+  // starts clean. Round-number counting still happens in openBuzzers.
+  const liveRound = getRound();
+  if (liveRound.status !== ROUND_STATUSES.IDLE && liveRound.status !== ROUND_STATUSES.CLOSED) {
     setBuzzNotice("Reset the round before loading the next question.");
     render();
     return false;
+  }
+  if (liveRound.status === ROUND_STATUSES.CLOSED) {
+    const settingsNow = getSettings();
+    const rawTimeOpenNow = Number(settingsNow.timeOpen);
+    const safeTimeOpenNow = Number.isFinite(rawTimeOpenNow) && rawTimeOpenNow > 0 ? Math.min(rawTimeOpenNow, 120) : 20;
+    setState(
+      "round",
+      {
+        status: ROUND_STATUSES.IDLE,
+        opensAt: null,
+        closesAt: null,
+        remainingCs: safeTimeOpenNow * 100,
+        roundNumber: Number.isFinite(Number(liveRound.roundNumber)) ? Math.trunc(Number(liveRound.roundNumber)) : 0,
+        pausedFrom: null,
+        winnerId: null,
+        winnerTeam: null,
+        winnerOption: null,
+        winnerAnswer: null,
+        winnerName: null,
+        winnerCoopKey: null,
+        coopControl: null,
+        correctOptions: null,
+        correctAnswer: null,
+        buzzedPlayerIds: [],
+        buzzCounts: {},
+        roulette: {
+          active: false,
+          startedAt: null,
+          mode: settingsNow.rouletteMode,
+          topAmount: normalizeRouletteTopAmount(settingsNow.rouletteTopAmount),
+          ceiling: 0,
+          seed: null,
+          targetPlayerId: null,
+          targetPlayerName: null,
+          selections: {},
+          completedPlayerIds: [],
+          finalValue: liveRound.roulette?.finalValue ?? null,
+          finishedAt: null,
+        },
+        screw: {
+          active: false,
+          screwerId: null,
+          screwerName: null,
+          screweeId: null,
+          screeeName: null,
+          screwTimerMs: null,
+          frozenCs: null,
+          frozenPoints: null,
+          activatedAt: null,
+        },
+        screwsUsedBy: [],
+      },
+      true,
+    );
+    setState("pendingLogId", null, true);
+    try { rewindCoopWrongFaces(); } catch {}
   }
   setHostSetting("inputMode", item.kind);
   if (getSettings().inputMode !== item.kind) {
