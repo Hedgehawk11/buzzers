@@ -1352,52 +1352,6 @@
         "snark2": ""
       }
     },
-    "pill": {
-      "idle": {
-        "en": "Idle",
-        "snark1": "",
-        "snark2": ""
-      },
-      "open": {
-        "en": "Live",
-        "snark1": "",
-        "snark2": ""
-      },
-      "roulette": {
-        "en": "Pick-a-Value",
-        "snark1": "",
-        "snark2": ""
-      },
-      "locked": {
-        "en": "Locked",
-        "snark1": "",
-        "snark2": ""
-      },
-      "closed": {
-        "en": "Results",
-        "snark1": "",
-        "snark2": ""
-      }
-    },
-    "lastResult": {
-      "correct": {
-        "en": "{player} correct {delta}",
-        "snark1": "",
-        "snark2": ""
-      },
-      "wrong": {
-        "en": "{player} {delta}",
-        "snark1": "",
-        "snark2": ""
-      }
-    },
-    "fibbage": {
-      "votesLabel": {
-        "en": "votes",
-        "snark1": "",
-        "snark2": ""
-      }
-    },
     "misc": {
       "roomFallback": {
         "en": "....",
