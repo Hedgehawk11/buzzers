@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "title": "All-Modes Test Drive",
+    "author": "buzzers",
+    "createdAt": "2026-10-12T00:00:00.000Z"
+  },
+  "defaults": {
+    "lockAfterBuzz": true,
+    "timeOpen": 30
+  },
+  "items": [
+    {
+      "id": "t1-buttons",
+      "kind": "buttons",
+      "prompt": "Which planet is known as the Red Planet?",
+      "optionCount": 4,
+      "correctOptions": [2],
+      "options": ["Venus", "Mars", "Jupiter", "Mercury"]
+    },
+    {
+      "id": "t2-text",
+      "kind": "text",
+      "prompt": "What is the capital of France?",
+      "correctAnswer": "Paris"
+    },
+    {
+      "id": "t3-bingo",
+      "kind": "bingo",
+      "prompt": "Collect the letters of GAMES — fastest finger wins each letter.",
+      "word": "GAMES",
+      "rounds": [
+        { "prompt": "First letter: collect G", "answer": "G" },
+        { "prompt": "Next letter: collect A", "answer": "A" },
+        { "prompt": "Next letter: collect M", "answer": "M" }
+      ]
+    },
+    {
+      "id": "t4-wen",
+      "kind": "wendithapn",
+      "prompt": "Wen Dit Happn: did it happen Before, Never, or After?",
+      "rounds": [
+        { "prompt": "The moon landing (1969) vs the first text message (1992)?", "answer": "B" },
+        { "prompt": "A human walking on Mars?", "answer": "N" },
+        { "prompt": "The next leap year after 2024?", "answer": "A" }
+      ]
+    },
+    {
+      "id": "t5-disordat",
+      "kind": "disordat",
+      "prompt": "Dis or Dat: sort each thing!",
+      "disLabel": "Dis",
+      "datLabel": "Dat",
+      "answers": ["dis", "dat", "both", "dis", "dat", "both", "dis"],
+      "questions": [
+        "Honeycrisp",
+        "Blue jeans",
+        "A group chat at 2am",
+        "Cold pizza",
+        "Airport security lines",
+        "High-fives",
+        "Monday mornings"
+      ]
+    },
+    {
+      "id": "t6-fibbage",
+      "kind": "fibbage",
+      "prompt": "Make up a convincing lie!",
+      "truth": "Honey never spoils",
+      "lieTimeSec": 30,
+      "voteTimeSec": 30,
+      "multiplier": 1
+    },
+    {
+      "id": "t7-quixort",
+      "kind": "quixort",
+      "prompt": "Sort these inventions oldest to newest. Decoys go in the trash!",
+      "items": [
+        "Printing press",
+        "Steam engine",
+        "Telephone",
+        "Airplane",
+        "Internet"
+      ],
+      "trash": ["Time machine", "Hoverboard"],
+      "multiplier": 1,
+      "blockSec": 30
+    }
+  ]
+}
