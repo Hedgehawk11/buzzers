@@ -454,9 +454,10 @@ button:disabled {
   letter-spacing: 0.2em;
 }
 
-.audience-leader {
-  display: grid;
-  gap: 0.45rem;
+.audience-count {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
   margin-top: 1rem;
   padding: 1.15rem;
   border-radius: 18px;
@@ -464,46 +465,16 @@ button:disabled {
   background: rgba(0, 0, 0, 0.18);
 }
 
-.audience-leader-kicker {
-  color: var(--amber);
-  font-size: 0.82rem;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.audience-leader strong {
+.audience-count strong {
   font-size: clamp(2.6rem, 8vw, 5.5rem);
   line-height: 0.94;
   letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
-.audience-buzz-list {
-  margin: 1rem 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 0.65rem;
-  font-size: clamp(1.4rem, 3vw, 2.2rem);
-}
-
-.audience-buzz-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.audience-buzz-list li span {
-  color: var(--amber);
-  font-size: 0.8rem;
+.audience-count .muted {
+  font-size: clamp(1.1rem, 2.6vw, 1.6rem);
   font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
 }
 
 .audience-empty {
@@ -646,27 +617,6 @@ button:disabled {
   font-size: 1.3rem;
   background: rgba(0, 0, 0, 0.35);
   flex: none;
-}
-
-.audience-buzz-rank {
-  display: inline-flex;
-  align-items: center;
-  min-width: 2.4rem;
-  font-weight: 900;
-}
-
-.audience-buzz-rank .rank-badge {
-  width: 2rem;
-  height: 2rem;
-}
-
-.audience-buzz-list li.is-winner {
-  border-color: rgba(255, 139, 36, 0.55);
-  background: rgba(255, 139, 36, 0.12);
-}
-
-.audience-leader.is-filled {
-  border-color: rgba(29, 185, 84, 0.5);
 }
 
 .audience-scores li:nth-child(-n + 3) {
@@ -1683,6 +1633,219 @@ body:not([data-ui-anims="off"]) .analytics-bar-fill {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* =============================================================================
+   Audience display polish — unified projection system (all modes share it).
+   Every animation below is gated behind body:not([data-ui-anims="off"]) so the
+   global anims-off kill switch + prefers-reduced-motion block keep working.
+   ============================================================================= */
+.audience-layout {
+  gap: 1.1rem;
+}
+
+.audience-hero {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(110% 140% at 50% 0%, rgba(255, 139, 36, 0.12), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+    var(--panel);
+}
+
+.audience-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 4px 0 0 4px;
+  background: linear-gradient(180deg, var(--amber), rgba(255, 139, 36, 0.1));
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.audience-hero-spotlight {
+  opacity: 0.72;
+}
+
+.audience-hero-spotlight .audience-title {
+  font-size: clamp(1.2rem, 3vw, 1.6rem);
+  opacity: 0.85;
+}
+
+.audience-card-header h2 {
+  font-size: clamp(1.3rem, 3vw, 1.9rem);
+  letter-spacing: 0.01em;
+}
+
+.audience-standings-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.audience-standings-mode {
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Status pills — one hue per state so the big screen reads at a glance. */
+.audience-pill-idle {
+  border-color: rgba(166, 180, 200, 0.5);
+  background: rgba(166, 180, 200, 0.14);
+  color: #dbe5f2;
+}
+
+.audience-pill-results {
+  border-color: rgba(77, 163, 255, 0.55);
+  background: rgba(77, 163, 255, 0.14);
+  color: #cfe6ff;
+}
+
+.audience-pill-minigame {
+  border-color: rgba(180, 140, 255, 0.55);
+  background: rgba(180, 140, 255, 0.14);
+  color: #ddccff;
+}
+
+.audience-pill-live {
+  border-color: rgba(255, 139, 36, 0.55);
+  background: rgba(255, 139, 36, 0.14);
+  color: #ffd9ad;
+}
+
+/* Podium — top-3 score rows get metallic borders on the big screen. */
+.audience-scores li.is-top {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.audience-scores li.is-leader {
+  border-color: rgba(255, 215, 0, 0.65);
+  background: linear-gradient(180deg, rgba(255, 215, 0, 0.14), rgba(255, 255, 255, 0.04));
+}
+
+.audience-scores li.is-second {
+  border-color: rgba(192, 203, 218, 0.55);
+}
+
+.audience-scores li.is-third {
+  border-color: rgba(205, 127, 50, 0.6);
+}
+
+.audience-standings-big li {
+  align-items: center;
+}
+
+.audience-standings-big .standings-rank {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.5rem;
+}
+
+.audience-standings-big .standings-rank .rank-badge {
+  width: 1.9rem;
+  height: 1.9rem;
+}
+
+.standings-score {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+body:not([data-ui-anims="off"]) .audience-last-result {
+  animation: logSlideIn 220ms ease-out;
+}
+
+body:not([data-ui-anims="off"]) .audience-layout[data-screw-active="true"] .audience-screw-card {
+  animation: screwShake 300ms ease-in-out;
+}
+
+@keyframes screwShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px) rotate(-0.4deg); }
+  50% { transform: translateX(4px) rotate(0.4deg); }
+  75% { transform: translateX(-2px); }
+}
+
+body:not([data-ui-anims="off"]) .audience-progress > span {
+  transition: width 240ms ease-out;
+}
+
+/* Minigame question blocks read as stage cards, not bare text. */
+.audience-layout .disordat-audience-question {
+  margin-top: 1rem;
+  padding: 1.1rem 1.2rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.audience-timer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.audience-timer-label {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.audience-timer-row .audience-timer {
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+}
+
+/* Fibbage spotlight kicker replaces the old inline-styled badge div. */
+.spotlight-kicker {
+  letter-spacing: 0.18em;
+  font-weight: 900;
+  font-size: 0.85rem;
+  opacity: 0.9;
+  margin-bottom: 1rem;
+}
+
+/* Audience analytics gets roomier rows for distance reading. */
+.analytics-card-audience .analytics-row-head {
+  font-size: clamp(1rem, 2.4vw, 1.25rem);
+}
+
+.analytics-card-audience .analytics-voters {
+  font-size: clamp(0.9rem, 2vw, 1.05rem);
+}
+
+/* Team-select columns fill the projection width evenly. */
+.audience-teams-grid .audience-team-card {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+@media (max-width: 760px) {
+  .audience-hero {
+    align-items: stretch;
+  }
+  .audience-timer {
+    text-align: left;
+  }
+  .audience-meta {
+    text-align: left;
+    justify-items: start;
+  }
 }
 
 
@@ -2884,9 +3047,11 @@ body:has([data-screw-active]) {
     linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.25)),
     var(--panel);
   box-shadow: 0 20px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06) inset;
-  animation: fibbageSpotlightIn 420ms ease-out, fibbageGlow 1.8s ease-in-out infinite alternate;
   position: relative;
   overflow: hidden;
+}
+body:not([data-ui-anims="off"]) .fibbage-spotlight {
+  animation: fibbageSpotlightIn 420ms ease-out, fibbageGlow 1.8s ease-in-out infinite alternate;
 }
 .fibbage-spotlight::before {
   content: "";

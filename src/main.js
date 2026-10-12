@@ -7570,9 +7570,9 @@ function renderBingoAudienceDisplay(settings, players) {
   const scores = getScores();
   if (!bingo.active) {
     return `
-    <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""} data-bingo-active="true">
+    <main class="layout audience-layout"${round.screw?.active ? ' data-screw-active="true"' : ""} data-bingo-active="true" data-round-status="idle">
       <header class="hero audience-hero">
-          <div><p class="prejoin-kicker">Audience display</p><h1>${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">${getSnark("audience.bingo.waitingGame", "Waiting for the game to start...")}</p></div>
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">${isWen ? "Wen Dit Happn" : "Bingo"}</span></p><h1 class="audience-title">${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">${getSnark("audience.bingo.waitingGame", "Waiting for the game to start...")}</p></div>
         </header>
       </main>`;
   }
@@ -7643,11 +7643,11 @@ function renderBingoAudienceDisplay(settings, players) {
   return `
     <main class="layout audience-layout" data-bingo-active="true" data-round-status="open">
       <header class="hero audience-hero">
-        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-open">${isWen ? "Wen Dit Happn" : "Bingo"}</span></p><h1 class="audience-title">${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">${isWen ? "Wen Dit Happn" : "Bingo"}</span></p><h1 class="audience-title">${isWen ? "Wen Dit Happn" : "Bingo"}</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
       </header>
       <div class="bingo-tile-grid ${isWen ? "bingo-three" : "bingo-five"}">${tilesHtml}</div>
       ${winnerLabel ? `<div class="bingo-winner-banner">${getSnark("audience.bingo.winnerBanner", `${winnerLabel} WINS!`, { winner: winnerLabel })}</div>` : ""}
-      <section class="card"><h2>${getSnark("audience.bingo.standings", "Standings")}</h2><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.bingo.standings", "Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
     </main>`;
 }
 
@@ -8077,9 +8077,9 @@ function renderDisOrDatAudienceDisplay(settings, players) {
 
   if (!dd.active) {
     return `
-      <main class="layout audience-layout" data-disordat-active="true">
+      <main class="layout audience-layout" data-disordat-active="true" data-round-status="idle">
         <header class="hero audience-hero">
-          <div><p class="prejoin-kicker">Audience display</p><h1>Dis or Dat</h1><p class="muted">${getSnark("audience.disdat.waitingGame", "Waiting for the game to start...")}</p></div>
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Dis or Dat</span></p><h1 class="audience-title">Dis or Dat</h1><p class="muted">${getSnark("audience.disdat.waitingGame", "Waiting for the game to start...")}</p></div>
         </header>
       </main>`;
   }
@@ -8108,14 +8108,16 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       return { track, correctCount, total, label, missing, penalty };
     })
     .sort((a, b) => b.total - a.total);
-  const standings = tracks.map(({ correctCount, total, label, missing }) => {
+  const standings = tracks.map(({ correctCount, total, label, missing }, idx) => {
     const missTxt = missing > 0 ? `, ${missing} missed` : "";
     const pct = Math.min(100, Math.round((correctCount / DIS_OR_DAT_QUESTION_COUNT) * 100));
-    return `<li><strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT}${missTxt} — ${total} pts<div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></li>`;
+    const medal = idx < 3 ? getRankBadgeHtml(idx + 1) : "";
+    const rank = medal ? `<span class="standings-rank">${medal}</span>` : `<span class="standings-rank">${idx + 1}.</span>`;
+    return `<li>${rank}<strong>${label}</strong> — ${correctCount}/${DIS_OR_DAT_QUESTION_COUNT}${missTxt} — <span class="standings-score">${total} pts</span><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></li>`;
   }).join("");
 
   const timerHtml = isTimed && dd.phase === "playing"
-    ? `<div class="audience-timer">${getSnark("audience.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>`
+    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.disdat.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></span></div>`
     : "";
   // Timed modes previously hid the question — projection needs it visible.
   const questionHtml = dd.phase === "playing"
@@ -8125,11 +8127,11 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   return `
     <main class="layout audience-layout" data-disordat-active="true" data-round-status="open">
       <header class="hero audience-hero">
-        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-open">Dis or Dat</span></p><h1 class="audience-title">Dis or Dat</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Dis or Dat</span></p><h1 class="audience-title">Dis or Dat</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
       </header>
       ${timerHtml}
       ${questionHtml}
-      <section class="card"><h2>${getSnark("audience.disdat.finalStandings", dd.phase === "results" ? "Final Standings" : "Standings")} — ${modeLabel}</h2><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.disdat.finalStandings", dd.phase === "results" ? "Final Standings" : "Standings")}</h2><span class="audience-standings-mode">${modeLabel}</span></div><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
     </main>`;
 }
 
@@ -8375,9 +8377,9 @@ function renderQuixortAudienceDisplay(settings, players) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   if (!qx.active) {
     return `
-      <main class="layout audience-layout" data-quixort-active="true">
+      <main class="layout audience-layout" data-quixort-active="true" data-round-status="idle">
         <header class="hero audience-hero">
-          <div><p class="prejoin-kicker">Audience display</p><h1>Quixort</h1><p class="muted">${getSnark("audience.quixort.waitingGame", "Waiting for the game to start...")}</p></div>
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Quixort</span></p><h1 class="audience-title">Quixort</h1><p class="muted">${getSnark("audience.quixort.waitingGame", "Waiting for the game to start...")}</p></div>
         </header>
       </main>`;
   }
@@ -8411,9 +8413,9 @@ function renderQuixortAudienceDisplay(settings, players) {
   return `
     <main class="layout audience-layout" data-quixort-active="true" data-round-status="open">
       <header class="hero audience-hero">
-        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-open">Quixort</span></p><h1 class="audience-title">Quixort</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Quixort</span></p><h1 class="audience-title">Quixort</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
       </header>
-      <section class="card"><h2>${getSnark("audience.quixort.finalStandings", qx.phase === "results" ? "Final Standings" : "Standings")}</h2><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.quixort.finalStandings", qx.phase === "results" ? "Final Standings" : "Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
     </main>`;
 }
 
@@ -8696,7 +8698,7 @@ function renderFibbageAudienceDisplay(settings, players) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   if (!fb.active) {
-    return `<main class="layout audience-layout" data-fibbage-active="true"><header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage</h1><p class="muted">Waiting for the game to start...</p></div></header></main>`;
+    return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="idle"><header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Waiting for the game to start...</p></div></header></main>`;
   }
   if (fb.phase === "lying") {
     const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
@@ -8704,19 +8706,19 @@ function renderFibbageAudienceDisplay(settings, players) {
     const submitted = Object.keys(fb.lies||{}).length;
     const pct = eligible.length ? Math.min(100, Math.round((submitted / eligible.length) * 100)) : 0;
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-open">Fibbage — Lying</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${submitted}/${eligible.length} lies</span></div></header>
-      <section class="card"><h2>Lies submitted</h2><p class="muted">${submitted}/${eligible.length} — waiting for host to block/review.</p><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Lying</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${submitted}/${eligible.length} lies</span></div></header>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Lies submitted</h2><span class="audience-standings-mode">${submitted}/${eligible.length}</span></div><p class="muted">Waiting for host to block/review.</p><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
     </main>`;
   }
   if (fb.phase === "review") {
-    return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="locked"><header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-locked">Fibbage — Review</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Host is reviewing lies and truth</p></div></header></main>`;
+    return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="locked"><header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-locked">Fibbage — Review</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Host is reviewing lies and truth</p></div><div class="hero-meta"><span class="audience-pill audience-pill-quiet">Review</span></div></header></main>`;
   }
   if (fb.phase === "voting_ready") {
     const choices = fb.choices||[];
     const list = choices.map((c,i)=>`<li>"${escapeHtml(c.text)}"</li>`).join("");
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-open">Fibbage — Vote</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Waiting for vote timer</p></div></header>
-      <section class="card audience-primary"><h2>Choices</h2><ul class="fibbage-choices-list audience-standings-big">${list}</ul></section>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Vote</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Waiting for vote timer</p></div></header>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Choices</h2></div><ul class="fibbage-choices-list audience-standings-big">${list}</ul></section>
     </main>`;
   }
   if (fb.phase === "voting") {
@@ -8730,8 +8732,8 @@ function renderFibbageAudienceDisplay(settings, players) {
     Object.values(votes).forEach((idx) => { const n = Number(idx); voteCounts[n] = (voteCounts[n] || 0) + 1; });
     const list = choices.map((c,i)=>`<li>"${escapeHtml(c.text)}" <span class="muted">· ${voteCounts[i] || 0} ${getSnark("audience.fibbage.votesLabel", "votes", {})}</span></li>`).join("");
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-open">Fibbage — Voting</span></p><h1 class="audience-title">Fibbage</h1></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${totalVotes}/${eligibleN} voted</span></div></header>
-      <section class="card audience-primary"><h2>Choices</h2><ul class="fibbage-choices-list audience-standings-big">${list}</ul><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Voting</span></p><h1 class="audience-title">Fibbage</h1></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${totalVotes}/${eligibleN} voted</span></div></header>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Choices</h2><span class="audience-standings-mode">${totalVotes}/${eligibleN} voted</span></div><ul class="fibbage-choices-list audience-standings-big">${list}</ul><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
     </main>`;
   }
   if (fb.phase === "results") {
@@ -8750,11 +8752,11 @@ function renderFibbageAudienceDisplay(settings, players) {
       if (c.isTruth) { colorCls="is-truth"; badge="TRUTH"; }
       else if (voters.length>0) { colorCls="is-lie-picked"; badge=`FOOLED ${voters.length}`; }
       else { colorCls="is-lie-unpicked"; badge="UNPICKED"; }
-      return `<main class="layout audience-layout" data-fibbage-active="true">
-        <header class="hero audience-hero" style="opacity:0.7"><div><p class="prejoin-kicker">Spotlight • ${badge}</p><h1 style="font-size:clamp(1.2rem,3vw,1.6rem); opacity:0.8">Fibbage</h1></div></header>
+      return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="locked">
+        <header class="hero audience-hero audience-hero-spotlight"><div class="audience-hero-main"><p class="prejoin-kicker">Spotlight · <span class="audience-pill audience-pill-live">${badge}</span></p><h1 class="audience-title">Fibbage</h1></div></header>
         <section class="card fibbage-spotlight ${colorCls}">
           <div>
-            <div style="letter-spacing:0.18em; font-weight:900; font-size:0.85rem; opacity:0.9; margin-bottom:1rem">${badge}</div>
+            <div class="spotlight-kicker">${badge}</div>
             <h2>"${escapeHtml(c.text)}"</h2>
             <div class="spotlight-meta">Picked by <strong>${escapeHtml(voterLabels)}</strong> — ${voters.length} vote${voters.length===1?"":"s"}</div>
             <div class="spotlight-author">— ${escapeHtml(authorLabels)}</div>
@@ -8778,13 +8780,13 @@ function renderFibbageAudienceDisplay(settings, players) {
     }).join("");
     const hideScores = shouldHideFibbageScores();
     const scoresHtml = hideScores ? "" : renderScores(players, getScores());
-    return `<main class="layout audience-layout" data-fibbage-active="true">
-      <header class="hero audience-hero"><div><p class="prejoin-kicker">Audience display</p><h1>Fibbage — Results</h1></div></header>
-      <section class="card"><h2>All Choices ${revealed.all?"(revealed)":""}</h2><ul class="fibbage-choices-list">${list}</ul></section>
+    return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="locked">
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-results">Fibbage — Results</span></p><h1 class="audience-title">Fibbage — Results</h1><p class="muted">${revealed.all ? "Revealed" : "Waiting for reveal"}</p></div></header>
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>All Choices ${revealed.all?"(revealed)":""}</h2></div><ul class="fibbage-choices-list audience-standings-big">${list}</ul></section>
       ${scoresHtml}
     </main>`;
   }
-  return `<main class="layout audience-layout" data-fibbage-active="true"><header class="hero audience-hero"><div><h1>Fibbage</h1><p>${escapeHtml(fb.phase)}</p></div></header></main>`;
+  return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="idle"><header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-idle">Fibbage</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">${escapeHtml(fb.phase)}</p></div></header></main>`;
 }
 
 // =============================================================================
@@ -8941,10 +8943,13 @@ function renderTeamSelectAudienceDisplay(settings, players) {
         ? members.map((p) => `<li>${escapeHtml(getPlayerName(p))}</li>`).join("")
         : `<li class="muted">${getSnark("audience.teamSelect.empty", "No one here yet.")}</li>`;
       const countLabel = maxPerTeam > 0 ? `${members.length}/${maxPerTeam}` : `${members.length}`;
+      const fillPct = maxPerTeam > 0 ? Math.min(100, Math.round((members.length / maxPerTeam) * 100)) : 0;
+      const fillBar = maxPerTeam > 0 ? `<div class="audience-progress" aria-hidden="true"><span style="width:${fillPct}%"></span></div>` : "";
       return `
-        <section class="card audience-team-card team-${teamColor}">
-          <h2><span class="team-pill team-${teamColor}">${teamColor}</span> <span class="teamselect-count">${countLabel}</span></h2>
-          <ul class="bingo-standings">${memberNames}</ul>
+        <section class="card audience-card audience-team-card team-${teamColor}">
+          <div class="audience-standings-head"><h2><span class="team-pill team-${teamColor}">${teamColor}</span></h2><span class="audience-standings-mode teamselect-count">${countLabel}</span></div>
+          <ul class="bingo-standings audience-standings-big">${memberNames}</ul>
+          ${fillBar}
         </section>`;
     })
     .join("");
@@ -9597,28 +9602,8 @@ const screwBtn = settings.allowScrewing
   `;
 }
 
-function getBuzzedParticipants(round, players) {
-  const participantsById = new Map(players.map((player) => [player.id, player]));
-  return (round.buzzedPlayerIds || [])
-    .map((playerId) => participantsById.get(playerId))
-    .filter(Boolean);
-}
-
-// Buzz-order display names, coop-aware (composite keys → sub-player names).
-function getBuzzedCoopLabels(round, players) {
-  const participantsById = new Map(players.map((player) => [player.id, player]));
-  return (round.buzzedPlayerIds || [])
-    .map((key) => {
-      const parsed = parseCoopScoreKey(key);
-      if (parsed) return getCoopSlotName(parsed.deviceId, parsed.slot);
-      const p = participantsById.get(key);
-      return p ? getPlayerName(p) : null;
-    })
-    .filter(Boolean);
-}
-
 // =============================================================================
-// Audience/projection display — shows round status, buzz leaderboard
+// Audience/projection display — shows round status, buzz count, last result
 // Projection-first: status pill, last-result strip, rank medals
 // =============================================================================
 function getAudienceStatusPill(status) {
@@ -9668,6 +9653,40 @@ function renderAudienceLastResult() {
     </div>`;
 }
 
+// Pre-game roster — IDLE has no live timer, so the big screen lists who's in
+// the room instead of a static timer card.
+function renderAudienceRoster(settings, players) {
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const kicked = new Set(settings.kickedPlayerIds || []);
+  const visible = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && !kicked.has(p.id));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  let rows = "";
+  if (isCoopMode(settings)) {
+    rows = visible.map((p) => {
+      const count = getCoopSlotCount(p.id);
+      if (count <= 1) return `<li><strong>${escapeHtml(getCoopSlotName(p.id, 0, getPlayerName(p)))}</strong></li>`;
+      const group = escapeHtml(getCoopGroupName(p.id, getPlayerName(p)));
+      const slots = [];
+      for (let slot = 0; slot < count; slot++) {
+        slots.push(escapeHtml(getCoopSlotName(p.id, slot, getPlayerName(p))));
+      }
+      return `<li><strong>${group}</strong> <small>(${slots.join(", ")})</small></li>`;
+    }).join("");
+  } else {
+    rows = visible.map((p) => {
+      const teamColor = getPlayerTeamColor(p.id, assignments);
+      const teamPill = teamColor ? ` <span class="team-pill team-${teamColor}">${teamColor}</span>` : "";
+      return `<li><strong>${escapeHtml(getPlayerName(p))}</strong>${teamPill}</li>`;
+    }).join("");
+  }
+  return `
+    <section class="card audience-card audience-primary audience-roster">
+      <div class="audience-standings-head"><h2>${getSnark("audience.roster.title", "Players")}</h2><span class="audience-standings-mode">${visible.length}</span></div>
+      <ul class="bingo-standings audience-standings-big">${rows || `<li class='muted'>${getSnark("audience.teamSelect.empty", "No one here yet.")}</li>`}</ul>
+    </section>`;
+}
+
 function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   const isScrewActive = round.screw?.active;
   const screwTimerMs = getScrewTimerMs(round);
@@ -9684,21 +9703,11 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
   const producerIds = getSafeState("producerIds", []);
-  const kickedIds = new Set(settings.kickedPlayerIds || []);
-  const buzzedPlayers = getBuzzedParticipants(round, players).filter((p) => !kickedIds.has(p.id));
-  const coopActive = isCoopMode(settings);
-  const buzzedLabels = coopActive ? getBuzzedCoopLabels(round, players) : [];
-  const nonControllerPlayers = players.filter((player) => player.id !== getControllerId() && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kickedIds.has(player.id));
-  const useSingleLeader = settings.optionCount === 1 || nonControllerPlayers.length > 8;
-  const coopLeaderName = coopActive
-    ? (round.winnerCoopKey ? getCoopControlName({ coopControl: round.winnerCoopKey }) || null : null) || buzzedLabels[0] || null
-    : null;
-  const leader = coopActive
-    ? null
-    : round.winnerId
-      ? players.find((player) => player.id === round.winnerId) || buzzedPlayers[0] || null
-      : buzzedPlayers[0] || null;
-  const leaderName = coopActive ? coopLeaderName : leader ? getPlayerName(leader) : null;
+  const controllerId = getControllerId();
+  // Projection shows a device count like the tablet timer — never names or
+  // buzz order, so the big screen stays spoiler-free and fast to read.
+  const buzzedCount = (round.buzzedPlayerIds || []).length;
+  const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
 
   const statusLabel = {
     [ROUND_STATUSES.IDLE]: getSnark("audience.buzzer.statusIdle", "Waiting for the round to start"),
@@ -9716,27 +9725,11 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
     ? `${settings.jackMultiplier}x multiplier`
     : `${pointsUpForGrabs} pts`;
 
-  const buzzSection = useSingleLeader
-    ? `<div class="audience-leader${leaderName ? " is-filled" : ""}">
-        <span class="audience-leader-kicker">${settings.optionCount === 1 ? "First buzz" : nonControllerPlayers.length > 8 ? "Fastest buzz" : "Current leader"}</span>
-        <strong>${leaderName ? escapeHtml(leaderName) : getSnark("audience.outcome.waitingForBuzz", "Waiting for a buzz")}</strong>
-        <span class="muted">${leaderName ? `Time left: <strong>${timerDisplay}</strong>` : getSnark("audience.outcome.noBuzzYet", "No one has buzzed yet.")}</span>
-      </div>`
-    : coopActive
-      ? `<ol class="audience-buzz-list">
-          ${buzzedLabels.length
-            ? buzzedLabels
-                .map((name, index) => `<li class="${index === 0 ? "is-winner" : ""}"><span class="audience-buzz-rank">${getRankBadgeHtml(index + 1) || `${index + 1}`}</span><strong>${escapeHtml(name)}</strong></li>`)
-                .join("")
-            : `<li class="audience-empty">${getSnark("audience.outcome.noBuzzesYet", "No buzzes yet.")}</li>`}
-        </ol>`
-      : `<ol class="audience-buzz-list">
-        ${buzzedPlayers.length
-          ? buzzedPlayers
-              .map((player, index) => `<li class="${index === 0 ? "is-winner" : ""}"><span class="audience-buzz-rank">${getRankBadgeHtml(index + 1) || `${index + 1}`}</span><strong>${escapeHtml(getPlayerName(player))}</strong></li>`)
-              .join("")
-          : `<li class="audience-empty">${getSnark("audience.outcome.noBuzzesYet", "No buzzes yet.")}</li>`}
-      </ol>`;
+  const buzzSection = `
+    <div class="audience-count">
+      <strong>${buzzedCount}/${totalPlayers}</strong>
+      <span class="muted">${getSnark("audience.buzzer.buzzedLabel", "buzzed")}</span>
+    </div>`;
 
   return `
     <section class="card audience-card audience-primary">
@@ -10149,7 +10142,7 @@ function renderAnalyticsCard(audience = false) {
     // Scores/analytics land on close: while buzzers are open show a waiting
     // note instead of live percentages (which would spoil correctness).
     return `
-    <section class="card analytics-card" data-analytics-card>
+    <section class="card analytics-card${audience ? " analytics-card-audience" : ""}" data-analytics-card>
       <h2>${escapeHtml(title)} <span class="log-badge log-badge-${data.kind === "text" ? "text" : "buttons"}">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)}</span></h2>
       <p class="muted">${escapeHtml(getSnark("shared.analytics.waiting", "Buzzers are still open — results appear when the round closes."))}</p>
     </section>`;
@@ -10159,7 +10152,7 @@ function renderAnalyticsCard(audience = false) {
       ? getSnark("shared.analytics.minigameNote", "Analytics covers Buttons/Text rounds only.")
       : getSnark("shared.analytics.empty", "No answers yet this round — percentages appear after the first buzz.");
     return `
-    <section class="card analytics-card" data-analytics-card>
+    <section class="card analytics-card${audience ? " analytics-card-audience" : ""}" data-analytics-card>
       <h2>${escapeHtml(title)} <span class="log-badge log-badge-buzz">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)}</span></h2>
       <p class="muted">${escapeHtml(emptyMsg)}</p>
     </section>`;
@@ -10177,7 +10170,7 @@ function renderAnalyticsCard(audience = false) {
       </div>`;
   }).join("");
   return `
-    <section class="card analytics-card" data-analytics-card>
+    <section class="card analytics-card${audience ? " analytics-card-audience" : ""}" data-analytics-card>
       <h2>${escapeHtml(title)} <span class="log-badge log-badge-${data.kind === "text" ? "text" : "buttons"}">${escapeHtml(modeBadge)}</span> <span class="muted">· ${escapeHtml(roundLabel)} · ${data.total} pick${data.total === 1 ? "" : "s"}</span></h2>
       <div class="analytics-rows">${rows}</div>
     </section>`;
@@ -11428,10 +11421,16 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isQuixortMode()) return renderEpisodePromptBanner() + renderQuixortAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const screwActive = Boolean(round.screw?.active);
-  const mainColumns = "audience-stage";
+  // Results read side-by-side (analytics + scores); live play stacks the
+  // stage on top with scores below.
+  const mainColumns = round.status === ROUND_STATUSES.CLOSED ? "audience-grid" : "audience-stage";
   const primaryPanel = round.status === ROUND_STATUSES.ROULETTE
     ? renderAudienceRoulettePanel(settings, round, players)
-    : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
+    : round.status === ROUND_STATUSES.IDLE
+      ? renderAudienceRoster(settings, players)
+      : round.status === ROUND_STATUSES.CLOSED
+        ? renderAnalyticsCard(true)
+        : renderAudienceBuzzPanel(settings, round, players, timeLeftCs);
   const controllerId = getControllerId();
   const producerIds = getSafeState("producerIds", []);
   const kicked = new Set(settings.kickedPlayerIds || []);
@@ -11443,9 +11442,9 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (joinCount > 0) roomCodeModalAutoDismissed = false;
   const spotlightActive = Boolean(getRoomCodeSpotlight());
   const showRoomCodeModal = roomCodeModalOpen || spotlightActive || (joinCount === 0 && !roomCodeModalAutoDismissed);
-  // Analytics: spotlight forces it; otherwise auto-show once the round closes
-  // so results linger on the big screen without host action.
-  const showAnalytics = Boolean(getAnalyticsSpotlight()) || round.status === ROUND_STATUSES.CLOSED;
+  // Analytics: spotlight forces it below the stage; on CLOSED it is already
+  // the primary panel, so the trailing card would just duplicate it.
+  const showAnalyticsBelow = Boolean(getAnalyticsSpotlight()) && round.status !== ROUND_STATUSES.CLOSED;
   const screwPill = !settings.allowScrewing
     ? ""
     : screwActive
@@ -11464,9 +11463,9 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
             <p class="muted audience-join-count">${getSnark("audience.misc.playersInRoom", `${joinCount} player${joinCount === 1 ? "" : "s"} in the room`, { count: joinCount })}</p>
           </div>
         </div>
-        <div class="hero-meta">
-          <span>${pendingEntry ? getSnark("audience.misc.awaitingRuling", `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>`, { player: pendingEntry.playerName }) : getSnark("audience.misc.liveBuzzTracking", "Live buzz tracking")}</span>
-        </div>
+        ${pendingEntry ? `<div class="hero-meta">
+          <span class="audience-pill audience-pill-live">${getSnark("audience.misc.awaitingRuling", `Awaiting ruling on <strong>${escapeHtml(pendingEntry.playerName)}</strong>`, { player: pendingEntry.playerName })}</span>
+        </div>` : ""}
       </header>
 
       ${renderEpisodePromptBanner()}
@@ -11477,7 +11476,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
           ${screwActive ? renderAudienceScrewPanel(round) : ""}
         </div>
       </section>
-      ${showAnalytics ? renderAnalyticsCard(true) : ""}
+      ${showAnalyticsBelow ? renderAnalyticsCard(true) : ""}
       ${showRoomCodeModal ? renderRoomCodeModal(roomCode) : ""}
     </main>
   `;
@@ -12363,7 +12362,10 @@ function renderScores(players, scores, extraClass = "") {
       })
       .filter(Boolean)
       .sort((a, b) => b.teamScore - a.teamScore)
-      .map(({ teamColor, teamScore, memberNames }, index) => `<li class="team-score-row" data-score-key="${escapeHtml(getTeamScoreKey(teamColor))}"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong data-score-value>${teamScore}</strong></li>`)
+      .map(({ teamColor, teamScore, memberNames }, index) => {
+        const podium = index === 0 ? " is-top is-leader" : index === 1 ? " is-top is-second" : index === 2 ? " is-top is-third" : "";
+        return `<li class="team-score-row${podium}" data-score-key="${escapeHtml(getTeamScoreKey(teamColor))}"><span>${getRankBadgeHtml(index + 1)}<span class="team-pill team-${teamColor}">${teamColor}</span> <small>${memberNames}</small></span><strong data-score-value>${teamScore}</strong></li>`;
+      })
       .join("");
 
     return `
@@ -12382,7 +12384,10 @@ function renderScores(players, scores, extraClass = "") {
       return { player, value, teamPill };
     })
     .sort((a, b) => b.value - a.value)
-    .map(({ player, value, teamPill }, index) => `<li data-score-key="${escapeHtml(player.id)}"><span>${getRankBadgeHtml(index + 1)}${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong data-score-value>${value}</strong></li>`)
+    .map(({ player, value, teamPill }, index) => {
+      const podium = index === 0 ? ` class="is-top is-leader"` : index === 1 ? ` class="is-top is-second"` : index === 2 ? ` class="is-top is-third"` : "";
+      return `<li${podium} data-score-key="${escapeHtml(player.id)}"><span>${getRankBadgeHtml(index + 1)}${escapeHtml(getPlayerName(player))} ${teamPill}</span><strong data-score-value>${value}</strong></li>`;
+    })
     .join("");
 
   const teamTotals = settings.teamModeEnabled

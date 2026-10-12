@@ -2800,6 +2800,8 @@ const epui = await import("../src/episodes/ui.js");
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
   await sleep(50);
   check("audience analytics on close", _mount.innerHTML.includes("analytics-card"), "analytics missing on closed round");
+  check("closed audience swaps timer for analytics", !_mount.innerHTML.includes("audience-count"), "timer card still primary on closed round");
+  check("closed audience is side-by-side", _mount.innerHTML.includes('class="audience-grid"'), "scores not beside analytics on close");
   // bingo standings carry progress bars
   pk._store.self = pk._store.participants.host1;
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, prod);
@@ -2824,6 +2826,12 @@ const epui = await import("../src/episodes/ui.js");
   clickBtn({}, "[data-disordat-reset]");
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  // pre-game display lists players instead of a static timer card
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("pre-game audience lists players", _mount.innerHTML.includes("audience-roster"), "roster missing on idle display");
+  check("pre-game hides timer card", !_mount.innerHTML.includes("audience-count"), "timer card shown pre-game");
   pk._store.self = pk._store.participants.host1;
 }
 pk._store.self = pk._store.participants.host1;
