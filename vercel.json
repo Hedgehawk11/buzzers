@@ -1,7 +1,4 @@
 {
-  // Never let the edge cache the service worker: browsers only discover a new
-  // precache manifest by re-fetching sw.js byte-for-byte. A cached sw.js means
-  // clients stay pinned to the old app shell no matter what the app does.
   "headers": [
     {
       "source": "/sw.js",
