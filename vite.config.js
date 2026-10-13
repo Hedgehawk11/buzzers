@@ -14,7 +14,10 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      injectRegister: 'auto',
+      // Custom registration lives in src/main.js (registerServiceWorker):
+      // update toast + hourly update checks. Disables the auto-injected
+      // register script so registration happens exactly once.
+      injectRegister: false,
       manifest: {
         name: 'Buzzers',
         short_name: 'Buzzers',

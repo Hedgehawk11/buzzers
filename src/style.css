@@ -2912,7 +2912,7 @@ body::before {
   pointer-events: none;
   opacity: 0;
   background:
-    radial-gradient(closest-side, rgba(255, 139, 36, 0.28), transparent 70%) 18% 28% / 62vmax 62vmax no-repeat,
+    radial-gradient(closest-side, rgba(255, 139, 36, 0.16), transparent 70%) 18% 28% / 62vmax 62vmax no-repeat,
     radial-gradient(closest-side, rgba(34, 166, 242, 0.24), transparent 70%) 82% 74% / 70vmax 70vmax no-repeat;
 }
 @keyframes idleGlowDrift {

@@ -14638,9 +14638,58 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
 }
 
 // =============================================================================
+// PWA update handling — with autoUpdate a new SW installs + activates silently,
+// but the open tab keeps running the old JS/CSS until it reloads. Nudge the
+// user with a toast instead of letting the screen go stale, and poll hourly so
+// long-open tabs (audience displays) discover updates mid-event. Never
+// force-reload: a live game must not reboot mid-round.
+// Build-only (the SW exists solely in `vite build` output); fully guarded so
+// the node test harness and `vite dev` no-op.
+// =============================================================================
+function registerServiceWorker() {
+  try {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    if (!import.meta.env?.PROD) return;
+    import("virtual:pwa-register").then(({ registerSW }) => {
+      try {
+        registerSW({
+          immediate: true,
+          onRegisteredSW(_swUrl, registration) {
+            try {
+              if (!registration) return;
+              setInterval(() => {
+                try { registration.update(); } catch {}
+              }, 60 * 60 * 1000);
+            } catch {}
+          },
+          onRegisterError(e) {
+            try { console.warn("[pwa] SW registration failed", e); } catch {}
+          },
+        });
+      } catch {}
+      // The first controllerchange is the initial install taking control (no
+      // toast); every later one means an update activated under this tab.
+      try {
+        let firstChange = true;
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          try {
+            if (!firstChange) {
+              showToast("Update available — refresh to get the latest version.", { ttlMs: 12000, variant: "info" });
+            }
+            firstChange = false;
+          } catch {}
+        });
+      } catch {}
+    }).catch(() => {});
+  } catch {}
+}
+
+// =============================================================================
 // Entry point — show the landing screen
 // =============================================================================
 function boot() {
+  // Register the PWA service worker (build-only no-op elsewhere)
+  try { registerServiceWorker(); } catch (e) { console.warn("[boot] SW registration failed", e); }
   // Bind delegated handlers once before any screen renders (prejoin needs them too)
   try { bindEvents(); } catch (e) { console.warn("[boot] bindEvents failed", e); }
   // Feature 3: smooth rAF timer (display/tablet + player OPEN; audience/tablet reuse same timers)
