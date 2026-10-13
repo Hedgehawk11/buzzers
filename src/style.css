@@ -2901,7 +2901,7 @@ body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linea
 body[data-team="cyan"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #062423, #031010); }
 body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1d2405, #0d1202); }
 
-/* Idle-phase glow: faint floating orbs behind content during prejoin and
+/* Idle-phase glow: faint floating orb behind content during prejoin and
    between rounds (round idle/closed). Transform-only motion (compositor-cheap);
    the base layer stays hidden unless an idle selector below matches. */
 body::before {
@@ -2912,7 +2912,6 @@ body::before {
   pointer-events: none;
   opacity: 0;
   background:
-    radial-gradient(closest-side, rgba(255, 139, 36, 0.16), transparent 70%) 18% 28% / 62vmax 62vmax no-repeat,
     radial-gradient(closest-side, rgba(34, 166, 242, 0.24), transparent 70%) 82% 74% / 70vmax 70vmax no-repeat;
 }
 @keyframes idleGlowDrift {
