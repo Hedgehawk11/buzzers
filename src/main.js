@@ -9945,7 +9945,7 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   const flash = !isScrewActive && isTabletTimerFlashing(timerCs);
 
   return `
-    <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""}>
+    <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""} data-round-status="${escapeHtml(round.status || "idle")}">
       <div class="tablet-timer-container">
         <div class="tablet-timer-value" data-tablet-time-left data-audience-time-left>${timerDisplay}</div>
         <div class="tablet-timer-players">${getSnark("tablet.misc.tabletAnswered", `${buzzedCount}/${totalPlayers} players answered`, { buzzed: buzzedCount, total: totalPlayers })}</div>
@@ -12782,7 +12782,7 @@ function render() {
   }
 
   const _html_default = `
-    <main class="layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""}>
+    <main class="layout"${round.screw?.active ? ' data-screw-active="true"' : ""}${isBuzzersOpenFlash(settings, round) ? ' data-buzzers-open="true"' : ""} data-round-status="${escapeHtml(round.status || "idle")}">
       <header class="hero">
         <div>
           <h1>${getSnark("player.misc.appTitle", "Instant Buzzers")}</h1>

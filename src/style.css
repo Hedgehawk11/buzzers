@@ -31,6 +31,14 @@ body {
 
 #app {
   min-height: 100vh;
+  /* Lift app + footer above the idle-glow body::before layer below. */
+  position: relative;
+  z-index: 1;
+}
+
+.site-footer {
+  position: relative;
+  z-index: 1;
 }
 
 .prejoin-layout {
@@ -2893,6 +2901,40 @@ body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linea
 body[data-team="cyan"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #062423, #031010); }
 body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1d2405, #0d1202); }
 
+/* Idle-phase glow: faint floating orbs behind content during prejoin and
+   between rounds (round idle/closed). Transform-only motion (compositor-cheap);
+   the base layer stays hidden unless an idle selector below matches. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(closest-side, rgba(255, 139, 36, 0.10), transparent 70%) 18% 28% / 46vmax 46vmax no-repeat,
+    radial-gradient(closest-side, rgba(34, 166, 242, 0.10), transparent 70%) 82% 74% / 52vmax 52vmax no-repeat;
+}
+@keyframes idleGlowDrift {
+  from { transform: translate3d(-1.5%, 1%, 0) scale(1); }
+  to   { transform: translate3d(1.5%, -1%, 0) scale(1.05); }
+}
+/* Prejoin lobby drifts gently (screw still wins ties via its later rule). */
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::before {
+  opacity: 0.6;
+  animation: idleGlowDrift 11s ease-in-out infinite alternate;
+}
+/* Between rounds (idle/closed) on player, host, and display — never while
+   buzzers are open, screwed, or a minigame/timer flash is active. */
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::before {
+  opacity: 0.5;
+  animation: idleGlowDrift 11s ease-in-out infinite alternate;
+}
+/* Audience + tablet displays get a slightly more visible drift. */
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"], main.tablet-timer-layout[data-round-status="idle"], main.tablet-timer-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open]))::before {
+  opacity: 0.8;
+}
+
 /* Rapid color crossfade while buzzers are open on a multiple-choice question */
 @keyframes buzzersOpenFlash {
   0%, 100% { background-color: #2b0d0d; }
@@ -3267,6 +3309,7 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 
 @media (prefers-reduced-motion: reduce) {
   .coop-avatar-strip { animation-duration: 0.01s; }
+  body::before { animation: none !important; opacity: 0 !important; }
   .big-red:enabled,
   button.team-buzzer:enabled,
   .log-list li:first-child,
