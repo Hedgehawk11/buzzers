@@ -2912,27 +2912,28 @@ body::before {
   pointer-events: none;
   opacity: 0;
   background:
-    radial-gradient(closest-side, rgba(255, 139, 36, 0.10), transparent 70%) 18% 28% / 46vmax 46vmax no-repeat,
-    radial-gradient(closest-side, rgba(34, 166, 242, 0.10), transparent 70%) 82% 74% / 52vmax 52vmax no-repeat;
+    radial-gradient(closest-side, rgba(255, 139, 36, 0.28), transparent 70%) 18% 28% / 62vmax 62vmax no-repeat,
+    radial-gradient(closest-side, rgba(34, 166, 242, 0.24), transparent 70%) 82% 74% / 70vmax 70vmax no-repeat;
 }
 @keyframes idleGlowDrift {
-  from { transform: translate3d(-1.5%, 1%, 0) scale(1); }
-  to   { transform: translate3d(1.5%, -1%, 0) scale(1.05); }
+  from { transform: translate3d(-2.5%, 2%, 0) scale(1); }
+  to   { transform: translate3d(2.5%, -2%, 0) scale(1.08); }
 }
 /* Prejoin lobby drifts gently (screw still wins ties via its later rule). */
 body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::before {
-  opacity: 0.6;
-  animation: idleGlowDrift 11s ease-in-out infinite alternate;
+  opacity: 1;
+  animation: idleGlowDrift 9s ease-in-out infinite alternate;
 }
 /* Between rounds (idle/closed) on player, host, and display — never while
    buzzers are open, screwed, or a minigame/timer flash is active. */
 body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::before {
-  opacity: 0.5;
-  animation: idleGlowDrift 11s ease-in-out infinite alternate;
+  opacity: 0.9;
+  animation: idleGlowDrift 9s ease-in-out infinite alternate;
 }
 /* Audience + tablet displays get a slightly more visible drift. */
 body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"], main.tablet-timer-layout[data-round-status="idle"], main.tablet-timer-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open]))::before {
-  opacity: 0.8;
+  opacity: 1;
+  filter: saturate(1.25);
 }
 
 /* Rapid color crossfade while buzzers are open on a multiple-choice question */
