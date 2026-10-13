@@ -2934,6 +2934,78 @@ body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle
   opacity: 1;
   filter: saturate(1.25);
 }
+/* Second depth orb (parallax): opposite drift, longer loop, warm tint.
+   Same idle gating as ::before; hidden by default. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(closest-side, rgba(255, 139, 36, 0.16), transparent 70%) 18% 22% / 55vmax 55vmax no-repeat;
+}
+@keyframes idleGlowDrift2 {
+  from { transform: translate3d(2%, -1.5%, 0) scale(1.06); }
+  to   { transform: translate3d(-2%, 1.5%, 0) scale(1); }
+}
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::after {
+  opacity: 0.9;
+  animation: idleGlowDrift2 13s ease-in-out infinite alternate;
+}
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::after {
+  opacity: 0.8;
+  animation: idleGlowDrift2 13s ease-in-out infinite alternate;
+}
+/* Gentle float for idle headers/cards (transform-only). */
+@keyframes idleFloat {
+  from { transform: translate3d(0, -4px, 0); }
+  to   { transform: translate3d(0, 4px, 0); }
+}
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active])) .prejoin-landing {
+  animation: idleFloat 6s ease-in-out infinite alternate;
+}
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active])) .hero {
+  animation: idleFloat 6s ease-in-out infinite alternate;
+}
+/* Waiting buzzer: dim invite breathe while idle/closed (distinct from the
+   1.6s live buzzerBreathe — smaller glow, slower, disabled only). */
+@keyframes idleBuzzerWait {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(255, 139, 36, 0); }
+  50% { transform: scale(1.015); box-shadow: 0 0 18px rgba(255, 139, 36, 0.25); }
+}
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-buzzers-open])):not(:has([data-screw-active])) .big-red:disabled,
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-buzzers-open])):not(:has([data-screw-active])) button.team-buzzer:disabled {
+  animation: idleBuzzerWait 3.2s ease-in-out infinite;
+}
+/* Audience idle: floating title + breathing room-code badge + soft pill pulse. */
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .audience-title {
+  animation: idleFloat 7s ease-in-out infinite alternate;
+}
+@keyframes idleBadgeGlow {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 139, 36, 0); }
+  50% { box-shadow: 0 0 22px rgba(255, 139, 36, 0.35); }
+}
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .room-code-badge {
+  animation: idleBadgeGlow 3.5s ease-in-out infinite;
+}
+@keyframes idlePillSoft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .audience-pill-idle {
+  animation: idlePillSoft 2.8s ease-in-out infinite;
+}
+/* Waiting-note text: faint opacity pulse so idle screens feel alive. */
+@keyframes idleMutedPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active])) .prejoin-note,
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .audience-empty {
+  animation: idleMutedPulse 2.5s ease-in-out infinite;
+}
 
 /* Rapid color crossfade while buzzers are open on a multiple-choice question */
 @keyframes buzzersOpenFlash {
@@ -3309,9 +3381,18 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 
 @media (prefers-reduced-motion: reduce) {
   .coop-avatar-strip { animation-duration: 0.01s; }
-  body::before { animation: none !important; opacity: 0 !important; }
+  body::before, body::after { animation: none !important; opacity: 0 !important; }
   .big-red:enabled,
   button.team-buzzer:enabled,
+  .big-red:disabled,
+  button.team-buzzer:disabled,
+  .prejoin-landing,
+  .hero,
+  .audience-title,
+  .room-code-badge,
+  .audience-pill-idle,
+  .prejoin-note,
+  .audience-empty,
   .log-list li:first-child,
   .bingo-winner-banner,
   .roulette-locked-note,
