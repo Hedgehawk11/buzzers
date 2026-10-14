@@ -2767,6 +2767,73 @@ const epui = await import("../src/episodes/ui.js");
   check("deviceLinks capped", Object.keys(S().deviceLinks || {}).length <= 500, String(Object.keys(S().deviceLinks || {}).length));
   S().deviceLinks = {};
 }
+// --- audience display rethink: pill/stage/screw-collapse/last-result/analytics/bars ---
+{
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["allowScrewing", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToAudience", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("audience hero has status pill", _mount.innerHTML.includes("audience-pill"), "pill missing");
+  check("audience uses stage layout", _mount.innerHTML.includes("audience-stage"), "stage missing");
+  check("audience layout carries round status", _mount.innerHTML.includes('data-round-status="open"'), "status attr missing");
+  check("idle screw collapses to pill", !_mount.innerHTML.includes("audience-screw-card") && _mount.innerHTML.includes("audience-pill"), "screw card should collapse when idle");
+  // last-result strip appears after a resolved ruling
+  pk._store.self = pk._store.participants.host1;
+  const lrDev = pk._store.participants.dev1;
+  await pk._store.rpc.buzz({ option: 1, coopSlot: 0 }, lrDev);
+  const lrEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+  await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [lrEntry.id, 1000] }, prod);
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("audience shows last result", _mount.innerHTML.includes("audience-last-result"), "last-result strip missing");
+  // analytics auto-shows on CLOSED without a spotlight
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("audience analytics on close", _mount.innerHTML.includes("analytics-card"), "analytics missing on closed round");
+  check("closed audience swaps timer for analytics", !_mount.innerHTML.includes("audience-count"), "timer card still primary on closed round");
+  check("closed audience is side-by-side", _mount.innerHTML.includes('class="audience-grid"'), "scores not beside analytics on close");
+  // bingo standings carry progress bars
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "bingo"] }, prod);
+  queryMap["#bingo-word"] = { value: "GAMES" };
+  await pk._store.rpc["producer-action"]({ fn: "startBingo", args: [] }, prod);
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(600);
+  check("bingo audience has progress", _mount.innerHTML.includes("audience-progress") && _mount.innerHTML.includes("audience-standings-big"), "bingo bars missing");
+  // disdat timed mode shows the question on the display while playing
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "endBingo", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  clickBtn({ disordatStart: "allPlayTimed" }, "[data-disordat-start]");
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(600);
+  check("disdat timed shows question", _mount.innerHTML.includes("disordat-audience-question"), "timed question missing on display");
+  // restore buzzer mode for the tail of the suite
+  pk._store.self = pk._store.participants.host1;
+  clickBtn({}, "[data-disordat-reset]");
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  // pre-game display lists players instead of a static timer card
+  pk._store.self = pk._store.participants.disp1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(50);
+  check("pre-game audience lists players", _mount.innerHTML.includes("audience-roster"), "roster missing on idle display");
+  check("pre-game hides timer card", !_mount.innerHTML.includes("audience-count"), "timer card shown pre-game");
+  pk._store.self = pk._store.participants.host1;
+}
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
 console.log(`\n${pass} passed, ${fail} failed`);

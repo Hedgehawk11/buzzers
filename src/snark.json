@@ -1168,6 +1168,13 @@
     }
   },
   "audience": {
+    "roster": {
+      "title": {
+        "en": "Players",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "buzzer": {
       "statusIdle": {
         "en": "Waiting for the round to start",
@@ -1193,21 +1200,9 @@
         "en": "Paused",
         "snark1": "",
         "snark2": ""
-      }
-    },
-    "outcome": {
-      "noBuzzYet": {
-        "en": "No one has buzzed yet.",
-        "snark1": "No one has buzzed yet. Should I be worried?",
-        "snark2": "No one has buzzed yet. Maybe the question is too hard?"
       },
-      "noBuzzesYet": {
-        "en": "No buzzes yet.",
-        "snark1": "No buzzes yet. Shy?",
-        "snark2": "No buzzes yet. Question hard?"
-      },
-      "waitingForBuzz": {
-        "en": "Waiting for a buzz",
+      "buzzedLabel": {
+        "en": "buzzed",
         "snark1": "",
         "snark2": ""
       }
@@ -1352,6 +1347,52 @@
         "snark2": ""
       }
     },
+    "pill": {
+      "idle": {
+        "en": "Idle",
+        "snark1": "",
+        "snark2": ""
+      },
+      "open": {
+        "en": "Live",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roulette": {
+        "en": "Pick-a-Value",
+        "snark1": "",
+        "snark2": ""
+      },
+      "locked": {
+        "en": "Locked",
+        "snark1": "",
+        "snark2": ""
+      },
+      "closed": {
+        "en": "Results",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "lastResult": {
+      "correct": {
+        "en": "{player} correct {delta}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "wrong": {
+        "en": "{player} {delta}",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "fibbage": {
+      "votesLabel": {
+        "en": "votes",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "misc": {
       "roomFallback": {
         "en": "....",
@@ -1365,11 +1406,6 @@
       },
       "awaitingRuling": {
         "en": "Awaiting ruling on {player}",
-        "snark1": "",
-        "snark2": ""
-      },
-      "liveBuzzTracking": {
-        "en": "Live buzz tracking",
         "snark1": "",
         "snark2": ""
       },

@@ -31,6 +31,14 @@ body {
 
 #app {
   min-height: 100vh;
+  /* Lift app + footer above the idle-glow body::before layer below. */
+  position: relative;
+  z-index: 1;
+}
+
+.site-footer {
+  position: relative;
+  z-index: 1;
 }
 
 .prejoin-layout {
@@ -413,7 +421,7 @@ button:disabled {
   min-width: 8ch;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-size: clamp(2.2rem, 5vw, 3.6rem);
+  font-size: clamp(3rem, 7vw, 5.5rem);
   font-weight: 900;
   letter-spacing: 0.04em;
   color: #fff4e7;
@@ -454,9 +462,10 @@ button:disabled {
   letter-spacing: 0.2em;
 }
 
-.audience-leader {
-  display: grid;
-  gap: 0.45rem;
+.audience-count {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
   margin-top: 1rem;
   padding: 1.15rem;
   border-radius: 18px;
@@ -464,49 +473,185 @@ button:disabled {
   background: rgba(0, 0, 0, 0.18);
 }
 
-.audience-leader-kicker {
-  color: var(--amber);
-  font-size: 0.82rem;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.audience-leader strong {
-  font-size: clamp(2rem, 7vw, 4.6rem);
+.audience-count strong {
+  font-size: clamp(2.6rem, 8vw, 5.5rem);
   line-height: 0.94;
   letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
-.audience-buzz-list {
-  margin: 1rem 0 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 0.65rem;
-}
-
-.audience-buzz-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.audience-buzz-list li span {
-  color: var(--amber);
-  font-size: 0.8rem;
+.audience-count .muted {
+  font-size: clamp(1.1rem, 2.6vw, 1.6rem);
   font-weight: 800;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
 }
 
 .audience-empty {
   color: var(--muted);
+}
+
+/* Projection-first audience system: primary stage on top, secondary row below.
+   Keeps legacy .audience-grid selectors working for harness/other views. */
+.audience-stage {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+.audience-primary {
+  border-color: rgba(255, 139, 36, 0.35);
+}
+
+.audience-side {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  align-items: start;
+}
+
+.audience-side:empty {
+  display: none;
+}
+
+.audience-title {
+  font-size: clamp(2.5rem, 6vw, 5rem);
+  line-height: 0.95;
+  letter-spacing: 0.01em;
+  margin: 0.2rem 0 0.4rem;
+}
+
+.audience-hero-main {
+  min-width: 0;
+}
+
+.audience-join-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+
+.audience-join-row .room-code-badge {
+  font-size: clamp(1.6rem, 4vw, 2.6rem);
+  padding: 0.55rem 1.1rem;
+}
+
+.audience-pill {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff4e7;
+  vertical-align: middle;
+}
+
+.audience-pill-open {
+  border-color: rgba(29, 185, 84, 0.6);
+  background: rgba(29, 185, 84, 0.18);
+  color: #b9f5d0;
+}
+
+.audience-pill-locked {
+  border-color: rgba(255, 139, 36, 0.6);
+  background: rgba(255, 139, 36, 0.16);
+  color: #ffd9ad;
+}
+
+.audience-pill-roulette {
+  border-color: rgba(34, 166, 242, 0.6);
+  background: rgba(34, 166, 242, 0.16);
+  color: #bfe6ff;
+}
+
+.audience-pill-closed {
+  border-color: rgba(166, 180, 200, 0.5);
+  background: rgba(166, 180, 200, 0.14);
+  color: #dbe5f2;
+}
+
+.audience-pill-screw {
+  border-color: rgba(235, 61, 48, 0.65);
+  background: rgba(235, 61, 48, 0.2);
+  color: #ffc9c4;
+}
+
+.audience-pill-quiet {
+  opacity: 0.75;
+}
+
+.audience-layout[data-round-status="open"] .audience-timer {
+  color: #b9f5d0;
+}
+
+.audience-layout[data-round-status="locked"] .audience-timer {
+  color: #ffd9ad;
+}
+
+.audience-last-result {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 14px;
+  font-size: clamp(1.1rem, 2.6vw, 1.6rem);
+  font-weight: 800;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.audience-last-result.is-correct {
+  border-color: rgba(29, 185, 84, 0.55);
+  background: rgba(29, 185, 84, 0.12);
+}
+
+.audience-last-result.is-wrong {
+  border-color: rgba(235, 61, 48, 0.55);
+  background: rgba(235, 61, 48, 0.12);
+}
+
+.audience-last-badge {
+  display: inline-grid;
+  place-items: center;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 50%;
+  font-size: 1.3rem;
+  background: rgba(0, 0, 0, 0.35);
+  flex: none;
+}
+
+.audience-scores li:nth-child(-n + 3) {
+  border-color: rgba(255, 139, 36, 0.4);
+}
+
+.audience-progress {
+  height: 0.55rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  margin-top: 0.4rem;
+}
+
+.audience-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--amber), #ffc46b);
+}
+
+.audience-standings-big {
+  font-size: clamp(1.05rem, 2.4vw, 1.5rem);
+}
+
+.audience-standings-big li {
+  padding: 0.9rem 1rem;
 }
 
 .audience-roulette-card {
@@ -520,6 +665,33 @@ button:disabled {
 .audience-roulette-display {
   margin-top: 1rem;
   min-height: 240px;
+}
+
+.audience-layout .roulette-value {
+  font-size: clamp(4rem, 14vw, 8rem);
+}
+
+.audience-layout .fibbage-choices-list li {
+  font-size: clamp(1.4rem, 3.4vw, 2.4rem);
+  padding: 1rem 1.2rem;
+}
+
+.audience-layout .bingo-tile-lg {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  padding: 1.1rem 0.8rem;
+}
+
+.audience-layout .bingo-winner-banner {
+  font-size: clamp(2rem, 6vw, 4rem);
+  padding: 1.2rem;
+}
+
+.audience-layout .disordat-audience-question {
+  font-size: clamp(1.6rem, 4vw, 2.8rem);
+}
+
+.audience-layout .disordat-audience-question h2 {
+  font-size: clamp(1rem, 2.4vw, 1.4rem);
 }
 
 .audience-roulette-total {
@@ -1469,6 +1641,219 @@ body:not([data-ui-anims="off"]) .analytics-bar-fill {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* =============================================================================
+   Audience display polish — unified projection system (all modes share it).
+   Every animation below is gated behind body:not([data-ui-anims="off"]) so the
+   global anims-off kill switch + prefers-reduced-motion block keep working.
+   ============================================================================= */
+.audience-layout {
+  gap: 1.1rem;
+}
+
+.audience-hero {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, 0.12);
+  background:
+    radial-gradient(110% 140% at 50% 0%, rgba(255, 139, 36, 0.12), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03)),
+    var(--panel);
+}
+
+.audience-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 4px 0 0 4px;
+  background: linear-gradient(180deg, var(--amber), rgba(255, 139, 36, 0.1));
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.audience-hero-spotlight {
+  opacity: 0.72;
+}
+
+.audience-hero-spotlight .audience-title {
+  font-size: clamp(1.2rem, 3vw, 1.6rem);
+  opacity: 0.85;
+}
+
+.audience-card-header h2 {
+  font-size: clamp(1.3rem, 3vw, 1.9rem);
+  letter-spacing: 0.01em;
+}
+
+.audience-standings-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.audience-standings-mode {
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Status pills — one hue per state so the big screen reads at a glance. */
+.audience-pill-idle {
+  border-color: rgba(166, 180, 200, 0.5);
+  background: rgba(166, 180, 200, 0.14);
+  color: #dbe5f2;
+}
+
+.audience-pill-results {
+  border-color: rgba(77, 163, 255, 0.55);
+  background: rgba(77, 163, 255, 0.14);
+  color: #cfe6ff;
+}
+
+.audience-pill-minigame {
+  border-color: rgba(180, 140, 255, 0.55);
+  background: rgba(180, 140, 255, 0.14);
+  color: #ddccff;
+}
+
+.audience-pill-live {
+  border-color: rgba(255, 139, 36, 0.55);
+  background: rgba(255, 139, 36, 0.14);
+  color: #ffd9ad;
+}
+
+/* Podium — top-3 score rows get metallic borders on the big screen. */
+.audience-scores li.is-top {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.audience-scores li.is-leader {
+  border-color: rgba(255, 215, 0, 0.65);
+  background: linear-gradient(180deg, rgba(255, 215, 0, 0.14), rgba(255, 255, 255, 0.04));
+}
+
+.audience-scores li.is-second {
+  border-color: rgba(192, 203, 218, 0.55);
+}
+
+.audience-scores li.is-third {
+  border-color: rgba(205, 127, 50, 0.6);
+}
+
+.audience-standings-big li {
+  align-items: center;
+}
+
+.audience-standings-big .standings-rank {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.5rem;
+}
+
+.audience-standings-big .standings-rank .rank-badge {
+  width: 1.9rem;
+  height: 1.9rem;
+}
+
+.standings-score {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+body:not([data-ui-anims="off"]) .audience-last-result {
+  animation: logSlideIn 220ms ease-out;
+}
+
+body:not([data-ui-anims="off"]) .audience-layout[data-screw-active="true"] .audience-screw-card {
+  animation: screwShake 300ms ease-in-out;
+}
+
+@keyframes screwShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px) rotate(-0.4deg); }
+  50% { transform: translateX(4px) rotate(0.4deg); }
+  75% { transform: translateX(-2px); }
+}
+
+body:not([data-ui-anims="off"]) .audience-progress > span {
+  transition: width 240ms ease-out;
+}
+
+/* Minigame question blocks read as stage cards, not bare text. */
+.audience-layout .disordat-audience-question {
+  margin-top: 1rem;
+  padding: 1.1rem 1.2rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.audience-timer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  padding: 0.8rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.audience-timer-label {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.audience-timer-row .audience-timer {
+  font-size: clamp(2.2rem, 5vw, 3.4rem);
+}
+
+/* Fibbage spotlight kicker replaces the old inline-styled badge div. */
+.spotlight-kicker {
+  letter-spacing: 0.18em;
+  font-weight: 900;
+  font-size: 0.85rem;
+  opacity: 0.9;
+  margin-bottom: 1rem;
+}
+
+/* Audience analytics gets roomier rows for distance reading. */
+.analytics-card-audience .analytics-row-head {
+  font-size: clamp(1rem, 2.4vw, 1.25rem);
+}
+
+.analytics-card-audience .analytics-voters {
+  font-size: clamp(0.9rem, 2vw, 1.05rem);
+}
+
+/* Team-select columns fill the projection width evenly. */
+.audience-teams-grid .audience-team-card {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+@media (max-width: 760px) {
+  .audience-hero {
+    align-items: stretch;
+  }
+  .audience-timer {
+    text-align: left;
+  }
+  .audience-meta {
+    text-align: left;
+    justify-items: start;
+  }
 }
 
 
@@ -2516,6 +2901,112 @@ body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linea
 body[data-team="cyan"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #062423, #031010); }
 body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1d2405, #0d1202); }
 
+/* Idle-phase glow: faint floating orb behind content during prejoin and
+   between rounds (round idle/closed). Transform-only motion (compositor-cheap);
+   the base layer stays hidden unless an idle selector below matches. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(closest-side, rgba(34, 166, 242, 0.24), transparent 70%) 82% 74% / 70vmax 70vmax no-repeat;
+}
+@keyframes idleGlowDrift {
+  from { transform: translate3d(-2.5%, 2%, 0) scale(1); }
+  to   { transform: translate3d(2.5%, -2%, 0) scale(1.08); }
+}
+/* Prejoin lobby drifts gently (screw still wins ties via its later rule). */
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::before {
+  opacity: 1;
+  animation: idleGlowDrift 9s ease-in-out infinite alternate;
+}
+/* Between rounds (idle/closed) on player, host, and display — never while
+   buzzers are open, screwed, or a minigame/timer flash is active. */
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::before {
+  opacity: 0.9;
+  animation: idleGlowDrift 9s ease-in-out infinite alternate;
+}
+/* Audience + tablet displays get a slightly more visible drift. */
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"], main.tablet-timer-layout[data-round-status="idle"], main.tablet-timer-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open]))::before {
+  opacity: 1;
+  filter: saturate(1.25);
+}
+/* Second depth orb (parallax): opposite drift, longer loop, warm tint.
+   Same idle gating as ::before; hidden by default. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: -12%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(closest-side, rgba(255, 139, 36, 0.16), transparent 70%) 18% 22% / 55vmax 55vmax no-repeat;
+}
+@keyframes idleGlowDrift2 {
+  from { transform: translate3d(2%, -1.5%, 0) scale(1.06); }
+  to   { transform: translate3d(-2%, 1.5%, 0) scale(1); }
+}
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::after {
+  opacity: 0.9;
+  animation: idleGlowDrift2 13s ease-in-out infinite alternate;
+}
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::after {
+  opacity: 0.8;
+  animation: idleGlowDrift2 13s ease-in-out infinite alternate;
+}
+/* Gentle float for idle headers/cards (transform-only). */
+@keyframes idleFloat {
+  from { transform: translate3d(0, -4px, 0); }
+  to   { transform: translate3d(0, 4px, 0); }
+}
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active])) .prejoin-landing {
+  animation: idleFloat 6s ease-in-out infinite alternate;
+}
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active])) .hero {
+  animation: idleFloat 6s ease-in-out infinite alternate;
+}
+/* Waiting buzzer: dim invite breathe while idle/closed (distinct from the
+   1.6s live buzzerBreathe — smaller glow, slower, disabled only). */
+@keyframes idleBuzzerWait {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(255, 139, 36, 0); }
+  50% { transform: scale(1.015); box-shadow: 0 0 18px rgba(255, 139, 36, 0.25); }
+}
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-buzzers-open])):not(:has([data-screw-active])) .big-red:disabled,
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-buzzers-open])):not(:has([data-screw-active])) button.team-buzzer:disabled {
+  animation: idleBuzzerWait 3.2s ease-in-out infinite;
+}
+/* Audience idle: floating title + breathing room-code badge + soft pill pulse. */
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .audience-title {
+  animation: idleFloat 7s ease-in-out infinite alternate;
+}
+@keyframes idleBadgeGlow {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 139, 36, 0); }
+  50% { box-shadow: 0 0 22px rgba(255, 139, 36, 0.35); }
+}
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .room-code-badge {
+  animation: idleBadgeGlow 3.5s ease-in-out infinite;
+}
+@keyframes idlePillSoft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .audience-pill-idle {
+  animation: idlePillSoft 2.8s ease-in-out infinite;
+}
+/* Waiting-note text: faint opacity pulse so idle screens feel alive. */
+@keyframes idleMutedPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active])) .prejoin-note,
+body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])) .audience-empty {
+  animation: idleMutedPulse 2.5s ease-in-out infinite;
+}
+
 /* Rapid color crossfade while buzzers are open on a multiple-choice question */
 @keyframes buzzersOpenFlash {
   0%, 100% { background-color: #2b0d0d; }
@@ -2670,9 +3161,11 @@ body:has([data-screw-active]) {
     linear-gradient(160deg, rgba(255,255,255,0.06), rgba(0,0,0,0.25)),
     var(--panel);
   box-shadow: 0 20px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06) inset;
-  animation: fibbageSpotlightIn 420ms ease-out, fibbageGlow 1.8s ease-in-out infinite alternate;
   position: relative;
   overflow: hidden;
+}
+body:not([data-ui-anims="off"]) .fibbage-spotlight {
+  animation: fibbageSpotlightIn 420ms ease-out, fibbageGlow 1.8s ease-in-out infinite alternate;
 }
 .fibbage-spotlight::before {
   content: "";
@@ -2888,8 +3381,18 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 
 @media (prefers-reduced-motion: reduce) {
   .coop-avatar-strip { animation-duration: 0.01s; }
+  body::before, body::after { animation: none !important; opacity: 0 !important; }
   .big-red:enabled,
   button.team-buzzer:enabled,
+  .big-red:disabled,
+  button.team-buzzer:disabled,
+  .prejoin-landing,
+  .hero,
+  .audience-title,
+  .room-code-badge,
+  .audience-pill-idle,
+  .prejoin-note,
+  .audience-empty,
   .log-list li:first-child,
   .bingo-winner-banner,
   .roulette-locked-note,
