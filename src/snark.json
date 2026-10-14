@@ -220,6 +220,11 @@
         "snark1": "{screwer} is screwing over {screwee}. Break out the popcorn.",
         "snark2": "{screwee} is being screwed by {screwer}. Get ready for a new war between them."
       },
+      "selecting": {
+        "en": "{screwer} is selecting a target...",
+        "snark1": "{screwer} is picking a victim... Run!",
+        "snark2": "{screwer} is choosing who to screw... Good luck everyone."
+      },
       "youreScrewed": {
         "en": "You're Being Screwed!",
         "snark1": "You're in for a world of hurt! Better start running.",
@@ -347,6 +352,16 @@
       },
       "timeLabel": {
         "en": "Time",
+        "snark1": "",
+        "snark2": ""
+      },
+      "answerSubmitted": {
+        "en": "Answer submitted!",
+        "snark1": "Answer locked in! No take-backs.",
+        "snark2": "Answer submitted! Hope it was worth the sweat."
+      },
+      "waitingRuling": {
+        "en": "Waiting for the host's ruling.",
         "snark1": "",
         "snark2": ""
       }

@@ -3033,7 +3033,7 @@ body[data-ui-anims="off"] * {
   animation: none !important;
 }
 
-/* Screw moment: subtle shake on the active card (entrance, 2 iterations) */
+/* Screw moment: subtle shake on the active card (entrance, once) */
 @keyframes screwShake {
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-5px); }
@@ -3043,7 +3043,7 @@ body[data-ui-anims="off"] * {
 
 body:not([data-ui-anims="off"]):has([data-screw-active]) .ruling-card,
 body:not([data-ui-anims="off"]):has([data-screw-active]) .player-card {
-  animation: screwShake 300ms ease-out 2;
+  animation: screwShake 300ms ease-out 1;
 }
 
 /* Timer urgency: red under 5s (attribute set by updateTimerDisplays + smooth rAF).

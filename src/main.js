@@ -59,6 +59,9 @@ const DEFAULT_SETTINGS = {
   jackMultiplier: 1,
   allowScrewing: false,
   reopenBuzzersAfterScrew: false,
+  screwTimerSec: 5,
+  screwBonus: 1000,
+  screwAutoStart: true,
   valueSelectionMethod: "standard",
   rouletteMode: "additive",
   rouletteTopAmount: 1000,
@@ -727,6 +730,94 @@ function isScrewBlocked(playerId, settings = getSettings()) {
   return blocked.includes(playerId);
 }
 
+// =============================================================================
+// Screw helpers — single source of truth for state shape, timing, bonus and
+// victim eligibility. The idle shape is the null-invariant: every reset path
+// must write all keys (never drop to undefined).
+// =============================================================================
+function makeIdleScrew() {
+  return {
+    active: false,
+    screwerId: null,
+    screwerName: null,
+    screweeId: null,
+    screweeName: null,
+    screwTimerMs: null,
+    screwTimerEndsAt: null,
+    frozenCs: null,
+    frozenPoints: null,
+    activatedAt: null,
+  };
+}
+
+function normalizeScrewTimerSec(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 5;
+  return Math.max(3, Math.min(30, Math.trunc(n)));
+}
+
+function normalizeScrewBonus(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1000;
+  return Math.max(0, Math.min(5000, Math.trunc(n)));
+}
+
+function getScrewTimerSec(settings = getSettings()) {
+  return normalizeScrewTimerSec(settings?.screwTimerSec ?? 5);
+}
+
+function getScrewBonus(settings = getSettings()) {
+  return normalizeScrewBonus(settings?.screwBonus ?? 1000);
+}
+
+function getScrewAutoStart(settings = getSettings()) {
+  return settings?.screwAutoStart !== false;
+}
+
+// Back-compat read: rooms created before the screweeName→screweeName rename
+// still carry the misspelled key.
+function getScrewScreweeName(screw) {
+  if (!screw || typeof screw !== "object") return null;
+  return screw.screweeName ?? screw.screweeName ?? null;
+}
+
+// One shared victim filter for UI lists + selectScrewee validation, so the UI
+// never offers a pick the RPC then rejects.
+function getScrewEligibleVictims(screwerId, { settings = getSettings(), assignments = null } = {}) {
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const list = assignments || normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+  const screwerTeam = screwerId ? getPlayerTeamColor(screwerId, list) : null;
+  return currentParticipants().filter((p) => {
+    if (p.id === controllerId) return false;
+    if (Array.isArray(producerIds) && producerIds.includes(p.id)) return false;
+    if (screwerId && p.id === screwerId) return false;
+    if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(p.id)) return false;
+    if (isPlayerKicked(p.id, settings)) return false;
+    if (settings.teamModeEnabled && settings.teamScoringMode === "shared" && screwerTeam) {
+      if (getPlayerTeamColor(p.id, list) === screwerTeam) return false;
+    }
+    return true;
+  });
+}
+
+function renderScrewButton({ disabled = false } = {}) {
+  return `<button type="button" class="screw-btn" data-screw ${disabled ? "disabled" : ""}>SCREW EM'</button>`;
+}
+
+function renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled }) {
+  if (!settings.allowScrewing) return "";
+  if (screwBlockedMe) {
+    return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`;
+  }
+  if (screwUsedByMe) {
+    return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`;
+  }
+  if (screwInProgress) return "";
+  if (screwAvailable && !disabled && !playerDisabled) return renderScrewButton({});
+  return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`;
+}
+
 // All score keys owned by one device (pid + coop:pid:*). In shared-team
 // mode the device shares its team key instead.
 function getScoreKeysForDevice(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
@@ -865,21 +956,12 @@ function getRound() {
       finalValue: null,
       finishedAt: null,
     },
-    screw: {
-      active: false,
-      screwerId: null,
-      screwerName: null,
-      screweeId: null,
-      screeeName: null,
-      screwTimerMs: null,
-      frozenCs: null,
-      frozenPoints: null,
-    },
+    screw: makeIdleScrew(),
     screwsUsedBy: [],
   });
 }
 
-// =============================================================================
+ // =============================================================================
 // Score / Bingo / Log / Controller accessors
 // =============================================================================
 function getScores() {
@@ -1759,7 +1841,7 @@ function updateTimerDisplays() {
       } catch {}
     });
   }
-  // Screw countdown is itself a 5s timer — always urgent while it runs.
+  // Screw countdown is itself a short timer — always urgent while it runs.
   {
     const ms = getScrewTimerMs(round);
     const screwUrgent = round?.screw?.active && ms !== null && Number.isFinite(ms) && ms > 0;
@@ -1814,6 +1896,9 @@ showScoresToPlayers: settings.showScoresToPlayers,
       jackMultiplier: settings.jackMultiplier,
       allowScrewing: settings.allowScrewing,
       reopenBuzzersAfterScrew: settings.reopenBuzzersAfterScrew,
+      screwTimerSec: normalizeScrewTimerSec(settings.screwTimerSec ?? 5),
+      screwBonus: normalizeScrewBonus(settings.screwBonus ?? 1000),
+      screwAutoStart: settings.screwAutoStart !== false,
       valueSelectionMethod: settings.valueSelectionMethod,
       rouletteMode: settings.rouletteMode,
       rouletteTopAmount: settings.rouletteTopAmount,
@@ -2258,17 +2343,7 @@ function startRoulettePhase() {
         finalValue: null,
         finishedAt: null,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
     },
     true,
   );
@@ -2387,7 +2462,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
   }
   
   if (round.screw?.active && round.screw?.screweeId === entry.playerId) {
-    const screwBonus = nextAwarded >= 0 ? 1000 : -1000;
+    const bonus = getScrewBonus(settings);
+    const screwBonus = nextAwarded >= 0 ? bonus : -bonus;
     nextAwarded = nextAwarded + screwBonus;
   }
   
@@ -2396,7 +2472,7 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
   const scores = { ...getScores() };
   scores[entryScoreKey] = Number(scores[entryScoreKey] || 0) + diff;
   // Reverse any prior screw-mirror move so re-ruling the same entry while a
-  // screw is active doesn't compound the screwer's ±1000 on every edit.
+  // screw is active doesn't compound the screwer's bonus on every edit.
   if (entry.screwerScoreKey && Number.isFinite(Number(entry.screwerDelta))) {
     const priorKey = entry.screwerScoreKey;
     scores[priorKey] = Number(scores[priorKey] || 0) - Number(entry.screwerDelta);
@@ -2405,7 +2481,8 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
   let screwerDelta = 0;
   if (round.screw?.active && round.screw?.screwerId) {
     screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
-    const screwSign = nextAwarded >= 0 ? -1000 : 1000;
+    const bonus = getScrewBonus(settings);
+    const screwSign = nextAwarded >= 0 ? -bonus : bonus;
     scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwSign;
     screwerDelta = screwSign;
   }
@@ -3270,17 +3347,7 @@ function openBuzzers() {
         finalValue: round.roulette?.finalValue ?? null,
         finishedAt: null,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
       screwsUsedBy: [],
     },
     true,
@@ -3338,17 +3405,7 @@ function pauseBuzzers() {
         ...round.roulette,
         active: false,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
     },
     true,
   );
@@ -5067,17 +5124,7 @@ function resetRound() {
         finalValue: currentRound.roulette?.finalValue ?? null,
         finishedAt: null,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
       screwsUsedBy: [],
     },
     true,
@@ -5137,13 +5184,10 @@ function initiateScrew(screwerId) {
     {
       ...round,
       screw: {
-        ...round.screw,
+        ...makeIdleScrew(),
         active: true,
         screwerId,
         screwerName: getPlayerName(screwer),
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
         activatedAt: now(),
         frozenCs,
         frozenPoints,
@@ -5187,13 +5231,10 @@ function hostInitiateScrew() {
   setState("round", {
     ...round,
     screw: {
-      ...round.screw,
+      ...makeIdleScrew(),
       active: true,
       screwerId: mePlayer.id,
       screwerName: getPlayerName(mePlayer),
-      screweeId: null,
-      screeeName: null,
-      screwTimerMs: null,
       activatedAt: now(),
       frozenCs,
       frozenPoints,
@@ -5216,39 +5257,40 @@ function selectScrewee(screweeId) {
   if (!round.screw?.active) {
     return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress.") };
   }
-  if (round.screw?.screweeId !== null) {
+  if (round.screw?.screweeId !== null && round.screw?.screweeId !== undefined) {
     return { ok: false, reason: getSnark("player.screw.screweeAlreadySelected", "Screwee already selected.") };
   }
-  
-  const screwee = currentParticipants().find((p) => p.id === screweeId);
-  if (!screwee) {
-    return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
-  }
-  if (screwee.id === getControllerId()) {
-    return { ok: false, reason: getSnark("player.screw.cannotHost", "Cannot screw the host.") };
-  }
-  if (screwee.id === round.screw?.screwerId) {
-    return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
-  }
-  const producerIds = getSafeState("producerIds", []);
-  if (Array.isArray(producerIds) && producerIds.includes(screwee.id)) {
-    return { ok: false, reason: "Cannot screw a producer." };
-  }
+
   const settings = getSettings();
-  if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
-    return { ok: false, reason: "That player's buzzer is disabled." };
-  }
-  if (isPlayerKicked(screwee.id, settings)) {
-    return { ok: false, reason: "That player was removed by the host." };
-  }
-  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
-    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
-    const screwerTeam = getPlayerTeamColor(round.screw?.screwerId, assignments);
-    const screweeTeam = getPlayerTeamColor(screweeId, assignments);
-    if (screwerTeam && screwerTeam === screweeTeam) {
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const eligible = new Set(getScrewEligibleVictims(round.screw?.screwerId, { settings, assignments }).map((p) => p.id));
+  if (!eligible.has(screweeId)) {
+    const screwee = currentParticipants().find((p) => p.id === screweeId);
+    if (!screwee) {
+      return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
+    }
+    if (screwee.id === getControllerId()) {
+      return { ok: false, reason: getSnark("player.screw.cannotHost", "Cannot screw the host.") };
+    }
+    if (screwee.id === round.screw?.screwerId) {
+      return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
+    }
+    const producerIds = getSafeState("producerIds", []);
+    if (Array.isArray(producerIds) && producerIds.includes(screwee.id)) {
+      return { ok: false, reason: "Cannot screw a producer." };
+    }
+    if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
+      return { ok: false, reason: "That player's buzzer is disabled." };
+    }
+    if (isPlayerKicked(screwee.id, settings)) {
+      return { ok: false, reason: "That player was removed by the host." };
+    }
+    if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
       return { ok: false, reason: getSnark("player.screw.cannotOwnTeam", "Cannot screw your own team in shared team mode.") };
     }
+    return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
   }
+  const screwee = currentParticipants().find((p) => p.id === screweeId);
   
   setState(
     "round",
@@ -5257,18 +5299,32 @@ function selectScrewee(screweeId) {
       screw: {
         ...round.screw,
         screweeId,
-        screeeName: getPlayerName(screwee),
+        screweeName: getPlayerName(screwee),
         screwTimerMs: null,
+        screwTimerEndsAt: null,
       },
     },
     true,
   );
+
+  // Streamlined flow: auto-start the countdown once a victim is picked, so a
+  // screw can't stall waiting for a second host click. Hosts that want manual
+  // control turn screwAutoStart off and press Start Timer.
+  if (getScrewAutoStart(settings)) {
+    const started = startScrewTimer();
+    if (started?.ok === false && started?.reason !== "Screw timer already running.") {
+      render();
+    } else {
+      render();
+    }
+    return { ok: true, message: getSnark("player.screw.over", `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.`, { screwer: round.screw.screwerName, screwee: getPlayerName(screwee) }) };
+  }
   
   render();
   return { ok: true, message: getSnark("player.screw.over", `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.`, { screwer: round.screw.screwerName, screwee: getPlayerName(screwee) }) };
 }
 
-// Start the 5-second screw countdown — only screwee can buzz during this window
+// Start the screw countdown — only screwee can buzz during this window
 function startScrewTimer() {
   if (!isHost()) {
     if (isProducer()) { RPC.call("producer-action", { fn: "startScrewTimer", args: [] }, RPC.Mode.HOST); return { ok: true }; }
@@ -5286,6 +5342,8 @@ function startScrewTimer() {
   }
   
   const settings = getSettings();
+  const timerSec = getScrewTimerSec(settings);
+  const timerMs = timerSec * 1000;
   const timeLeftCs = getTimeLeftCs(round, settings);
   const frozenPoints = computeBasePoints(settings, timeLeftCs, round);
   
@@ -5295,8 +5353,8 @@ function startScrewTimer() {
       ...round,
       screw: {
         ...round.screw,
-        screwTimerMs: 5000,
-        screwTimerEndsAt: now() + 5000,
+        screwTimerMs: timerMs,
+        screwTimerEndsAt: now() + timerMs,
         frozenCs: timeLeftCs,
         frozenPoints: frozenPoints,
       },
@@ -5306,6 +5364,29 @@ function startScrewTimer() {
   
   render();
   return { ok: true, message: "Screw timer started." };
+}
+
+// Cancel a live screw without consuming the screwer's one use (e.g. wrong
+// victim, accidental tap). Judged/timeout closes still go through
+// closeScrewMode, which records the use.
+function cancelScrew() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "cancelScrew", args: [] }, RPC.Mode.HOST);
+    return { ok: false, reason: "Only host can cancel a screw." };
+  }
+  const round = getRound();
+  if (!round.screw?.active) return { ok: false, reason: "No screw in progress." };
+  const frozenCs = round.screw?.frozenCs;
+  const resumeOpen = round.status === ROUND_STATUSES.OPEN && Number.isFinite(frozenCs);
+  const nextRound = { ...round, screw: makeIdleScrew() };
+  if (resumeOpen) {
+    nextRound.closesAt = now() + frozenCs * 10;
+    nextRound.remainingCs = frozenCs;
+  }
+  setState("round", nextRound, true);
+  setBuzzNotice("Screw cancelled.");
+  render();
+  return { ok: true };
 }
 
 // End the screw and increment the screw-use counter
@@ -5325,18 +5406,7 @@ function closeScrewMode() {
   }
   const nextRound = {
     ...round,
-    screw: {
-      active: false,
-      screwerId: null,
-      screwerName: null,
-      screweeId: null,
-      screeeName: null,
-      screwTimerMs: null,
-      screwTimerEndsAt: null,
-      frozenCs: null,
-      frozenPoints: null,
-      activatedAt: null,
-    },
+    screw: makeIdleScrew(),
     screwsUsedBy,
   };
   if (resumeOpen) {
@@ -5359,18 +5429,7 @@ function resetScrews() {
     "round",
     {
       ...round,
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        screwTimerEndsAt: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
       screwsUsedBy: [],
     },
     true,
@@ -5455,16 +5514,17 @@ function hostTick() {
           const screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
           const frozenCs = round.screw.frozenCs ?? (round.remainingCs || settings.timeOpen * 100);
           const basePoints = round.screw.frozenPoints ?? computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
+          const screwBonus = getScrewBonus(settings);
           const entry = {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
             type: "buzz",
             ts: now(),
             roundId: currentRoundId(),
             playerId: round.screw?.screweeId,
-            playerName: round.screw.screeeName,
+            playerName: getScrewScreweeName(round.screw),
             teamColor: screweeTeamColor,
             scoreKey: screweeScoreKey,
-            scoreTarget: screweeScoreKey.startsWith("team:") ? `Team ${screweeTeamColor}` : round.screw.screeeName,
+            scoreTarget: screweeScoreKey.startsWith("team:") ? `Team ${screweeTeamColor}` : getScrewScreweeName(round.screw),
             option: null,
             answerText: "[No answer - Screw timeout]",
             timeLeftCs: frozenCs,
@@ -5476,15 +5536,15 @@ function hostTick() {
             rouletteTopAmount: settings.rouletteTopAmount,
             rouletteFinalValue: round.roulette?.finalValue ?? null,
             basePoints: basePoints,
-            awardedDelta: -(basePoints + 1000),
+            awardedDelta: -(basePoints + screwBonus),
             resolved: true,
           };
           const log = getLog();
           setState("gameLog", [...log, entry], true);
           
           const scores = { ...getScores() };
-          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints - 1000;
-          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + 1000;
+          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints - screwBonus;
+          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwBonus;
           setState("scores", scores, true);
         }
       }
@@ -5653,7 +5713,7 @@ function freshIdleBuzzerRound(settings) {
     buzzedPlayerIds: [],
     buzzCounts: {},
     roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-    screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null },
+    screw: makeIdleScrew(),
     screwsUsedBy: [],
   };
 }
@@ -5844,7 +5904,7 @@ function setHostSetting(key, value) {
         if (curRound.screw?.active) {
           setState("round", {
             ...curRound,
-            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, screwTimerEndsAt: null, frozenCs: null, frozenPoints: null, activatedAt: null },
+            screw: makeIdleScrew(),
             screwsUsedBy: [],
           }, true);
         }
@@ -5873,12 +5933,15 @@ function setHostSetting(key, value) {
         if (patch.correctAnswer === undefined) patch.correctAnswer = null;
         if (patch.screwsUsedBy === undefined) patch.screwsUsedBy = [];
         if (!patch.screw || typeof patch.screw !== "object") {
-          patch.screw = { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null };
+          patch.screw = makeIdleScrew();
         } else {
           if (patch.screw.frozenCs === undefined) patch.screw.frozenCs = null;
           if (patch.screw.frozenPoints === undefined) patch.screw.frozenPoints = null;
           if (patch.screw.activatedAt === undefined) patch.screw.activatedAt = null;
           if (patch.screw.screwTimerMs === undefined) patch.screw.screwTimerMs = null;
+          if (patch.screw.screwTimerEndsAt === undefined) patch.screw.screwTimerEndsAt = null;
+          if (patch.screw.screweeName === undefined) patch.screw.screweeName = patch.screw.screeeName ?? null;
+          if ("screeeName" in patch.screw) delete patch.screw.screeeName;
         }
         const changed = patch.winnerCoopKey !== cur.winnerCoopKey || patch.correctAnswer !== cur.correctAnswer || patch.correctOptions !== cur.correctOptions || patch.screwsUsedBy !== cur.screwsUsedBy || patch.screw !== cur.screw;
         if (changed) setState("round", patch, true);
@@ -5923,6 +5986,15 @@ function setHostSetting(key, value) {
   }
   if (key === "rouletteTopAmount") {
     next.rouletteTopAmount = normalizeRouletteTopAmount(value);
+  }
+  if (key === "screwTimerSec") {
+    next.screwTimerSec = normalizeScrewTimerSec(value);
+  }
+  if (key === "screwBonus") {
+    next.screwBonus = normalizeScrewBonus(value);
+  }
+  if (key === "screwAutoStart") {
+    next.screwAutoStart = value !== false && value !== "false" && value !== 0 && value !== "0";
   }
   if (key === "teamModeEnabled" && !value) {
     next.teamScoringMode = "alliance";
@@ -7028,9 +7100,12 @@ function ensureHostInit() {
   // Coop + shared-team scoring can never coexist (alliances only).
   try {
     const s = getSettings();
-    if (s.coopertitionEnabled && s.teamScoringMode === "shared") {
-      setState("settings", { ...s, teamScoringMode: "alliance" }, true);
-    }
+    const patch = {};
+    if (s.coopertitionEnabled && s.teamScoringMode === "shared") patch.teamScoringMode = "alliance";
+    if (s.screwTimerSec === undefined) patch.screwTimerSec = 5;
+    if (s.screwBonus === undefined) patch.screwBonus = 1000;
+    if (s.screwAutoStart === undefined) patch.screwAutoStart = true;
+    if (Object.keys(patch).length) setState("settings", { ...s, ...patch }, true);
   } catch {}
   if (getState("round") === undefined || getState("round") === null) {
     resetRound();
@@ -7038,12 +7113,27 @@ function ensureHostInit() {
     // Backfill the round counter / pause marker for rooms created before them.
     try {
       const r = getState("round") || {};
-      if (r.roundNumber === undefined || r.pausedFrom === undefined) {
-        setState("round", {
+      const needsCounter = r.roundNumber === undefined || r.pausedFrom === undefined;
+      const needsScrew = !r.screw || typeof r.screw !== "object"
+        || r.screw.screwTimerEndsAt === undefined || r.screw.screweeName === undefined
+        || r.screw.frozenCs === undefined || r.screw.frozenPoints === undefined
+        || r.screw.activatedAt === undefined || r.screw.screwTimerMs === undefined;
+      if (needsCounter || needsScrew) {
+        const next = {
           ...r,
           roundNumber: Number.isFinite(Number(r.roundNumber)) ? Math.trunc(Number(r.roundNumber)) : 0,
           pausedFrom: r.pausedFrom ?? null,
-        }, true);
+        };
+        if (needsScrew) {
+          const prev = (r.screw && typeof r.screw === "object") ? r.screw : {};
+          next.screw = {
+            ...makeIdleScrew(),
+            ...prev,
+            screweeName: prev.screweeName ?? prev.screeeName ?? null,
+          };
+          if ("screeeName" in next.screw) delete next.screw.screeeName;
+        }
+        setState("round", next, true);
       }
     } catch {}
   }
@@ -9295,18 +9385,17 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
 
   // Show screw player selection UI if screw is active but screwee not yet selected
   if (round.screw?.active && !round.screw?.screweeId && mePlayer.id === round.screw?.screwerId) {
-    const nonHostPlayers = currentParticipants().filter(
-      (p) => p.id !== getControllerId() && p.id !== mePlayer.id
-    );
-    const playerButtons = nonHostPlayers
+    const targets = getScrewEligibleVictims(mePlayer.id, { settings, assignments: teamAssignments });
+    const playerButtons = targets
       .map((p) => `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`)
-      .join("");
+      .join("") || `<p class="muted">No eligible targets.</p>`;
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.screw.selectTitle", "Select Who to Screw")}</h2>
         <p class="muted">${getSnark("player.screw.selectPrompt", "Choose another player to screw over:")}</p>
         <div class="screw-player-list">${playerButtons}</div>
+        <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
       </section>
     `;
   }
@@ -9316,30 +9405,83 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     const timeText = getScrewTimerMs(round) !== null
       ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10))
       : getSnark("player.screw.pending", "pending");
+    const screweeName = getScrewScreweeName(round.screw);
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.screw.holdUp", "Hold Up!")}</h2>
-        <p class="muted">${getSnark("player.screw.inUseOn", `A screw is being used by <strong>${round.screw.screwerName}</strong> on <strong>${round.screw.screeeName}</strong>.`, { screwer: `<strong>${round.screw.screwerName}</strong>`, screwee: `<strong>${round.screw.screeeName}</strong>` })}</p>
+        <p class="muted">${screweeName
+          ? getSnark("player.screw.inUseOn", `A screw is being used by ${round.screw.screwerName} on ${screweeName}.`, { screwer: round.screw.screwerName, screwee: screweeName })
+          : getSnark("player.screw.selecting", `${round.screw.screwerName} is selecting a target...`, { screwer: round.screw.screwerName })}</p>
         <p class="muted">${getSnark("player.screw.timeLabel", "Time")}: <strong>${timeText}s</strong></p>
       </section>
     `;
   }
 
-  // Show screw timer UI for the screwee
+  // Show screw timer UI for the screwee (all input modes)
   if (round.screw?.active && mePlayer.id === round.screw?.screweeId) {
+    // Post-buzz: answer locked in, waiting for the host's ruling — don't
+    // leave dead buzzers up.
+    const pendingId = getSafeState("pendingLogId", null);
+    let pendingEntry = null;
+    try { pendingEntry = (getLog() || []).find((e) => e && e.id === pendingId) || null; } catch {}
+    const iBuzzed = Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.includes(mePlayer.id);
+    if ((pendingEntry && pendingEntry.playerId === mePlayer.id) || (iBuzzed && round.status === ROUND_STATUSES.LOCKED)) {
+      const answerBits = pendingEntry
+        ? pendingEntry.answerText
+          ? `&ldquo;${escapeHtml(String(pendingEntry.answerText).slice(0, 80))}&rdquo;`
+          : (pendingEntry.option !== null && pendingEntry.option !== undefined ? `Option ${escapeHtml(String(pendingEntry.option))}` : "")
+        : "";
+      return `
+        <section class="card player-card">
+          <h2>${getSnark("player.screw.answerSubmitted", "Answer submitted!")}</h2>
+          ${answerBits ? `<p class="muted">${answerBits}</p>` : ""}
+          <p class="muted">${getSnark("player.screw.waitingRuling", "Waiting for the host's ruling.")}</p>
+        </section>
+      `;
+    }
     const timeText = getScrewTimerMs(round) !== null
       ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10))
       : getSnark("player.screw.waiting", "waiting");
     const buzzerDisabled = getScrewTimerMs(round) === null || getScrewTimerMs(round) <= 0;
+    const disabledAttr = buzzerDisabled ? "disabled" : "";
+    const screweeHead = `
+          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
+          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
+          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>`;
+    if (settings.inputMode === "text") {
+      return `
+        <section class="card player-card">
+          ${screweeHead}
+          <div class="text-entry">
+            <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
+            <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>${getSnark("player.buzzer.submitAnswerButton", "Submit Answer")}</button>
+          </div>
+        </section>
+      `;
+    }
     
     if (settings.optionCount === 1) {
       return `
         <section class="card player-card">
-          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
-          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
-          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
-          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>${singleBuzzerContent()}</button>
+          ${screweeHead}
+          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>${singleBuzzerContent()}</button>
+        </section>
+      `;
+    }
+
+    if (settings.optionCount === 6 || settings.optionCount === 8) {
+      const count = settings.optionCount;
+      const buttons = Array.from({ length: count }, (_, i) => i + 1)
+        .map((opt) => {
+          const optDisabled = disabledAttr || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
+          return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${optDisabled}>${buzzerButtonContent(opt)}</button>`;
+        })
+        .join("");
+      return `
+        <section class="card player-card">
+          ${screweeHead}
+          <div class="${count === 6 ? "six-grid" : "eight-grid"}">${buttons}</div>
         </section>
       `;
     }
@@ -9349,7 +9491,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       const button = (opt, cls) => {
         const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
         const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
-        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${buzzerButtonContent(opt)}</button>`;
+        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       };
       const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
       const roundLabel = showValue
@@ -9359,13 +9501,21 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         : "";
       return `
         <section class="card player-card">
-          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
-          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
-          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
+          ${screweeHead}
           ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [2, "pos-x"], [3, "pos-b"], [1, "pos-a"]], button, roundLabel)}
         </section>
       `;
     }
+    // Fallback for any other option count: generic grid.
+    const fallbackButtons = Array.from({ length: settings.optionCount || 4 }, (_, i) => i + 1)
+      .map((opt) => `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`)
+      .join("");
+    return `
+      <section class="card player-card">
+        ${screweeHead}
+        <div class="six-grid">${fallbackButtons}</div>
+      </section>
+    `;
   }
 
   const disabled = round.status !== ROUND_STATUSES.OPEN;
@@ -9439,6 +9589,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
           <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
           <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>${getSnark("player.buzzer.submitAnswerButton", "Submit Answer")}</button>
         </div>
+        ${renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled })}
       </section>
     `;
   }
@@ -9446,17 +9597,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (settings.optionCount === 1) {
     const optionDisabled = !isOptionEnabled(settings, 1) || isPlayerAtOptionLimit(round, settings, mePlayer.id, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
-const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled });
     
     return `
       <section class="card player-card">
@@ -9478,17 +9619,7 @@ const screwBtn = settings.allowScrewing
         return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       })
       .join("");
-const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled });
     
     return `
       <section class="card player-card">
@@ -9510,17 +9641,7 @@ const screwBtn = settings.allowScrewing
         return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       })
       .join("");
-const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled });
     
     return `
       <section class="card player-card">
@@ -9543,11 +9664,7 @@ const screwBtn = settings.allowScrewing
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
         return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
     };
-    const screwBtn = screwBlockedMe
-      ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-      : screwAvailable && !disabled && !playerDisabled
-      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
-      : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled });
 
     const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
     const roundLabel = showValue
@@ -9577,17 +9694,7 @@ const screwBtn = settings.allowScrewing
       return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
     })
     .join("");
-  const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+  const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled });
 
   return `
     <section class="card player-card">
@@ -9830,7 +9937,7 @@ function renderAudienceScrewPanel(round) {
       <section class="card audience-card audience-screw-card">
         <p class="prejoin-kicker">Screws</p>
         <h2>${getSnark("audience.screw.audienceTargetChoosing", "Target being chosen")}</h2>
-        <p>${getSnark("audience.screw.audienceSelectingWho", `<strong>${escapeHtml(screw.screwerName || "A player")}</strong> is selecting who to screw.`, { screwer: `<strong>${escapeHtml(screw.screwerName || "A player")}</strong>` })}</p>
+        <p>${getSnark("audience.screw.audienceSelectingWho", `${screw.screwerName || "A player"} is selecting who to screw.`, { screwer: screw.screwerName || "A player" })}</p>
       </section>
     `;
   }
@@ -9839,7 +9946,7 @@ function renderAudienceScrewPanel(round) {
     <section class="card audience-card audience-screw-card">
       <p class="prejoin-kicker">Screws</p>
       <h2>${getSnark("audience.screw.audienceActiveTitle", "Active screw")}</h2>
-      <p>${getSnark("audience.screw.audienceActiveOver", `<strong>${escapeHtml(screw.screwerName || "A player")}</strong> is screwing over <strong>${escapeHtml(screw.screeeName || "another player")}</strong>.`, { screwer: `<strong>${escapeHtml(screw.screwerName || "A player")}</strong>`, screwee: `<strong>${escapeHtml(screw.screeeName || "another player")}</strong>` })}</p>
+      <p>${getSnark("audience.screw.audienceActiveOver", `${screw.screwerName || "A player"} is screwing over ${getScrewScreweeName(screw) || "another player"}.`, { screwer: screw.screwerName || "A player", screwee: getScrewScreweeName(screw) || "another player" })}</p>
       <p class="muted">${getSnark("audience.screw.audienceTimerLabel", "Timer")}: <strong>${timeText}s</strong></p>
     </section>
   `;
@@ -10952,17 +11059,7 @@ function episodeRunLoad(index) {
           finalValue: liveRound.roulette?.finalValue ?? null,
           finishedAt: null,
         },
-        screw: {
-          active: false,
-          screwerId: null,
-          screwerName: null,
-          screweeId: null,
-          screeeName: null,
-          screwTimerMs: null,
-          frozenCs: null,
-          frozenPoints: null,
-          activatedAt: null,
-        },
+        screw: makeIdleScrew(),
         screwsUsedBy: [],
       },
       true,
@@ -12014,7 +12111,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 ${isCoopMode(settings)
                   ? `<p class="setting-helper">Off — screws are disabled in coopertition mode.</p>`
                   : toggleSwitch("allowScrewing", settings.allowScrewing)}
-                ${isCoopMode(settings) ? "" : `<p class="setting-helper">Players can force another player to answer under a 5s timer. Screwer gains 1000 if screwee gets it wrong, loses 1000 if they get it right.</p>`}
+                ${isCoopMode(settings) ? "" : `<p class="setting-helper">Players can force another player to answer under a ${getScrewTimerSec(settings)}s timer. Screwer gains ${getScrewBonus(settings)} if screwee gets it wrong, loses ${getScrewBonus(settings)} if they get it right.</p>`}
               </label>
               ${
                 settings.allowScrewing
@@ -12022,6 +12119,21 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                       Reopen buzzers after screw
                       ${toggleSwitch("reopenBuzzersAfterScrew", settings.reopenBuzzersAfterScrew)}
                       <p class="setting-helper">Instead of closing the round, reopen buzzers with the remaining time after a screw is ruled.</p>
+                    </label>
+                    <label>
+                      Auto-start screw timer
+                      ${toggleSwitch("screwAutoStart", getScrewAutoStart(settings))}
+                      <p class="setting-helper">Start the countdown as soon as a victim is picked. Off = host presses Start Timer.</p>
+                    </label>
+                    <label>
+                      Screw timer (sec)
+                      <input type="number" min="3" max="30" step="1" value="${getScrewTimerSec(settings)}" data-setting="screwTimerSec" ${settingDisabledAttr} />
+                      <p class="setting-helper">How long the screwed player has to answer (3–30s).</p>
+                    </label>
+                    <label>
+                      Screw bonus
+                      <input type="number" min="0" max="5000" step="100" value="${getScrewBonus(settings)}" data-setting="screwBonus" ${settingDisabledAttr} />
+                      <p class="setting-helper">Mirror swing: screwer gains this on a screwee miss, loses it on a screwee hit (0–5000).</p>
                     </label>`
                   : ""
               }
@@ -12177,41 +12289,44 @@ function renderScrewNotice(round) {
   if (!hasHostPrivileges() || !round.screw?.active) {
     return "";
   }
+  const settings = getSettings();
+  const timerSec = getScrewTimerSec(settings);
 
   // Screw is active but screwee not selected yet
   if (!round.screw?.screweeId) {
     const isScrewer = round.screw?.screwerId === me()?.id;
-    if (isScrewer) {
-      const controllerId = getControllerId();
-      const producerIds = getSafeState("producerIds", []);
-      const targets = currentParticipants()
-        .filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && p.id !== round.screw?.screwerId);
+    if (isScrewer || isHost()) {
+      const targets = getScrewEligibleVictims(round.screw?.screwerId, { settings });
       const targetButtons = targets.map(p =>
         `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`
-      ).join("");
+      ).join("") || `<p class="muted">No eligible targets.</p>`;
       return `
         <section class="card screw-card">
           <h3>Select a Target</h3>
           <p>Choose a player to screw:</p>
           <div class="screw-player-list">${targetButtons}</div>
+          <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
         </section>
       `;
     }
     return `
       <section class="card screw-card">
         <h3>Screw In Progress</h3>
-        <p><strong>${round.screw.screwerName}</strong> is selecting a target...</p>
+        <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is selecting a target...</p>
+        <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
       </section>
     `;
   }
 
   // Screwee selected but timer not started yet
   if (round.screw.screwTimerMs === null) {
+    const screweeName = getScrewScreweeName(round.screw);
     return `
       <section class="card screw-card">
         <h3>Screw Status</h3>
-        <p><strong>${round.screw.screwerName}</strong> is screwing over <strong>${round.screw.screeeName}</strong>!</p>
-        <button type="button" class="green" data-screw-start-timer>Start Timer (5s)</button>
+        <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(screweeName)}</strong>!</p>
+        <button type="button" class="green" data-screw-start-timer>Start Timer (${timerSec}s)</button>
+        <button type="button" data-screw-cancel>Cancel</button>
       </section>
     `;
   }
@@ -12221,8 +12336,9 @@ function renderScrewNotice(round) {
   return `
     <section class="card screw-card">
       <h3>Screw Timer</h3>
-      <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(round.screw.screeeName)}</strong>.</p>
+      <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(getScrewScreweeName(round.screw))}</strong>.</p>
       <p>Time left: <strong data-screw-timer>${timeText}s</strong></p>
+      <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
     </section>
   `;
 }
@@ -12958,6 +13074,8 @@ function bindEvents() {
     if (setting === "snarkMode") { setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off"); return; }
     if (setting === "choiceLayout") { setHostSetting("choiceLayout", normalizeChoiceLayout(input.value)); return; }
     if (setting === "maxBuzzesPerOption") { setHostSetting("maxBuzzesPerOption", clamp(parseInt(input.value, 10) || 1, 1, 50)); return; }
+    if (setting === "screwTimerSec") { setHostSetting("screwTimerSec", normalizeScrewTimerSec(input.value)); return; }
+    if (setting === "screwBonus") { setHostSetting("screwBonus", normalizeScrewBonus(input.value)); return; }
   }));
   delegate("click", "[data-toggle-setting]", requireHost((e, btn) => {
     const setting = btn.dataset.toggleSetting;
@@ -13071,6 +13189,16 @@ function bindEvents() {
     updateScoresForLogEntry(id, btn.dataset.logQuick === "plus" ? entry.basePoints : -entry.basePoints);
   }));
   delegate("click", "[data-screw-start-timer]", requireHost(() => startScrewTimer()));
+  delegate("click", "[data-screw-cancel]", async () => {
+    if (hasHostPrivileges()) { cancelScrew(); return; }
+    const self = me();
+    if (!self) return;
+    try {
+      const result = await RPC.call("screw", { cancel: true }, RPC.Mode.HOST);
+      if (!result?.ok) setBuzzNotice(result?.reason || "Cancel failed.");
+    } catch { setBuzzNotice("Could not cancel screw. Check connection/room."); }
+    scheduleRender(render);
+  });
 
   // Player screw
   delegate("click", "[data-screw]", async () => {
@@ -14480,6 +14608,18 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       return { ok: false, reason: "Not host" };
     }
     const round = getRound();
+    // Screwer (or producer) cancels their own pending screw.
+    if (payload?.cancel === true) {
+      if (!round.screw?.active) {
+        return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress") };
+      }
+      const producerIds = getSafeState("producerIds", []);
+      const isSenderProducer = Array.isArray(producerIds) && producerIds.includes(senderPlayer?.id);
+      if (senderPlayer?.id !== round.screw?.screwerId && !isSenderProducer) {
+        return { ok: false, reason: "Only the screwer can cancel." };
+      }
+      return cancelScrew();
+    }
     const screweeId = payload?.screweeId;
 
     // If screweeId is null, player is initiating a screw (first step)
@@ -14536,7 +14676,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   // Producer actions RPC — relays producer UI actions through the host
   const HOST_ACTIONS = {
     openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
-    startRoulettePhase, startScrewTimer, closeScrewMode,
+    startRoulettePhase, startScrewTimer, closeScrewMode, cancelScrew,
     initiateScrew, selectScrewee,
     startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
     setHostSetting, toggleBuzzerOption, togglePlayerBuzzer, toggleCoopSlot,
