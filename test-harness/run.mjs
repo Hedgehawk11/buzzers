@@ -1644,6 +1644,21 @@ function validEp() {
   };
 }
 check("episode valid passes", eps.validateEpisode(validEp()).ok === true, JSON.stringify(eps.validateEpisode(validEp()).errors));
+{
+  // No-timer episodes validate: timeOpen 0 in defaults/overrides, 0s
+  // fibbage/quixort timers. Negative buzz time still rejected.
+  const untimed = validEp();
+  untimed.defaults.timeOpen = 0;
+  untimed.items[0].overrides = { timeOpen: 0 };
+  untimed.items[2].lieTimeSec = 0;
+  untimed.items[2].voteTimeSec = 0;
+  untimed.items[4].blockSec = 0;
+  check("episode no-timer passes", eps.validateEpisode(untimed).ok === true, JSON.stringify(eps.validateEpisode(untimed).errors));
+  const negTime = validEp();
+  negTime.defaults.timeOpen = -5;
+  const negRes = eps.validateEpisode(negTime);
+  check("episode negative timeOpen rejected", negRes.ok === false && negRes.errors.some((x) => x.field === "defaults.timeOpen"), JSON.stringify(negRes.errors));
+}
 const badCases = [
   ["empty title", (e) => { e.meta.title = "  "; }, "meta.title"],
   ["bad schema", (e) => { e.schemaVersion = 2; }, "schemaVersion"],
@@ -2842,6 +2857,107 @@ const epui = await import("../src/episodes/ui.js");
   }
   check("deviceLinks capped", Object.keys(S().deviceLinks || {}).length <= 500, String(Object.keys(S().deviceLinks || {}).length));
   S().deviceLinks = {};
+}
+// --- no-timer mode: timeOpen 0 + untimed minigames (screw stays timed) ---
+{
+  const T = globalThis.__BUZZER_TEST__;
+  const prevTimeOpen = S().settings?.timeOpen;
+  const prevScoring = S().settings?.scoringMode;
+  const prevLock = S().settings?.lockAfterBuzz;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", "uniform"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 0] }, prod);
+  check("no-timer timeOpen stored", S().settings?.timeOpen === 0, JSON.stringify(S().settings?.timeOpen));
+  check("normalizeTimeOpen keeps 0", T.normalizeTimeOpen(0) === 0, String(T.normalizeTimeOpen(0)));
+  check("normalizeTimeOpen blanks fall back", T.normalizeTimeOpen("") === 20 && T.normalizeTimeOpen(999) === 120, `${T.normalizeTimeOpen("")}/${T.normalizeTimeOpen(999)}`);
+  // JACK needs a timer: refused while untimed (coop refuses it regardless).
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", "jack"] }, prod);
+  check("JACK refused with no timer", S().settings?.scoringMode !== "jack", S().settings?.scoringMode);
+  if (!COOP) {
+    // Timed JACK works, then killing the timer flips back to uniform.
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 20] }, prod);
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", "jack"] }, prod);
+    check("JACK allowed when timed", S().settings?.scoringMode === "jack", S().settings?.scoringMode);
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 0] }, prod);
+    check("disabling timer flips JACK to uniform", S().settings?.scoringMode === "uniform", S().settings?.scoringMode);
+  }
+  // Open round carries nulls; the host tick never auto-closes it.
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("untimed round open", S().round?.status === "open", S().round?.status);
+  check("untimed closesAt null", S().round?.closesAt === null, JSON.stringify(S().round?.closesAt));
+  check("untimed remainingCs null", S().round?.remainingCs === null, JSON.stringify(S().round?.remainingCs));
+  check("untimed timeLeft null", T.getTimeLeftCs(S().round, S().settings) === null, String(T.getTimeLeftCs(S().round, S().settings)));
+  T.hostTick();
+  check("untimed survives hostTick", S().round?.status === "open", S().round?.status);
+  // Manual pause/resume round-trips an untimed round.
+  await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+  check("untimed pause closes", S().round?.status === "closed", S().round?.status);
+  await pk._store.rpc["producer-action"]({ fn: "resumeBuzzers", args: [] }, prod);
+  check("untimed resume reopens", S().round?.status === "open" && S().round?.closesAt === null, `${S().round?.status} ${S().round?.closesAt}`);
+  // Host UI offers No timer and the status strip shows it.
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(100);
+  check("time open select offers No timer", _mount.innerHTML.includes('value="0"') && _mount.innerHTML.includes("No timer"), `len=${_mount.innerHTML.length}`);
+  check("host status shows No timer", _mount.innerHTML.includes(">No timer<"), "status strip still counting");
+  check("JACK hidden while untimed", !_mount.innerHTML.includes("JACK (time-based)"), "JACK option leaked");
+  if (!COOP) {
+    // --- fibbage untimed: lying never auto-reviews ---
+    T.setFibbageLieTime(0);
+    T.setFibbageVoteTime(0);
+    check("fibbage untimed stored", S().fibbage?.lieTimeSec === 0 && S().fibbage?.voteTimeSec === 0, JSON.stringify({ l: S().fibbage?.lieTimeSec, v: S().fibbage?.voteTimeSec }));
+    check("fibbage lie timeLeft null", T.getFibbageLieTimeLeftCs(S().fibbage) === null, String(T.getFibbageLieTimeLeftCs(S().fibbage)));
+    check("fibbage vote timeLeft null", T.getFibbageVoteTimeLeftCs(S().fibbage) === null, String(T.getFibbageVoteTimeLeftCs(S().fibbage)));
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fibbage"] }, prod);
+    S().fibbage = { ...S().fibbage, active: true, phase: "lying", truth: "T", timeEndsAt: null, voteEndsAt: null, lies: {}, blocked: {}, seed: 1 };
+    T.hostTick();
+    check("untimed lying never auto-reviews", S().fibbage?.phase === "lying", S().fibbage?.phase);
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+    // --- disordat untimed: timed mode runs with no deadline, no time bonus ---
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, prod);
+    for (let q = 0; q < 7; q++) {
+      clickBtn({ q: String(q), answer: "dat" }, "[data-disordat-answer-chip]");
+    }
+    S().disordat = { ...S().disordat, timedSeconds: 0 };
+    clickBtn({ disordatStart: "allPlayTimed" }, "[data-disordat-start]");
+    check("untimed disordat starts without deadline", S().disordat?.active === true && S().disordat?.timeEndsAt === null, JSON.stringify({ a: S().disordat?.active, t: S().disordat?.timeEndsAt }));
+    check("untimed disordat timeLeft null", T.getDisOrDatTimeLeftCs(S().disordat) === null, String(T.getDisOrDatTimeLeftCs(S().disordat)));
+    check("untimed disordat earns no time bonus", T.isDisOrDatBonusEligible(S().disordat) === false, String(T.getDisOrDatTimedSeconds(S().disordat)));
+    T.hostTick();
+    check("untimed disordat never auto-finalizes", S().disordat?.phase === "playing", S().disordat?.phase);
+    clickBtn({}, "[data-disordat-reset]");
+    check("untimed disordat resets", S().disordat?.active !== true, JSON.stringify(S().disordat?.active));
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+    // --- quixort untimed: blocks never void on expiry ---
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "quixort"] }, prod);
+    for (const [i, v] of ["Alpha", "Bravo", "Charlie", "Delta"].entries()) {
+      await pk._store.rpc["producer-action"]({ fn: "setQuixortItem", args: [i, v] }, prod);
+    }
+    await pk._store.rpc["producer-action"]({ fn: "setQuixortBlockSec", args: [0] }, prod);
+    check("quixort untimed stored", S().quixort?.blockSec === 0, JSON.stringify(S().quixort?.blockSec));
+    check("quixort run timeLeft null", T.getQuixortRunTimeLeftCs({ finished: false, blockEndsAt: null, deckPos: 0 }, S().quixort) === null, "not null");
+    check("quixort setup offers No timer", /id="quixort-block-sec"[\s\S]*?value="0" selected/.test(_mount.innerHTML), "no-timer option missing");
+    await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+    if (S().quixort?.active === true) {
+      const firstTrack = (S().quixort?.expectedTracks || [])[0];
+      check("untimed quixort has no deadline", S().quixort?.runs?.[firstTrack]?.blockEndsAt === null, JSON.stringify(S().quixort?.runs?.[firstTrack]?.blockEndsAt));
+      T.hostTick();
+      check("untimed quixort never voids", ((S().quixort?.runs?.[firstTrack]?.voided) || []).length === 0 && S().quixort?.phase === "playing", S().quixort?.phase);
+      await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+    } else {
+      check("untimed quixort skipped (no eligible tracks)", true, "no tracks to start");
+    }
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  }
+  // --- restore timed defaults for the tail of the suite ---
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", prevTimeOpen] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", prevScoring] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", prevLock] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  check("timed defaults restored", S().settings?.timeOpen === prevTimeOpen && S().round?.status === "idle", `${S().settings?.timeOpen}/${S().round?.status}`);
+  pk._store.self = pk._store.participants.host1;
 }
 // --- audience display rethink: pill/stage/screw-collapse/last-result/analytics/bars ---
 {

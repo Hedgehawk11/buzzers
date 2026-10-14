@@ -37,6 +37,11 @@ function opts(list, current) {
   return list.map((v) => `<option value="${v}" ${String(v) === String(current) ? "selected" : ""}>${v}</option>`).join("");
 }
 
+// Duration selects where 0 means "No timer" (main game convention).
+function timerOpts(list, current) {
+  return list.map((v) => `<option value="${v}" ${String(v) === String(current) ? "selected" : ""}>${Number(v) === 0 ? "No timer" : v}</option>`).join("");
+}
+
 function itemSummary(item) {
   switch (item.kind) {
     case "buttons": {
@@ -150,10 +155,10 @@ function renderFibbageFields(item, esc) {
     </label>
     <div class="ep-grid2">
       <label>Lie time (s)
-        <select data-ep-harvest id="ep-lietime">${opts(EPISODE_FIBBAGE_LIE_TIMES, item.lieTimeSec ?? 30)}</select>
+        <select data-ep-harvest id="ep-lietime">${timerOpts(EPISODE_FIBBAGE_LIE_TIMES, item.lieTimeSec ?? 30)}</select>
       </label>
       <label>Vote time (s)
-        <select data-ep-harvest id="ep-votetime">${opts(EPISODE_FIBBAGE_VOTE_TIMES, item.voteTimeSec ?? 30)}</select>
+        <select data-ep-harvest id="ep-votetime">${timerOpts(EPISODE_FIBBAGE_VOTE_TIMES, item.voteTimeSec ?? 30)}</select>
       </label>
     </div>
     <label>Points multiplier
@@ -209,7 +214,7 @@ function renderQuixortFields(item, esc) {
         <select data-ep-harvest id="ep-qx-mult">${opts([1, 2, 3, 4, 5], item.multiplier ?? 1)}</select>
       </label>
       <label>Block time (s)
-        <select data-ep-harvest id="ep-qx-block">${opts(EPISODE_QUIXORT_BLOCK_SECS, item.blockSec ?? 30)}</select>
+        <select data-ep-harvest id="ep-qx-block">${timerOpts(EPISODE_QUIXORT_BLOCK_SECS, item.blockSec ?? 30)}</select>
       </label>
     </div>`;
 }
@@ -296,8 +301,8 @@ function renderOverridesFields(item, esc) {
         ${has("jackMultiplier") ? `<label>JACK multiplier
           <select data-ep-harvest id="ep-ov-jack"><option value="" ${o.jackMultiplier === undefined ? "selected" : ""}>Episode default</option>${opts([1, 1.5, 2, 2.5, 3], o.jackMultiplier ?? "")}</select>
         </label>` : ""}
-        ${has("timeOpen") ? `<label>Buzzers open (s)
-          <input data-ep-harvest id="ep-ov-time" type="number" min="1" max="600" step="1" value="${o.timeOpen ?? ""}" placeholder="Episode default" />
+        ${has("timeOpen") ? `<label>Buzzers open (s, 0 = no timer)
+          <input data-ep-harvest id="ep-ov-time" type="number" min="0" max="600" step="1" value="${o.timeOpen ?? ""}" placeholder="Episode default" />
         </label>` : ""}
         ${has("maxBuzzesPerOption") ? `<label>Max buzzes per option
           <input data-ep-harvest id="ep-ov-maxbuzz" type="number" min="1" max="50" step="1" value="${o.maxBuzzesPerOption ?? ""}" placeholder="Episode default" />
@@ -464,8 +469,8 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
           <label>JACK multiplier
             <select data-ep-harvest id="ep-default-jack"><option value="" ${d.jackMultiplier === undefined ? "selected" : ""}>Game setting</option>${opts([1, 1.5, 2, 2.5, 3], d.jackMultiplier ?? "")}</select>
           </label>
-          <label>Buzzers open (s)
-            <input data-ep-harvest id="ep-default-time" type="number" min="1" max="600" step="1" value="${d.timeOpen ?? ""}" placeholder="20" />
+          <label>Buzzers open (s, 0 = no timer)
+            <input data-ep-harvest id="ep-default-time" type="number" min="0" max="600" step="1" value="${d.timeOpen ?? ""}" placeholder="20" />
           </label>
           <label>Max buzzes per option
             <input data-ep-harvest id="ep-default-maxbuzz" type="number" min="1" max="50" step="1" value="${d.maxBuzzesPerOption ?? ""}" placeholder="1" />

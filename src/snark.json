@@ -170,6 +170,11 @@
         "en": "Time left",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "outcome": {
@@ -590,6 +595,11 @@
         "en": "Dis or Dat is off limits in coopertition mode.",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "quixort": {
@@ -660,6 +670,16 @@
       },
       "timeLeftLabel": {
         "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerEstimate": {
+        "en": "untimed",
         "snark1": "",
         "snark2": ""
       },
@@ -877,6 +897,11 @@
       },
       "notPlayer": {
         "en": "Host cannot lie.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
         "snark1": "",
         "snark2": ""
       },
@@ -1220,6 +1245,11 @@
         "en": "buzzed",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "screw": {
@@ -1464,6 +1494,11 @@
         "en": "{buzzed}/{total} players answered",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     }
   },
@@ -1532,6 +1567,11 @@
     "disdat": {
       "timeLeftLabel": {
         "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
         "snark1": "",
         "snark2": ""
       }

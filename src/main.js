@@ -104,10 +104,10 @@ const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
 const DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS = 30;
-const DIS_OR_DAT_TIMED_OPTIONS = [30, 40, 60, 90];
+const DIS_OR_DAT_TIMED_OPTIONS = [0, 30, 40, 60, 90];
 
-const FIBBAGE_TIMES = [30, 45, 60];
-const FIBBAGE_LIE_TIMES = [30, 45, 60, 90];
+const FIBBAGE_TIMES = [0, 30, 45, 60];
+const FIBBAGE_LIE_TIMES = [0, 30, 45, 60, 90];
 const FIBBAGE_FOOL_POINTS = 500;
 const FIBBAGE_TRUTH_POINTS = 1000;
 const FIBBAGE_MAX_MULT = 5;
@@ -122,7 +122,9 @@ const QUIXORT_BONUS_TRASH_ALL = 250;
 const QUIXORT_PENALTY_MISCLASS = 500;
 const QUIXORT_BONUS_CLEAN = 1500;
 const QUIXORT_MAX_MULT = 5;
-const QUIXORT_BLOCK_SECONDS_OPTIONS = [15, 20, 30, 45, 60];
+const QUIXORT_BLOCK_SECONDS_OPTIONS = [0, 15, 20, 30, 45, 60];
+
+const TIME_OPEN_OPTIONS = [0, 10, 15, 20, 30, 45, 60, 90, 120];
 
 const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
@@ -1342,12 +1344,20 @@ function getFibbage() {
 }
 
 function getFibbageLieTimeLeftCs(fb) {
-  if (!fb?.timeEndsAt) return (fb?.lieTimeSec || 30) * 100;
+  if (!fb?.timeEndsAt) {
+    const sec = Number(fb?.lieTimeSec);
+    if (sec === 0) return null;
+    return (Number.isFinite(sec) && sec > 0 ? sec : 30) * 100;
+  }
   return Math.max(0, Math.ceil((fb.timeEndsAt - now()) / 10));
 }
 
 function getFibbageVoteTimeLeftCs(fb) {
-  if (!fb?.voteEndsAt) return (fb?.voteTimeSec || 30) * 100;
+  if (!fb?.voteEndsAt) {
+    const sec = Number(fb?.voteTimeSec);
+    if (sec === 0) return null;
+    return (Number.isFinite(sec) && sec > 0 ? sec : 30) * 100;
+  }
   return Math.max(0, Math.ceil((fb.voteEndsAt - now()) / 10));
 }
 
@@ -1399,22 +1409,30 @@ function renderDisOrDatQuestionText(dd, i) {
 
 function getDisOrDatTimeLeftCs(dd) {
   if (!dd?.timeEndsAt) {
-    const settings = getSettings();
-    const timedSeconds = settings.disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
-    return timedSeconds * 100;
+    const raw = dd?.timedSeconds ?? getSettings().disOrDatTimedSeconds ?? DIS_OR_DAT_TIMED_SECONDS;
+    const timedSeconds = Number(raw);
+    if (timedSeconds === 0) return null;
+    return (Number.isFinite(timedSeconds) && timedSeconds > 0 ? timedSeconds : DIS_OR_DAT_TIMED_SECONDS) * 100;
   }
   return Math.max(0, Math.ceil((dd.timeEndsAt - now()) / 10));
 }
 
 // Time bonus is only awarded in short (<=30s) timed games. Longer timed
 // durations are bonus-free by decision.
+function formatDisOrDatCs(dd) {
+  const cs = getDisOrDatTimeLeftCs(dd);
+  if (cs === null || cs === undefined) return getSnark("player.disdat.noTimerLabel", "No timer");
+  return `${formatSeconds(cs)}s`;
+}
 function getDisOrDatTimedSeconds(dd) {
   const d = dd || getDisOrDat();
-  return Number(d?.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS);
+  const raw = d?.timedSeconds ?? getSettings().disOrDatTimedSeconds ?? DIS_OR_DAT_TIMED_SECONDS;
+  return Number(raw);
 }
 
 function isDisOrDatBonusEligible(dd) {
-  return getDisOrDatTimedSeconds(dd) <= DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS;
+  const sec = getDisOrDatTimedSeconds(dd);
+  return sec > 0 && sec <= DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS;
 }
 
 function freshQuixortState() {
@@ -1719,8 +1737,16 @@ function getTimeLeftCs(round, settings) {
   if (round?.screw?.active && round.screw?.frozenCs != null) {
     return round.screw.frozenCs;
   }
+  const timerEnabled = Number(settings?.timeOpen) > 0;
+  if (!timerEnabled) {
+    if (!round || round.status === ROUND_STATUSES.IDLE) return null;
+    if ((round.status === ROUND_STATUSES.LOCKED || round.status === ROUND_STATUSES.CLOSED) && typeof round.remainingCs === "number") {
+      return round.remainingCs;
+    }
+    return null;
+  }
   if (!round || round.status === ROUND_STATUSES.IDLE) {
-    return settings.timeOpen * 100;
+    return normalizeTimeOpen(settings?.timeOpen) * 100;
   }
   if (round.status === ROUND_STATUSES.LOCKED && typeof round.remainingCs === "number") {
     return round.remainingCs;
@@ -1732,7 +1758,8 @@ function getTimeLeftCs(round, settings) {
     const msLeft = Math.max(0, round.closesAt - now());
     return Math.ceil(msLeft / 10);
   }
-  return settings.timeOpen * 100;
+  const fallbackOpen = normalizeTimeOpen(settings?.timeOpen);
+  return fallbackOpen > 0 ? fallbackOpen * 100 : null;
 }
 
 // Screw timer remaining in ms. When the timer has a wall-clock end timestamp
@@ -1755,8 +1782,9 @@ function updateTimerDisplays() {
   const round = getRound();
   const settings = getSettings();
   const liveCs = getTimeLeftCs(round, settings);
-  const timeLeftText = `${formatSeconds(liveCs)}s`;
-  const liveUrgent = Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
+  const noMainTimer = liveCs === null || liveCs === undefined;
+  const timeLeftText = noMainTimer ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(liveCs)}s`;
+  const liveUrgent = !noMainTimer && Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
     try {
@@ -1804,8 +1832,8 @@ function updateTimerDisplays() {
   });
   if (isDisOrDatMode()) {
     const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
-    const ddText = `${formatSeconds(ddCs)}s`;
-    const ddUrgent = Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
+    const ddText = ddCs === null || ddCs === undefined ? getSnark("player.disdat.noTimerLabel", "No timer") : `${formatSeconds(ddCs)}s`;
+    const ddUrgent = ddCs !== null && ddCs !== undefined && Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
     document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
       element.textContent = ddText;
       try {
@@ -1818,13 +1846,13 @@ function updateTimerDisplays() {
     const fb = getFibbage();
     if (fb.phase === "lying") {
       const cs = getFibbageLieTimeLeftCs(fb);
-      const t = `${formatSeconds(cs)}s`;
-      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
+      const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     } else if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
-      const t = `${formatSeconds(cs)}s`;
-      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
+      const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     }
   }
@@ -1833,7 +1861,11 @@ function updateTimerDisplays() {
     document.querySelectorAll("[data-quixort-time-left]").forEach((el) => {
       try {
         const run = qx.runs?.[el.dataset?.quixortTrack];
-        if (!run || run.finished || typeof run.blockEndsAt !== "number") return;
+        if (!run || run.finished) return;
+        if (typeof run.blockEndsAt !== "number") {
+          // Untimed block: static label set at render; nothing to patch.
+          return;
+        }
         const cs = Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
         el.textContent = `${formatSeconds(cs)}s`;
         if (Number.isFinite(cs) && cs <= 500 && cs > 0) el.setAttribute("data-timer-urgent", "true");
@@ -2013,6 +2045,21 @@ function computeBasePoints(settings, timeLeftCs, round = getRound()) {
 }
 
 const JACK_MULTIPLIER_OPTIONS = [1, 1.5, 2, 2.5, 3];
+
+// Timer sentinel: 0 = no timer (round stays open until closed manually).
+// All four timed surfaces (main buzzer, fibbage lie/vote, disordat timed,
+// quixort block) share the convention.
+function normalizeTimeOpen(value) {
+  if (value === "" || value === null || value === undefined) return 20;
+  const n = Number(value);
+  if (n === 0) return 0;
+  if (!Number.isFinite(n) || n <= 0) return 20;
+  return Math.min(Math.trunc(n), 120);
+}
+
+function isMainTimerEnabled(settings = getSettings()) {
+  return Number(settings?.timeOpen) > 0;
+}
 
 function normalizeJackMultiplier(value) {
   const numeric = Number(value);
@@ -2222,7 +2269,7 @@ function maybeFinalizeRoulettePhase() {
       status: ROUND_STATUSES.CLOSED,
       opensAt: null,
       closesAt: null,
-      remainingCs: settings.timeOpen * 100,
+      remainingCs: normalizeTimeOpen(settings.timeOpen) > 0 ? normalizeTimeOpen(settings.timeOpen) * 100 : null,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -2272,14 +2319,15 @@ function startRoulettePhase() {
   }
 
   if (players.length === 0) {
+    const fallbackOpen = normalizeTimeOpen(settings.timeOpen);
     setState(
       "round",
       {
         ...round,
         status: ROUND_STATUSES.OPEN,
         opensAt: now(),
-        closesAt: now() + settings.timeOpen * 1000,
-        remainingCs: settings.timeOpen * 100,
+        closesAt: fallbackOpen > 0 ? now() + fallbackOpen * 1000 : null,
+        remainingCs: fallbackOpen > 0 ? fallbackOpen * 100 : null,
         winnerId: null,
         winnerTeam: null,
         winnerOption: null,
@@ -2317,7 +2365,7 @@ function startRoulettePhase() {
       status: ROUND_STATUSES.ROULETTE,
       opensAt: null,
       closesAt: null,
-      remainingCs: settings.timeOpen * 100,
+      remainingCs: normalizeTimeOpen(settings.timeOpen) > 0 ? normalizeTimeOpen(settings.timeOpen) * 100 : null,
         winnerId: null,
         winnerTeam: null,
         winnerOption: null,
@@ -3307,9 +3355,8 @@ function openBuzzers() {
     }
   }
   const openedAt = now();
-  const rawTimeOpen = Number(settings.timeOpen);
-  const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
-  const closesAt = openedAt + safeTimeOpen * 1000;
+  const safeTimeOpen = normalizeTimeOpen(settings.timeOpen);
+  const closesAt = safeTimeOpen > 0 ? openedAt + safeTimeOpen * 1000 : null;
   const nextRoundNumber = (() => {
     const n = Number(round.roundNumber);
     return Number.isFinite(n) && n >= 0 ? Math.trunc(n) + 1 : 1;
@@ -3321,7 +3368,7 @@ function openBuzzers() {
       status: ROUND_STATUSES.OPEN,
       opensAt: openedAt,
       closesAt,
-      remainingCs: safeTimeOpen * 100,
+      remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null,
       roundNumber: nextRoundNumber,
       pausedFrom: null,
       winnerId: null,
@@ -3385,8 +3432,10 @@ function pauseBuzzers() {
     render();
     return;
   }
-  const rawRemaining = Number(getTimeLeftCs(round, settings));
-  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
+  const timeLeftCs = getTimeLeftCs(round, settings);
+  const safeRemaining = timeLeftCs === null || timeLeftCs === undefined
+    ? null
+    : (Number.isFinite(Number(timeLeftCs)) ? Math.max(0, Number(timeLeftCs)) : 0);
   setState(
     "round",
     {
@@ -3429,9 +3478,12 @@ function resumeBuzzers() {
     render();
     return;
   }
-  const rawRemaining = Number(round.remainingCs);
-  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
-  if (safeRemaining <= 0) {
+  const rawRemaining = round.remainingCs;
+  const untimedResume = rawRemaining === null || rawRemaining === undefined;
+  const safeRemaining = untimedResume
+    ? null
+    : (Number.isFinite(Number(rawRemaining)) ? Math.max(0, Number(rawRemaining)) : 0);
+  if (!untimedResume && safeRemaining <= 0) {
     setBuzzNotice("No time left — open a new round.");
     render();
     return;
@@ -3452,7 +3504,7 @@ function resumeBuzzers() {
       ...round,
       status: resumeToLocked ? ROUND_STATUSES.LOCKED : ROUND_STATUSES.OPEN,
       opensAt: round.opensAt,
-      closesAt: resumedAt + safeRemaining * 10,
+      closesAt: untimedResume ? null : resumedAt + safeRemaining * 10,
       remainingCs: safeRemaining,
       pausedFrom: null,
     },
@@ -3834,7 +3886,9 @@ function startDisOrDat(mode, playerId) {
   if (dd.answers.some(a => a !== "dis" && a !== "dat" && a !== "both")) return;
   const coopActive = isCoopMode();
   const isTimed = mode === "onePlayTimed" || mode === "allPlayTimed";
-  const timedSeconds = dd.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
+  const rawTimed = dd.timedSeconds ?? getSettings().disOrDatTimedSeconds ?? DIS_OR_DAT_TIMED_SECONDS;
+  const timedSeconds = Number(rawTimed);
+  const timedMs = isTimed && timedSeconds > 0 ? now() + timedSeconds * 1000 : null;
   setState("disordat", {
     ...dd,
     active: true,
@@ -3843,7 +3897,7 @@ function startDisOrDat(mode, playerId) {
     activePlayerId: mode === "onePlayTimed" ? (coopActive ? (parseCoopScoreKey(playerId)?.deviceId || playerId) : playerId) : null,
     activeCoopKey: mode === "onePlayTimed" && coopActive ? playerId : null,
     pendingPick: false,
-    timeEndsAt: isTimed ? now() + timedSeconds * 1000 : null,
+    timeEndsAt: timedMs,
     currentQuestion: 0,
     responses: {},
     pointsEarned: {},
@@ -3941,7 +3995,8 @@ function handleDisOrDatAnswer(player, payload) {
   if (answeredAll && isTimed && !nextFinished.includes(trackKey)) {
     const correctCount = nextResps.filter((a, i) => a === dd.answers[i]).length;
     if (correctCount >= DIS_OR_DAT_BONUS_MIN_CORRECT && isDisOrDatBonusEligible(dd)) {
-      nextBonus[trackKey] = getDisOrDatTimeLeftCs(dd);
+      const leftCs = getDisOrDatTimeLeftCs(dd);
+      nextBonus[trackKey] = leftCs === null || leftCs === undefined ? 0 : leftCs;
     }
     nextFinished = [...nextFinished, trackKey];
   }
@@ -4207,7 +4262,9 @@ function normalizeQuixortMultiplier(v) {
   return n;
 }
 function normalizeQuixortBlockSec(v) {
+  if (v === "" || v === null || v === undefined) return 30;
   const n = Number(v);
+  if (n === 0) return 0;
   return QUIXORT_BLOCK_SECONDS_OPTIONS.includes(n) ? n : 30;
 }
 // Non-empty trimmed setup lists.
@@ -4268,7 +4325,10 @@ function getQuixortBlockText(qx, entry) {
 }
 function getQuixortRunTimeLeftCs(run, qx) {
   if (!run || run.finished) return 0;
-  if (typeof run.blockEndsAt !== "number") return normalizeQuixortBlockSec(qx?.blockSec) * 100;
+  if (typeof run.blockEndsAt !== "number") {
+    const sec = normalizeQuixortBlockSec(qx?.blockSec);
+    return sec > 0 ? sec * 100 : null;
+  }
   return Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
 }
 // End scoring for one run (pairwise / Kendall style). Every correctly-ordered
@@ -4499,7 +4559,7 @@ function startQuixort() {
   const items = getQuixortItems(qx);
   const trash = getQuixortTrash(qx);
   const blockSec = normalizeQuixortBlockSec(qx.blockSec);
-  const deadline = now() + blockSec * 1000;
+  const deadline = blockSec > 0 ? now() + blockSec * 1000 : null;
   const runs = {};
   for (const track of tracks) {
     runs[track] = {
@@ -4535,7 +4595,7 @@ function voidQuixortBlock(qx, track) {
       [track]: {
         ...run, voided, deckPos,
         turnIndex: (Number(run.turnIndex) || 0) + 1,
-        blockEndsAt: finished ? null : now() + blockSec * 1000,
+        blockEndsAt: finished || blockSec <= 0 ? null : now() + blockSec * 1000,
         finished,
       },
     },
@@ -4603,7 +4663,7 @@ function handleQuixortPlace(player, payload) {
       [trackKey]: {
         ...run, row, trashed, deckPos,
         turnIndex: (Number(run.turnIndex) || 0) + 1,
-        blockEndsAt: finished ? null : now() + normalizeQuixortBlockSec(working.blockSec) * 1000,
+        blockEndsAt: finished || normalizeQuixortBlockSec(working.blockSec) <= 0 ? null : now() + normalizeQuixortBlockSec(working.blockSec) * 1000,
         finished,
       },
     },
@@ -4740,11 +4800,15 @@ function normalizeFibbageMultiplier(v) {
   return n;
 }
 function normalizeFibbageTime(v) {
+  if (v === "" || v === null || v === undefined) return 30;
   const n = Number(v);
+  if (n === 0) return 0;
   return FIBBAGE_TIMES.includes(n) ? n : 30;
 }
 function normalizeFibbageLieTime(v) {
+  if (v === "" || v === null || v === undefined) return 30;
   const n = Number(v);
+  if (n === 0) return 0;
   return FIBBAGE_LIE_TIMES.includes(n) ? n : 30;
 }
 function getEligibleFibbageTrackKeys() {
@@ -4785,7 +4849,7 @@ function startFibbageLying() {
     ...fb,
     active: true,
     phase: "lying",
-    timeEndsAt: now() + lieTime * 1000,
+    timeEndsAt: lieTime > 0 ? now() + lieTime * 1000 : null,
     voteEndsAt: null,
     seed: Math.floor(Math.random() * 2147483647) + 1,
     lies: {},
@@ -4899,7 +4963,8 @@ function startFibbageVoteTimer() {
   if (!isHost()) return;
   const fb = getFibbage();
   if (fb.phase !== "voting_ready") return;
-  setState("fibbage", { ...fb, phase: "voting", voteEndsAt: now() + normalizeFibbageTime(fb.voteTimeSec) * 1000 }, true);
+  const voteSec = normalizeFibbageTime(fb.voteTimeSec);
+  setState("fibbage", { ...fb, phase: "voting", voteEndsAt: voteSec > 0 ? now() + voteSec * 1000 : null }, true);
   render();
 }
 function finalizeFibbageScores() {
@@ -5088,15 +5153,14 @@ function resetRound() {
   }
   const settings = getSettings();
   const currentRound = getRound();
-  const rawTimeOpen = Number(settings.timeOpen);
-  const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
+  const safeTimeOpen = normalizeTimeOpen(settings.timeOpen);
   setState(
     "round",
     {
       status: ROUND_STATUSES.IDLE,
       opensAt: null,
       closesAt: null,
-      remainingCs: safeTimeOpen * 100,
+      remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null,
       roundNumber: Number.isFinite(Number(currentRound.roundNumber)) ? Math.trunc(Number(currentRound.roundNumber)) : 0,
       pausedFrom: null,
       winnerId: null,
@@ -5512,8 +5576,9 @@ function hostTick() {
           const screweeTeamColor = getPlayerTeamColor(round.screw?.screweeId, assignments);
           const screweeScoreKey = getScoreKeyForPlayer(round.screw?.screweeId, settings, assignments);
           const screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
-          const frozenCs = round.screw.frozenCs ?? (round.remainingCs || settings.timeOpen * 100);
-          const basePoints = round.screw.frozenPoints ?? computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
+          const fallbackCs = round.remainingCs ?? (normalizeTimeOpen(settings.timeOpen) > 0 ? normalizeTimeOpen(settings.timeOpen) * 100 : null);
+          const frozenCs = round.screw.frozenCs ?? fallbackCs;
+          const basePoints = round.screw.frozenPoints ?? computeBasePoints(settings, fallbackCs, round);
           const screwBonus = getScrewBonus(settings);
           const entry = {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -5566,9 +5631,13 @@ function hostTick() {
     return;
   }
   
-  // Normal timer tick
+  // Normal timer tick (skipped entirely when no timer is set — the round
+  // stays open until the host pauses/closes it).
   const settings = getSettings();
   const timeLeftCs = getTimeLeftCs(round, settings);
+  if (timeLeftCs === null || timeLeftCs === undefined) {
+    return;
+  }
   if (timeLeftCs <= 0) {
     setState(
       "round",
@@ -5702,9 +5771,10 @@ function handleCoopRoster(senderPlayer, payload) {
 // Preset is intentionally cleared (new mode = new question context).
 // =============================================================================
 function freshIdleBuzzerRound(settings) {
+  const safeTimeOpen = normalizeTimeOpen(settings?.timeOpen);
   return {
     status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-    remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+    remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null, roundNumber: currentRoundId(), pausedFrom: null,
     winnerId: null, winnerTeam: null,
     winnerOption: null, winnerAnswer: null, winnerName: null, winnerCoopKey: null,
     coopControl: null,
@@ -5769,6 +5839,15 @@ function setHostSetting(key, value) {
   }
   const settings = getSettings();
   const next = { ...settings, [key]: value };
+  if (key === "timeOpen") {
+    next.timeOpen = normalizeTimeOpen(value);
+    if (next.timeOpen === 0 && next.scoringMode === "jack") {
+      next.scoringMode = "uniform";
+      next.valueSelectionMethod = "standard";
+      next.uniformPoints = settings.uniformPoints || 1000;
+      setBuzzNotice("JACK scoring needs a timer — switched to Uniform (fixed points).");
+    }
+  }
   if (key === "jackMultiplier") {
     next.jackMultiplier = normalizeJackMultiplier(value);
   }
@@ -5780,6 +5859,11 @@ function setHostSetting(key, value) {
     next.valueSelectionMethod = "standard";
   }
   if (key === "scoringMode" && value === "jack") {
+    if (Number(next.timeOpen) <= 0) {
+      setBuzzNotice("JACK scoring needs a timer — pick a buzz time first.");
+      render();
+      return;
+    }
     next.jackMultiplier = settings.jackMultiplier || 1;
     next.valueSelectionMethod = "standard";
   }
@@ -5975,13 +6059,13 @@ function setHostSetting(key, value) {
       setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const fb = getFibbage();
-      setState("fibbage", { ...freshFibbageState(), lieTimeSec: fb.lieTimeSec || 30, voteTimeSec: fb.voteTimeSec || 30, multiplier: fb.multiplier || 1 }, true);
+      setState("fibbage", { ...freshFibbageState(), lieTimeSec: normalizeFibbageLieTime(fb.lieTimeSec ?? 30), voteTimeSec: normalizeFibbageTime(fb.voteTimeSec ?? 30), multiplier: fb.multiplier || 1 }, true);
     }
     if (value === "quixort") {
       setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const qx = getQuixort();
-      setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: qx.blockSec || 30 }, true);
+      setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: normalizeQuixortBlockSec(qx.blockSec ?? 30) }, true);
     }
   }
   if (key === "rouletteTopAmount") {
@@ -7802,7 +7886,7 @@ function renderDisOrDatHostPanel(settings, players) {
         </div>
       </div>
     ` : "";
-    const timedOptionsHtml = DIS_OR_DAT_TIMED_OPTIONS.map(opt => `<option value="${opt}" ${dd.timedSeconds === opt ? "selected" : ""}>${opt} seconds</option>`).join("");
+    const timedOptionsHtml = DIS_OR_DAT_TIMED_OPTIONS.map(opt => `<option value="${opt}" ${Number(dd.timedSeconds) === opt ? "selected" : ""}>${opt === 0 ? "No timer" : `${opt} seconds`}</option>`).join("");
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Dis or Dat Setup</h2>
@@ -7910,7 +7994,7 @@ function renderDisOrDatHostPanel(settings, players) {
     <section class="card host-panel bingo-host-panel">
       <h2>Dis or Dat — Active</h2>
       <p class="muted">Mode: <strong>${modeLabel}</strong>${activeLabel ? ` — ${activeLabel}` : ""}</p>
-      ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></p>` : ""}
+      ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></p>` : ""}
       ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}` : ""}
       ${isTimed ? thingsList : ""}
       <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
@@ -8013,7 +8097,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
   } else {
     body = `
       ${isTimed
-        ? `<div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+        ? `<div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></div>
            ${answeredAll && !revealShowing ? "" : `<p class="muted">${getSnark("player.disdat.questionTimed", `Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.`, { current: currentQ + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>${renderDisOrDatQuestionText(dd, currentQ)}`}`
         : `<p class="muted">${getSnark("player.disdat.questionHostPaced", `Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.`, { current: dd.currentQuestion + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}`}
       <div class="disordat-diamond-wrap">${diamond}</div>
@@ -8099,7 +8183,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
     const revealShowing = answeredCount > 0 && now() < disOrDatRevealUntil;
     const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
     return `<section class="card player-card disordat-player-card">${head}
-      <p class="muted">${escapeHtml(getCoopSlotName(deviceId, slot))} is playing — <span data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</span> left</p>
+      <p class="muted">${escapeHtml(getCoopSlotName(deviceId, slot))} is playing — <span data-disordat-time-left>${formatDisOrDatCs(dd)}</span> left</p>
       <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : ""}</div>
       ${answeredAll && !revealShowing ? `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>` : ""}</section>`;
   }
@@ -8147,7 +8231,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
       <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>`}</div></div>`);
   }
   return `<section class="card player-card disordat-player-card">${head}
-    <div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+    <div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></div>
     <div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div></section>`;
 }
 
@@ -8207,7 +8291,7 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   }).join("");
 
   const timerHtml = isTimed && dd.phase === "playing"
-    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.disdat.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></span></div>`
+    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.disdat.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></span></div>`
     : "";
   // Timed modes previously hid the question — projection needs it visible.
   const questionHtml = dd.phase === "playing"
@@ -8244,7 +8328,7 @@ function renderQuixortHostPanel(settings, players) {
   const participants = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const multOpts = Array.from({ length: QUIXORT_MAX_MULT }, (_, i) => i + 1).map((m) => `<option value="${m}" ${normalizeQuixortMultiplier(qx.multiplier) === m ? "selected" : ""}>${m}x</option>`).join("");
-  const blockOpts = QUIXORT_BLOCK_SECONDS_OPTIONS.map((s) => `<option value="${s}" ${normalizeQuixortBlockSec(qx.blockSec) === s ? "selected" : ""}>${s}s</option>`).join("");
+  const blockOpts = QUIXORT_BLOCK_SECONDS_OPTIONS.map((s) => `<option value="${s}" ${normalizeQuixortBlockSec(qx.blockSec) === s ? "selected" : ""}>${s === 0 ? "No timer" : `${s}s`}</option>`).join("");
   if (!qx.active) {
     const items = Array.from({ length: QUIXORT_MAX_ITEMS }, (_, i) => String(qx.items?.[i] ?? ""));
     const trash = Array.from({ length: QUIXORT_MAX_TRASH }, (_, i) => String(qx.trash?.[i] ?? ""));
@@ -8252,7 +8336,8 @@ function renderQuixortHostPanel(settings, players) {
     const filledTrash = trash.map((s) => String(s || "").trim()).filter(Boolean);
     const setupError = validateQuixortSetup({ ...qx, items, trash });
     const deckLen = filledItems.length + filledTrash.length;
-    const estimate = formatQuixortEstimate(deckLen * normalizeQuixortBlockSec(qx.blockSec));
+    const setupBlockSec = normalizeQuixortBlockSec(qx.blockSec);
+    const estimate = setupBlockSec > 0 ? formatQuixortEstimate(deckLen * setupBlockSec) : getSnark("player.quixort.noTimerEstimate", "untimed");
     const itemInputs = items.map((val, i) => `
       <label class="quixort-entry-label">${i + 1} (correct order)
         <input type="text" id="quixort-item-${i}" data-quixort-item="${i}" maxlength="${QUIXORT_MAX_TEXT}" value="${escapeHtml(val)}" placeholder="Item ${i + 1}" />
@@ -8281,7 +8366,7 @@ function renderQuixortHostPanel(settings, players) {
           </label>
           <label>Seconds per block
             <select id="quixort-block-sec">${blockOpts}</select>
-            <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn.</p>
+            <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn. No timer never expires.</p>
           </label>
           <label>Audience sees live rows
             <div class="toggle-switch">
@@ -8295,7 +8380,7 @@ function renderQuixortHostPanel(settings, players) {
         <div class="quixort-setup-list">${itemInputs}</div>
         <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Trash answers (${filledTrash.length}/${QUIXORT_MAX_TRASH}, optional)</h3>
         <div class="quixort-setup-list">${trashInputs}</div>
-        <p class="muted">Estimated time to complete: <strong>${estimate}</strong> per team (all play at once, ${normalizeQuixortBlockSec(qx.blockSec)}s x ${deckLen} blocks).</p>
+        <p class="muted">Estimated time to complete: <strong>${estimate}</strong> per team (all play at once${setupBlockSec > 0 ? `, ${setupBlockSec}s x ${deckLen} blocks` : ", no timer"}).</p>
         <div class="host-actions" style="margin-top:0.9rem">
           <button type="button" class="primary-action" data-quixort-start ${setupError || eligible.length === 0 ? "disabled" : ""}>Start Quixort (${eligible.length} playing)</button>
         </div>
@@ -8330,7 +8415,8 @@ function renderQuixortHostPanel(settings, players) {
     return row.map((e) => `<span class="quixort-row-block quixort-live-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
   };
   const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }, idx) => {
-    const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
+    const blockCs = run.finished ? null : getQuixortRunTimeLeftCs(run, qx);
+    const timeLeft = run.finished ? "done" : (blockCs === null || blockCs === undefined ? getSnark("player.quixort.noTimerLabel", "No timer") : `${formatSeconds(blockCs)}s`);
     if (scored) {
       const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
       const bonusPill = !scored.clean && scored.bonus ? ` <span class="quixort-pill">+${scored.bonus}</span>` : "";
@@ -8356,7 +8442,7 @@ function renderQuixortHostPanel(settings, players) {
   return `
     <section class="card host-panel bingo-host-panel">
       <h2>Quixort — Playing</h2>
-      <p class="muted">All tracks sort at once. Estimated remaining: <strong>${formatQuixortEstimate(remainingMax * normalizeQuixortBlockSec(qx.blockSec))}</strong> (slowest track). Multiplier ${normalizeQuixortMultiplier(qx.multiplier)}x, ${normalizeQuixortBlockSec(qx.blockSec)}s per block.</p>
+      <p class="muted">All tracks sort at once. Estimated remaining: <strong>${normalizeQuixortBlockSec(qx.blockSec) > 0 ? formatQuixortEstimate(remainingMax * normalizeQuixortBlockSec(qx.blockSec)) : getSnark("player.quixort.noTimerEstimate", "untimed")}</strong> (slowest track). Multiplier ${normalizeQuixortMultiplier(qx.multiplier)}x${normalizeQuixortBlockSec(qx.blockSec) > 0 ? `, ${normalizeQuixortBlockSec(qx.blockSec)}s per block` : ", no timer"}.</p>
       <ul class="bingo-standings">${rowsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
       <div class="host-actions">
         <button type="button" class="primary-action" data-quixort-end>End &amp; Award</button>
@@ -8450,7 +8536,7 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
     <section class="card player-card">
       <h2>Quixort ${teamPill}</h2>
       ${turnBanner}
-      <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s</strong></div>
+      <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${(() => { const cs = getQuixortRunTimeLeftCs(run, qx); return cs === null || cs === undefined ? getSnark("player.quixort.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })()}</strong></div>
       <div class="quixort-progress" aria-hidden="true"><div class="quixort-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="quixort-block-card"><span class="muted">Sort this:</span><strong>${blockText}</strong></div>
       <div class="quixort-row-wrap quixort-row-gaps">${rowSegs.join("") || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
@@ -8521,8 +8607,8 @@ function renderFibbageHostPanel(settings, players) {
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const eligibleTracks = getEligibleFibbageTrackKeys();
   const liesCount = Object.keys(fb.lies || {}).length;
-  const timeOpts = FIBBAGE_LIE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
-  const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t}s</option>`).join("");
+  const timeOpts = FIBBAGE_LIE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t === 0 ? "No timer" : `${t}s`}</option>`).join("");
+  const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t === 0 ? "No timer" : `${t}s`}</option>`).join("");
   const multOpts = Array.from({length:FIBBAGE_MAX_MULT},(_,i)=>i+1).map((m)=>`<option value="${m}" ${Number(fb.multiplier)===m?"selected":""}>${m}x</option>`).join("");
   if (!fb.active) {
     return `
@@ -8553,7 +8639,8 @@ function renderFibbageHostPanel(settings, players) {
       </section>`;
   }
   if (fb.phase === "lying") {
-    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const lieCs = getFibbageLieTimeLeftCs(fb);
+    const timeLeft = lieCs === null || lieCs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(lieCs)}s`;
     const lieRows = eligibleTracks.map((trackKey)=>{
       const raw = fb.lies[trackKey] || "";
       const isBlocked = !!fb.blocked[trackKey];
@@ -8570,9 +8657,9 @@ function renderFibbageHostPanel(settings, players) {
     }).join("") || '<p class="muted">No eligible tracks.</p>';
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
-        <h2>Fibbage — Lying (${timeLeft}s left)</h2>
+        <h2>Fibbage — Lying (${timeLeft}${lieCs === null || lieCs === undefined ? "" : " left"})</h2>
         <p class="muted">Players are submitting lies. Block bad ones — truth is locked from before lying started.</p>
-        <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${liesCount}/${eligibleTracks.length} lies</p>
+        <p>Time left: <strong data-fibbage-time-left>${timeLeft}</strong> — ${liesCount}/${eligibleTracks.length} lies</p>
         <p>Truth: <strong>"${escapeHtml(fb.truth)}"</strong></p>
         <div class="fibbage-lie-list">${lieRows}</div>
         <div class="host-actions">
@@ -8609,7 +8696,7 @@ function renderFibbageHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Responses Ready</h2>
-        <p class="muted">Choices shuffled. Press Start Timer to let players vote (${fb.voteTimeSec}s, ends early if all vote).</p>
+        <p class="muted">Choices shuffled. Press Start Timer to let players vote (${Number(fb.voteTimeSec) === 0 ? "no timer" : `${fb.voteTimeSec}s`}, ends early if all vote).</p>
         <ul class="fibbage-choices-list">${choicesHtml}</ul>
         <div class="host-actions">
           <button type="button" class="primary-action" data-fibbage-start-vote>Start Timer</button>
@@ -8618,7 +8705,8 @@ function renderFibbageHostPanel(settings, players) {
       </section>`;
   }
   if (fb.phase === "voting") {
-    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const voteCs = getFibbageVoteTimeLeftCs(fb);
+    const timeLeft = voteCs === null || voteCs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(voteCs)}s`;
     const votedCount = Object.keys(fb.votes||{}).length;
     const choices = fb.choices||[];
     const voteMap = {};
@@ -8629,8 +8717,8 @@ function renderFibbageHostPanel(settings, players) {
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
-        <h2>Fibbage — Voting (${timeLeft}s)</h2>
-        <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${votedCount}/${eligibleTracks.length} voted</p>
+        <h2>Fibbage — Voting (${timeLeft})</h2>
+        <p>Time left: <strong data-fibbage-time-left>${timeLeft}</strong> — ${votedCount}/${eligibleTracks.length} voted</p>
         <ul class="fibbage-choices-list">${rows}</ul>
         <p class="muted">Votes hidden until reveal. After voting ends, use Show All or Spotlight to reveal.</p>
         <div class="host-actions"><button type="button" data-fibbage-exit>Return to buzzer mode</button></div>
@@ -8712,13 +8800,13 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
     const already = fb.lies[trackKey] !== undefined;
     const blocked = !!fb.blocked[trackKey];
     const err = fb.lieErrors[trackKey] || "";
-    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageLieTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     if (blocked) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Your lie was blocked by the host.</p></section>`;
-    if (already) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Lie submitted: "${escapeHtml(fb.lies[trackKey])}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>${notice?`<p class="muted">${notice}</p>`:""}</section>`;
+    if (already) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Lie submitted: "${escapeHtml(fb.lies[trackKey])}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p>${notice?`<p class="muted">${notice}</p>`:""}</section>`;
     return `
       <section class="card player-card">
         <h2>Fibbage ${teamPill}</h2>
-        <p class="muted">Write a lie to fool other players. Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>
+        <p class="muted">Write a lie to fool other players. Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p>
         ${err?`<p class="error-text">${escapeHtml(err)}</p>`:""}
         ${notice?`<p class="muted">${notice}</p>`:""}
         <div class="text-entry">
@@ -8732,11 +8820,11 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
   }
   if (fb.phase === "voting") {
     const alreadyVoted = fb.votes[trackKey] !== undefined;
-    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageVoteTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     if (alreadyVoted) {
       const idx = fb.votes[trackKey];
       const choice = (fb.choices||[])[Number(idx)];
-      return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">You voted for "${escapeHtml(choice?choice.text:"")}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p></section>`;
+      return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">You voted for "${escapeHtml(choice?choice.text:"")}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p></section>`;
     }
     const choices = fb.choices||[];
     const buttons = choices.map((c,i)=>{
@@ -8746,7 +8834,7 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
     return `
       <section class="card player-card">
         <h2>Fibbage — Vote ${teamPill}</h2>
-        <p class="muted">Pick the truth. You cannot pick your own lie. Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>
+        <p class="muted">Pick the truth. You cannot pick your own lie. Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p>
         ${notice?`<p class="muted">${notice}</p>`:""}
         <div class="fibbage-vote-list">${buttons}</div>
       </section>`;
@@ -8791,12 +8879,12 @@ function renderFibbageAudienceDisplay(settings, players) {
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="idle"><header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Waiting for the game to start...</p></div></header></main>`;
   }
   if (fb.phase === "lying") {
-    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageLieTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     const eligible = getEligibleFibbageTrackKeys();
     const submitted = Object.keys(fb.lies||{}).length;
     const pct = eligible.length ? Math.min(100, Math.round((submitted / eligible.length) * 100)) : 0;
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Lying</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${submitted}/${eligible.length} lies</span></div></header>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Lying</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}</span><span>${submitted}/${eligible.length} lies</span></div></header>
       <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Lies submitted</h2><span class="audience-standings-mode">${submitted}/${eligible.length}</span></div><p class="muted">Waiting for host to block/review.</p><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
     </main>`;
   }
@@ -8812,7 +8900,7 @@ function renderFibbageAudienceDisplay(settings, players) {
     </main>`;
   }
   if (fb.phase === "voting") {
-    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageVoteTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     const choices = fb.choices||[];
     const votes = fb.votes || {};
     const totalVotes = Object.keys(votes).length;
@@ -8822,7 +8910,7 @@ function renderFibbageAudienceDisplay(settings, players) {
     Object.values(votes).forEach((idx) => { const n = Number(idx); voteCounts[n] = (voteCounts[n] || 0) + 1; });
     const list = choices.map((c,i)=>`<li>"${escapeHtml(c.text)}" <span class="muted">· ${voteCounts[i] || 0} ${getSnark("audience.fibbage.votesLabel", "votes", {})}</span></li>`).join("");
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Voting</span></p><h1 class="audience-title">Fibbage</h1></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${totalVotes}/${eligibleN} voted</span></div></header>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Voting</span></p><h1 class="audience-title">Fibbage</h1></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}</span><span>${totalVotes}/${eligibleN} voted</span></div></header>
       <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Choices</h2><span class="audience-standings-mode">${totalVotes}/${eligibleN} voted</span></div><ul class="fibbage-choices-list audience-standings-big">${list}</ul><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
     </main>`;
   }
@@ -9233,7 +9321,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
   const deviceId = mePlayer.id;
   const count = getCoopSlotCount(deviceId);
   const group = getCoopGroupName(deviceId, getPlayerName(mePlayer));
-  const timeText = formatSeconds(timeLeftCs);
+  const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const editBtn = settings.coopAllowEdit
     ? `<div class="host-actions"><button type="button" data-coop-edit>${getSnark("player.coop.editGroupButton", "Edit group")}</button></div>`
     : "";
@@ -9270,7 +9358,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card coop-player-card">
         <h2>${escapeHtml(group)}</h2>
         <p class="muted">${helper}</p>
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${tabs}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
@@ -9285,7 +9373,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
   return `
     <section class="card player-card coop-player-card">
       <h2>${escapeHtml(group)}</h2>
-      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
       ${renderCoopGroupBuzzer(settings, round, deviceId, count)}
       ${renderCoopStrip(settings, round, deviceId, count)}
       ${editBtn}
@@ -9542,7 +9630,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       ? getSnark("player.buzzer.screwInProgress", "A screw is in progress.")
       : getSnark("player.buzzer.buzzNow", "Buzz now.");
   const notice = getRecentBuzzNotice();
-  const timeText = formatSeconds(timeLeftCs);
+  const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const usingTextEntry = settings.inputMode === "text";
 
   
@@ -9583,7 +9671,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <h2>${getSnark("player.buzzer.yourAnswerTitle", "Your Answer")}</h2>
         <p class="muted">${textHelper}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
@@ -9604,7 +9692,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${optionDisabled ? getSnark("player.buzzer.singleBuzzerDisabled", "This buzzer is disabled by the Host.") : helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>${singleBuzzerContent()}</button>
         ${screwBtn}
@@ -9626,7 +9714,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
         ${screwBtn}
@@ -9648,7 +9736,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="eight-grid">${buttons}</div>
         ${screwBtn}
@@ -9678,7 +9766,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]], button, roundLabel)}
         ${screwBtn}
@@ -9701,7 +9789,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         ${myScoreLine}
       <p class="muted">${helperText}</p>
-      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
       ${notice ? `<p class="muted">${notice}</p>` : ""}
       <div class="abxy">${buttons}</div>
       ${screwBtn}
@@ -9805,6 +9893,9 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   } else if (isScrewActive) {
     timerCs = null;
     timerDisplay = "SCREW";
+  } else if (timeLeftCs === null || timeLeftCs === undefined) {
+    timerCs = null;
+    timerDisplay = getSnark("audience.buzzer.noTimerLabel", "No timer");
   } else {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
@@ -9987,12 +10078,14 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     if (fb.phase === "lying") {
       const cs = getFibbageLieTimeLeftCs(fb);
       const flash = isTabletTimerFlashing(cs);
-      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
+      const label = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${label}</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
     }
     if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
       const flash = isTabletTimerFlashing(cs);
-      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
+      const label = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${label}</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
     }
     return renderTabletTimerNotUseful();
   }
@@ -10003,10 +10096,11 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     if (isTimed && dd.active && dd.phase === "playing") {
       const ddCs = getDisOrDatTimeLeftCs(dd);
       const flash = isTabletTimerFlashing(ddCs);
+      const label = ddCs === null || ddCs === undefined ? getSnark("player.disdat.noTimerLabel", "No timer") : `${formatSeconds(ddCs)}s`;
       return `
         <main class="tablet-timer-layout"${flash ? ' data-flash="true"' : ""}>
           <div class="tablet-timer-container">
-            <div class="tablet-timer-value" data-tablet-time-left data-disordat-time-left>${formatSeconds(ddCs)}s</div>
+            <div class="tablet-timer-value" data-tablet-time-left data-disordat-time-left>${label}</div>
             <div class="tablet-timer-players">Dis or Dat</div>
           </div>
         </main>
@@ -10045,6 +10139,9 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
   } else if (isScrewActive) {
     timerCs = 0;
     timerDisplay = "SCREW";
+  } else if (timeLeftCs === null || timeLeftCs === undefined) {
+    timerCs = null;
+    timerDisplay = getSnark("tablet.misc.noTimerLabel", "No timer");
   } else {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
@@ -10954,12 +11051,18 @@ function applyEpisodeSettings(source) {
       if (settings[key] === value) return;
       setHostSetting(key, value);
     };
+    if (source.timeOpen !== undefined) {
+      const t = Number(source.timeOpen);
+      if (Number.isFinite(t) && t !== settings.timeOpen) setHostSetting("timeOpen", t);
+    }
+    // JACK needs a timer: skip it when the round is untimed after the
+    // timeOpen apply above (same silent-skip as the coop gate).
+    const untimedNow = Number(getSettings().timeOpen) <= 0;
     if (source.scoringMode !== undefined && source.scoringMode !== settings.scoringMode) {
-      if (!(coop && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
+      if (!(coop && source.scoringMode === "jack") && !(untimedNow && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
     }
     setIfDiff("uniformPoints", source.uniformPoints !== undefined ? Number(source.uniformPoints) : undefined);
     setIfDiff("jackMultiplier", source.jackMultiplier !== undefined ? Number(source.jackMultiplier) : undefined);
-    setIfDiff("timeOpen", source.timeOpen !== undefined ? Number(source.timeOpen) : undefined);
     setIfDiff("maxBuzzesPerOption", source.maxBuzzesPerOption !== undefined ? Number(source.maxBuzzesPerOption) : undefined);
     setIfDiff("choiceLayout", source.choiceLayout);
     setIfDiff("lockAfterBuzz", source.lockAfterBuzz);
@@ -11023,15 +11126,14 @@ function episodeRunLoad(index) {
   }
   if (liveRound.status === ROUND_STATUSES.CLOSED) {
     const settingsNow = getSettings();
-    const rawTimeOpenNow = Number(settingsNow.timeOpen);
-    const safeTimeOpenNow = Number.isFinite(rawTimeOpenNow) && rawTimeOpenNow > 0 ? Math.min(rawTimeOpenNow, 120) : 20;
+    const safeTimeOpenNow = normalizeTimeOpen(settingsNow.timeOpen);
     setState(
       "round",
       {
         status: ROUND_STATUSES.IDLE,
         opensAt: null,
         closesAt: null,
-        remainingCs: safeTimeOpenNow * 100,
+        remainingCs: safeTimeOpenNow > 0 ? safeTimeOpenNow * 100 : null,
         roundNumber: Number.isFinite(Number(liveRound.roundNumber)) ? Math.trunc(Number(liveRound.roundNumber)) : 0,
         pausedFrom: null,
         winnerId: null,
@@ -11877,8 +11979,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Time open
-                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} ${episodeLockAttr("timeOpen")} />
-                <p class="setting-helper">How many seconds buzzers stay open each round.</p>
+                <select data-setting="timeOpen" ${settingDisabledAttr} ${episodeLockAttr("timeOpen")}>
+                  ${TIME_OPEN_OPTIONS.map((s) => `<option value="${s}" ${normalizeTimeOpen(settings.timeOpen) === s ? "selected" : ""}>${s === 0 ? "No timer" : `${s}s`}</option>`).join("")}
+                </select>
+                <p class="setting-helper">How many seconds buzzers stay open each round. No timer stays open until you pause or close it.</p>
               </label>
               <label>
                 Lock after buzz
@@ -11974,10 +12078,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 Scoring mode
                 <select data-setting="scoringMode" ${settingDisabledAttr} ${episodeLockAttr("scoringMode")}>
                   <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
-                  ${isCoopMode(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
+                  ${isCoopMode(settings) || !isMainTimerEnabled(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
                   <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Pick-a-value (player-determined)</option>
                 </select>
-                <p class="setting-helper">How each buzz is valued.${isCoopMode(settings) ? " JACK is disabled in coopertition mode." : ""}</p>
+                <p class="setting-helper">How each buzz is valued.${isCoopMode(settings) ? " JACK is disabled in coopertition mode." : !isMainTimerEnabled(settings) ? " JACK needs a timer — pick a buzz time to enable it." : ""}</p>
               </label>
               ${
                 settings.scoringMode === "uniform"
@@ -12197,7 +12301,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" || isCoopMode(settings) ? "disabled" : ""}>Dis or Dat</button>
-                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race (30-second games carry a finish-fast bonus; longer timed games score no time bonus); Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${Number(settings.disOrDatTimedSeconds ?? 30) === 0 ? "no-timer" : `${settings.disOrDatTimedSeconds || 30}-second`} race (30-second games carry a finish-fast bonus; longer timed games score no time bonus); Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
               <div>
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" || isCoopMode(settings) ? "disabled" : ""}>Fibbage</button>
@@ -12262,7 +12366,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
 
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
-        <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        <span>Time left: <strong data-live-time-left>${timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`}</strong></span>
         ${settings.scoringMode === "roulette" && round.roulette?.finalValue !== null && round.roulette?.finalValue !== undefined
           ? `<span>Final value: <strong>${round.roulette.finalValue}</strong></span>`
           : ""}
@@ -13061,7 +13165,7 @@ function bindEvents() {
   const requireHost = (fn) => (e, target) => { if (!hasHostPrivileges()) return; fn(e, target); };
   delegate("change", "[data-setting]", requireHost((e, input) => {
     const setting = input.dataset.setting;
-    if (setting === "timeOpen") { setHostSetting("timeOpen", clamp(parseInt(input.value, 10) || 20, 1, 120)); return; }
+    if (setting === "timeOpen") { setHostSetting("timeOpen", normalizeTimeOpen(input.value)); return; }
     if (setting === "inputMode") { setHostSetting("inputMode", input.value); return; }
     if (setting === "optionCount") { setHostSetting("optionCount", Number(input.value)); return; }
     if (setting === "scoringMode") { setHostSetting("scoringMode", input.value === "jack" ? "jack" : input.value === "roulette" ? "roulette" : "uniform"); return; }
@@ -14869,6 +14973,20 @@ try {
     },
     pruneGraceTicks: HOST_PRUNE_GRACE_TICKS,
     retainTicks: HOST_RETAIN_TICKS,
+    hostTick,
+    getTimeLeftCs,
+    normalizeTimeOpen,
+    setFibbageLieTime,
+    setFibbageVoteTime,
+    normalizeFibbageLieTime,
+    normalizeFibbageTime,
+    normalizeQuixortBlockSec,
+    getFibbageLieTimeLeftCs,
+    getFibbageVoteTimeLeftCs,
+    getDisOrDatTimeLeftCs,
+    getDisOrDatTimedSeconds,
+    isDisOrDatBonusEligible,
+    getQuixortRunTimeLeftCs,
     getCoopCharMoodForKey,
     getCoopCharHtml,
     getCoopFaceKey,
