@@ -69,32 +69,36 @@ IDK possibly
 
 ### What's in this thing?
 (breathes in) 
-- 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off
+- 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off, plus custom labels and diamond / grid / list layouts
 - Text response mode for gibberish/anagram questions (or lame fill in the blanks)
-- Dis or Dats
-- Bingo
-- Wen dit happ'n
-- Fibbage
-- Quixort
+- Dis or Dats (7 items, custom Dis/Dat labels)
+- Bingo (5-letter word, up to 12 rounds)
+- Wen dit happ'n (Before / Never / After)
+- Fibbage (truth + lie timers, voting, 1-5x multiplier, hide-scores-mid-game option)
+- Quixort (order 4-9 items + up to 3 trash, block timer, reveal view)
+- Episode runner (pre-set question list with per-question scoring/timing overrides)
 - Audience display
 - Timer display for host companion devices (timer is shown on audience display too)
-- Producers (Co-Hosts)
-- SCREWS
+- Room-code spotlight (force-join modal on all audience screens)
+- Producers (Co-Hosts via PIN, can do everything the host can remotely)
+- SCREWS (timed victim-pick, per-player block list)
 - F*** You easter egg
 - Team mode (share buzzer across multiple devices)
 - Alliance mode (lump scores together)
 - You or players can create the teams (up to 10 teams, and you can add a player limit)
 - 42 Player cap.
-- Three separate scoring modes (Uniform, JACK, and Pick-a-value (roulette))
+- Three separate scoring modes (Uniform, JACK, and Pick-a-value (roulette, additive or single-target, animated))
+- Full game log with re-ruling, manual score adjust, and global reset
+- Configurable flow (lock-after-buzz, re-buzz, max buzzes per option, close-on-points, 1-600s timers)
+- Per-player host powers (disable buzzer, kick / re-admit, screw-block, rename)
 - Organized labeled menu
 - Handwritten snark
-- Coopertition mode
-- Credits roll
+- Coopertition mode (up to 3 players per device, Jeopardy-style control, animated faces)
 - Per-round Analytics
-- Post-Game Review
+- Post-Game Review (export / share via code)
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
-- and probably more (soon!)
+- and probably more I forgot about
 
 ### Why are you using gameshow terms in this thing
 Play JACK, then you will know
