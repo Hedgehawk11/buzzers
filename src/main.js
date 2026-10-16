@@ -481,6 +481,15 @@ function getTeamMembers(teamColor, players = currentParticipants(), assignments 
   return players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id) && assignments[player.id] === teamColor);
 }
 
+// Alliance teammate strip: team mode on with per-player scoring (not shared,
+// not coop). Members see each other's scores on their own player screens when
+// the global player scoreboard is hidden.
+function isAllianceTeammatesMode(settings = getSettings()) {
+  if (isCoopMode(settings)) return false;
+  if (!settings.teamModeEnabled) return false;
+  return settings.teamScoringMode !== "shared";
+}
+
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
   if (!settings.teamModeEnabled) {
     return false;
@@ -1201,18 +1210,23 @@ function isFreshCoopFace(faceKey) {
 function getCoopCharMoodForKey(scoreKey, round) {
   // Audience/tablet displays stay idle 24/7 — faces are player/host only.
   try { if (isAudienceDisplayClient()) return "idle"; } catch {}
+  // Roulette dance is a coop rep telegraph: non-coop keys have no rep model
+  // (every plain pid would read as its device's rep), so alliance teammates
+  // never dance — only buzz/correct/wrong play there.
+  let allowDance = false;
+  try { allowDance = isCoopMode(); } catch { allowDance = false; }
   const moods = getCoopMoods();
   const mood = moods?.[scoreKey];
   let face = null;
   if (mood === "correct" || mood === "wrong" || mood === "rewind") {
     // The active pick-a-value dancer wins over a stored face during roulette.
-    if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+    if (allowDance && round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
       const rep = getRouletteRepForDevice(round.roulette, scoreKey);
       if (rep) return "dance";
     }
     face = mood;
   } else {
-    if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+    if (allowDance && round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
       const rep = getRouletteRepForDevice(round.roulette, scoreKey);
       if (rep) return "dance";
     }
@@ -1236,13 +1250,25 @@ function getCoopCharMoodForKey(scoreKey, round) {
   if (!face) return "idle";
   // One-shot faces (buzz/correct/wrong) play only on the owning device and
   // on host/producer screens — other players just see the idle avatar.
-  // (Dance is a turn telegraph and stays visible to everyone.)
+  // (Dance is a turn telegraph and stays visible to everyone.) Exception:
+  // alliance teammates see each other's faces on the teammate strip (coop
+  // keeps the strict owner-only rule).
   if (face !== "dance") {
     try {
       if (!hasHostPrivileges()) {
         const myId = me()?.id;
         const owner = parseCoopScoreKey(scoreKey)?.deviceId || scoreKey;
-        if (myId && owner && myId !== owner) return "idle";
+        if (myId && owner && myId !== owner) {
+          let teammate = false;
+          try {
+            if (!isCoopMode()) {
+              const asg = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+              const mine = getPlayerTeamColor(myId, asg);
+              teammate = Boolean(mine) && mine === getPlayerTeamColor(owner, asg);
+            }
+          } catch { teammate = false; }
+          if (!teammate) return "idle";
+        }
       }
     } catch { /* fail-open: show the face */ }
   }
@@ -2555,7 +2581,18 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
       const parsedKey = parseCoopScoreKey(entryScoreKey);
       if (parsedKey) setState("coopLastCorrect", { ...getCoopLastCorrect(), [parsedKey.deviceId]: parsedKey.slot }, true);
     }
-    if (isCoopMode(settings) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && isCoopMoodKey(entryScoreKey, entry.playerId)) {
+    // Alliance faces: a small alliance (3 or fewer teammates) earns judged
+    // faces on the buzzing player's pid key through the same coopMoods
+    // pipeline (buzz faces already resolve from the round log, no write
+    // needed). Larger alliances show no faces, so nothing is written.
+    let allianceFaceEligible = false;
+    if (!isCoopMode(settings) && settings.teamModeEnabled && settings.teamScoringMode !== "shared" && !isCoopScoreKey(entryScoreKey)) {
+      try {
+        const ownerTeam = getPlayerTeamColor(entry.playerId, assignments);
+        allianceFaceEligible = Boolean(ownerTeam) && getTeamMembers(ownerTeam, currentParticipants(), assignments).length <= 3;
+      } catch { allianceFaceEligible = false; }
+    }
+    if ((isCoopMode(settings) || allianceFaceEligible) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && (isCoopMoodKey(entryScoreKey, entry.playerId) || allianceFaceEligible)) {
       if (opts?.buzzFirst && nextAwarded !== 0) {
         // Instant-scoring path: points are already final, but the buzz face
         // (derived from buzzedPlayerIds) gets to play first — flip to the
@@ -12635,6 +12672,57 @@ function renderScores(players, scores, extraClass = "") {
   `;
 }
 
+// Alliance teammate strip — player screens only, shown instead of the hidden
+// panel when the global scoreboard is off. Lists just the viewer's own
+// alliance (individual scores + alliance total). Teams of 3 or fewer get the
+// coop face avatars (stable id-sorted seats, animated buzz/correct/wrong via
+// the shared face pipeline); larger teams fall back to rank badges. Member
+// rows carry data-score-key/data-score-value so score-delta pills animate.
+function renderAllianceTeammateCard(players, scores) {
+  try {
+    if (hasHostPrivileges()) return "";
+    if (isAudienceDisplayClient()) return "";
+    const settings = getSettings();
+    if (!isAllianceTeammatesMode(settings)) return "";
+    if (settings.showScoresToPlayers) return "";
+    const mePlayer = me();
+    if (!mePlayer || mePlayer.id === getControllerId()) return "";
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+    const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+    if (!myTeamColor) return "";
+    const members = getTeamMembers(myTeamColor, players, assignments);
+    if (members.length === 0) return "";
+    const round = getRound();
+    // Stable face seats: sort by id so avatars never jump when scores change;
+    // display order stays sorted by score like the main scoreboard.
+    const byId = [...members].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const slotOf = new Map(byId.map((m, i) => [m.id, i]));
+    const useFaces = members.length <= 3;
+    const rows = members
+      .map((m) => ({ m, value: Number(scores[m.id] || 0) }))
+      .sort((a, b) => b.value - a.value)
+      .map(({ m, value }, index) => {
+        let badge = "";
+        if (useFaces) {
+          const slot = slotOf.get(m.id) ?? 0;
+          badge = getCoopCharHtml(slot, getCoopCharMoodForKey(m.id, round), "", m.id);
+        }
+        if (!badge) badge = getRankBadgeHtml(index + 1);
+        const you = m.id === mePlayer.id ? ` <small>(${getSnark("shared.scores.teammatesYou", "you")})</small>` : "";
+        return `<li data-score-key="${escapeHtml(m.id)}"><span>${badge}${escapeHtml(getPlayerName(m))}${you}</span><strong data-score-value>${value}</strong></li>`;
+      })
+      .join("");
+    const total = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
+    return `
+    <section class="card score-card alliance-teammates" data-alliance-teammates="${escapeHtml(myTeamColor)}">
+      <h2>${getSnark("shared.scores.teammatesTitle", "Your alliance")} <span class="team-pill team-${myTeamColor}">${myTeamColor}</span></h2>
+      <ul>${rows}</ul>
+      <p class="muted">${getSnark("shared.scores.teammatesTotal", "Alliance total")}: <strong data-score-value>${total}</strong></p>
+    </section>
+    `;
+  } catch { return ""; }
+}
+
 // =============================================================================
 // Game log — reverse-chronological list of every buzz, editable by host
 // =============================================================================
@@ -12864,7 +12952,7 @@ function render() {
       <section class="grid grid-single">
         ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+        ${showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")))}
       </section>` ;
     const _html_bingo = `
       <main class="layout" data-bingo-active="true">
@@ -12900,7 +12988,7 @@ function render() {
       <section class="grid grid-single">
         ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+        ${showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")))}
       </section>` ;
     const _html_disordat = `
       <main class="layout" data-disordat-active="true">
@@ -12927,7 +13015,7 @@ function render() {
   if (isFibbageMode()) {
     const hideScores = shouldHideFibbageScores();
     const fibScoresHost = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : renderScores(players, scores, "score-card-host");
-    const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
+    const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
@@ -12965,7 +13053,7 @@ function render() {
 
   if (isQuixortMode()) {
     const qxScoresHost = renderScores(players, scores, "score-card-host");
-    const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."));
+    const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
@@ -13025,7 +13113,7 @@ function render() {
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores, showAdminData ? "score-card-host" : "")
-          : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable."))}
+          : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable.")))}
       </section>
 
       ${showAdminData ? renderAnalyticsCard(false) : ""}
@@ -14974,6 +15062,7 @@ try {
     pruneGraceTicks: HOST_PRUNE_GRACE_TICKS,
     retainTicks: HOST_RETAIN_TICKS,
     hostTick,
+    renderNow: () => { render(); },
     getTimeLeftCs,
     normalizeTimeOpen,
     setFibbageLieTime,

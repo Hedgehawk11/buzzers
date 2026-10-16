@@ -1411,6 +1411,135 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScori
   check("alliance totals above player scores", totalsIdx !== -1 && playerIdx !== -1 && totalsIdx < playerIdx, `totals=${totalsIdx} player=${playerIdx}`);
 }
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);
+// --- alliance teammate strip: teammates see each other when global scores hide ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "alliance"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToPlayers", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
+for (const pid of Object.keys(pk._store.participants)) {
+  if (pid === "host1" || pid === "prod1") continue;
+  const color = pid === "dev1" || pid === "dev2" ? "red" : "blue";
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: [pid, color] }, prod);
+}
+S().scores = { dev1: 100, dev2: 200, dev3: 300 };
+{
+  const T = globalThis.__BUZZER_TEST__;
+  T.setCoopCharArt(1, "base", "/1.png");
+  T.setCoopCharArt(2, "base", "/2.png");
+  T.setCoopCharArt(1, "buzz", "/1-buzz.png", 4);
+  T.setCoopCharArt(2, "buzz", "/2-buzz.png", 4);
+  T.setCoopCharArt(2, "correct", "/2-correct.png", 4);
+  T.setCoopCharArt(1, "wrong", "/1-wrong.png", 4);
+  T.setCoopCharArt(2, "wrong", "/2-wrong.png", 4);
+}
+const viewAs = (pid, host = false) => {
+  pk._store.self = pk._store.participants[pid];
+  pk._store.isHost = host;
+  globalThis.__BUZZER_TEST__.renderNow();
+};
+viewAs("dev1");
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("teammate strip renders for alliance member", html.includes('data-alliance-teammates="red"'), `html len=${html.length}`);
+  check("teammate sees ally score", html.includes('data-score-key="dev2"') && html.includes(">200<"), "dev2 row missing");
+  check("teammate hides other alliance", !html.includes('data-score-key="dev3"'), "dev3 leaked");
+  check("small alliance uses faces", html.includes("coop-avatar"), "no faces on 2-member strip");
+  check("strip marks own row", html.includes("(you)"), "you marker missing");
+}
+// buzz + judged faces animate for teammates (same-alliance visibility)
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: [""] }, prod);
+await pk._store.rpc.buzz({ option: 2 }, dev2);
+viewAs("dev1");
+check("ally buzz face visible to teammate", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "buzz", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round));
+const allyEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [allyEntry.id, 1000] }, prod);
+check("ally judged face written to pid mood", S().coopMoods?.dev2 === "correct", JSON.stringify(S().coopMoods?.dev2));
+viewAs("dev1");
+check("ally correct face visible to teammate", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "correct", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round));
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await sleep(1600);
+viewAs("dev1");
+check("ally correct self-clears", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "idle", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round));
+// wrong holds, reset rewinds
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: [""] }, prod);
+await pk._store.rpc.buzz({ option: 2 }, dev1);
+const allyWrong = S().gameLog.filter((e) => e.type === "buzz").pop();
+await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [allyWrong.id, -1000] }, prod);
+viewAs("dev2");
+check("ally wrong face holds", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev1", S().round) === "wrong", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev1", S().round));
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+check("reset rewinds ally wrong", S().coopMoods?.dev1 === "rewind", JSON.stringify(S().coopMoods?.dev1));
+// global-on hides the strip in favor of the full board
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToPlayers", true] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("strip hidden when global scores on", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked");
+check("full board shows all when global on", _mount.innerHTML.includes('data-score-key="dev3"'), "full board missing");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToPlayers", false] }, prod);
+// 4+ teammates fall back to no faces
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "red"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["plain1", "red"] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("large alliance drops faces", _mount.innerHTML.includes('data-alliance-teammates="red"') && !_mount.innerHTML.includes("coop-avatar"), "faces leaked to 4-member strip");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "blue"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["plain1", "blue"] }, prod);
+// unassigned players keep the hidden panel
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", ""] }, prod);
+viewAs("solo1");
+await sleep(50);
+check("unassigned sees no strip", !_mount.innerHTML.includes("data-alliance-teammates") && _mount.innerHTML.includes("Only the Host can view scores"), "strip leaked to unassigned");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "blue"] }, prod);
+// host + display never see the strip
+viewAs("host1", true);
+await sleep(50);
+check("host sees no strip", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked to host");
+viewAs("disp1");
+await sleep(50);
+check("display sees no strip", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked to display");
+// coop mode uses the group board, never the strip
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("coop uses group board", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked to coop");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+// team select never shows the strip (picking teams, not tracking scores)
+await pk._store.rpc["producer-action"]({ fn: "openTeamSelect", args: [] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("teamselect hides teammate strip", !_mount.innerHTML.includes("data-alliance-teammates") && _mount.innerHTML.includes("Only the Host can view scores"), "strip leaked to team select");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "closeTeamSelect", args: [] }, prod);
+{
+  const T = globalThis.__BUZZER_TEST__;
+  for (const n of [1, 2]) for (const st of ["base", "buzz", "correct", "wrong"]) T.setCoopCharArt(n, st, null);
+}
+pk._store.self = pk._store.participants.host1;
 // --- roll credits broadcast: host starts, everyone but tablet watches ---
 pk._store.self = pk._store.participants.host1;
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
