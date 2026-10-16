@@ -490,6 +490,22 @@ function isAllianceTeammatesMode(settings = getSettings()) {
   return settings.teamScoringMode !== "shared";
 }
 
+// First-seen sequence per pid (host-assigned in ensureHostInit) for
+// join-ordered strips: earliest-joined teammate skates as 1, then 2, 3.
+function getJoinOrder() {
+  const j = getSafeState("joinOrder", {});
+  return j && typeof j === "object" ? j : {};
+}
+function compareJoinOrder(aId, bId) {
+  const order = getJoinOrder();
+  const sa = Number(order[aId]);
+  const sb = Number(order[bId]);
+  const va = Number.isFinite(sa) ? sa : Infinity;
+  const vb = Number.isFinite(sb) ? sb : Infinity;
+  if (va !== vb) return va - vb;
+  return String(aId).localeCompare(String(bId));
+}
+
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
   if (!settings.teamModeEnabled) {
     return false;
@@ -1976,6 +1992,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
     coopLastCorrect: getCoopLastCorrect(),
+    joinOrder: getJoinOrder(),
     customNames: getCustomNames(),
     // Scores + rulings must invalidate the signature or other clients never
     // re-render after a host ruling (their tick only patches timers). The log
@@ -7338,6 +7355,29 @@ function ensureHostInit() {
         setState("scores", prunedScores, true);
       }
     } catch {}
+    // Join order (pid -> first-seen sequence) for join-ordered strips.
+    // Assigned only on stable snapshots so a halved roster can't misorder
+    // latecomers; expired ids drop with the other identity state.
+    try {
+      const order = getJoinOrder();
+      const next = { ...order };
+      let max = 0;
+      for (const v of Object.values(next)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > max) max = n;
+      }
+      for (const p of currentParticipants()) {
+        if (next[p.id] === undefined) next[p.id] = ++max;
+      }
+      let touched = Object.keys(next).length !== Object.keys(order).length;
+      for (const id of Object.keys(next)) {
+        if (expiredIds.has(id)) {
+          delete next[id];
+          touched = true;
+        }
+      }
+      if (touched) setState("joinOrder", next, true);
+    } catch {}
   }
   if (getState("coopMoods") === undefined || getState("coopMoods") === null) {
     setState("coopMoods", {}, true);
@@ -12675,9 +12715,11 @@ function renderScores(players, scores, extraClass = "") {
 // Alliance teammate strip — player screens only, shown instead of the hidden
 // panel when the global scoreboard is off. Lists just the viewer's own
 // alliance (individual scores + alliance total). Teams of 3 or fewer get the
-// coop face avatars (stable id-sorted seats, animated buzz/correct/wrong via
-// the shared face pipeline); larger teams fall back to rank badges. Member
-// rows carry data-score-key/data-score-value so score-delta pills animate.
+// coop face avatars in a horizontal strip (animated buzz/correct/wrong via
+// the shared face pipeline); larger teams fall back to rank badges in a
+// vertical list. Face seats follow join order — earliest-joined teammate
+// skates as 1, then 2, 3. Member rows carry
+// data-score-key/data-score-value so score-delta pills animate.
 function renderAllianceTeammateCard(players, scores) {
   try {
     if (hasHostPrivileges()) return "";
@@ -12693,34 +12735,84 @@ function renderAllianceTeammateCard(players, scores) {
     const members = getTeamMembers(myTeamColor, players, assignments);
     if (members.length === 0) return "";
     const round = getRound();
-    // Stable face seats: sort by id so avatars never jump when scores change;
-    // display order stays sorted by score like the main scoreboard.
-    const byId = [...members].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const slotOf = new Map(byId.map((m, i) => [m.id, i]));
+    // Face seats follow join order: earliest-joined teammate skates as 1,
+    // then 2, 3. Larger teams keep the score-sorted leaderboard below.
     const useFaces = members.length <= 3;
     const rows = members
       .map((m) => ({ m, value: Number(scores[m.id] || 0) }))
-      .sort((a, b) => b.value - a.value)
+      .sort((a, b) => (useFaces ? compareJoinOrder(a.m.id, b.m.id) : b.value - a.value))
       .map(({ m, value }, index) => {
         let badge = "";
         if (useFaces) {
-          const slot = slotOf.get(m.id) ?? 0;
-          badge = getCoopCharHtml(slot, getCoopCharMoodForKey(m.id, round), "", m.id);
+          badge = getCoopCharHtml(index, getCoopCharMoodForKey(m.id, round), "", m.id);
         }
         if (!badge) badge = getRankBadgeHtml(index + 1);
         const you = m.id === mePlayer.id ? ` <small>(${getSnark("shared.scores.teammatesYou", "you")})</small>` : "";
-        return `<li data-score-key="${escapeHtml(m.id)}"><span>${badge}${escapeHtml(getPlayerName(m))}${you}</span><strong data-score-value>${value}</strong></li>`;
+        return `<li data-score-key="${escapeHtml(m.id)}"><span class="teammate-line">${badge}<span class="teammate-name">${escapeHtml(getPlayerName(m))}${you}</span></span><strong data-score-value>${value}</strong></li>`;
       })
       .join("");
     const total = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
     return `
     <section class="card score-card alliance-teammates" data-alliance-teammates="${escapeHtml(myTeamColor)}">
       <h2>${getSnark("shared.scores.teammatesTitle", "Your alliance")} <span class="team-pill team-${myTeamColor}">${myTeamColor}</span></h2>
-      <ul>${rows}</ul>
+      <ul${useFaces ? ` class="teammate-faces"` : ""}>${rows}</ul>
       <p class="muted">${getSnark("shared.scores.teammatesTotal", "Alliance total")}: <strong data-score-value>${total}</strong></p>
     </section>
     `;
   } catch { return ""; }
+}
+
+// Roster flash: brief background wash when the viewer's own team changes.
+// Local-only (module vars, never shared) — host/producer/audience/tablet
+// clients carry no team, so only player screens ever flash. The persistent
+// #roster-flash layer (created at boot, outside #app) survives full
+// innerHTML re-renders mid-fade.
+let lastRosterFlashKey = null;
+let rosterFlashCount = 0; // test-seam counter (the DOM layer is stubbed out in tests)
+let rosterFlashTimeout = null;
+// The viewer's own team color, or null when this screen has no team context
+// (host/producer/audience/controller) — those screens never flash.
+function myRosterFlashKey() {
+  try {
+    const self = me();
+    if (!self?.id || self.id === getControllerId()) return null;
+    if (isAudienceDisplayClient()) return null;
+    if (hasHostPrivileges()) return null;
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    return String(getPlayerTeamColor(self.id, assignments) || "");
+  } catch { return null; }
+}
+function ensureRosterFlashLayer() {
+  try {
+    let layer = document.getElementById("roster-flash");
+    if (layer) return layer;
+    layer = document.createElement("div");
+    layer.id = "roster-flash";
+    document.body.appendChild(layer);
+    return layer;
+  } catch { return null; }
+}
+function flashRosterBackground() {
+  try {
+    rosterFlashCount++;
+    const layer = ensureRosterFlashLayer();
+    if (!layer || !layer.classList) return;
+    layer.classList.remove("is-flashing");
+    void layer.offsetWidth;
+    layer.classList.add("is-flashing");
+    clearTimeout(rosterFlashTimeout);
+    rosterFlashTimeout = setTimeout(() => { try { layer.classList.remove("is-flashing"); } catch {} }, 950);
+  } catch {}
+}
+function maybeFlashRosterBackground() {
+  try {
+    const key = myRosterFlashKey();
+    // No team context (host/audience/etc.): sit out without disturbing the
+    // last-seen key — each client only ever renders its own view.
+    if (key === null) return;
+    if (lastRosterFlashKey !== null && key !== lastRosterFlashKey && gameLaunched) flashRosterBackground();
+    lastRosterFlashKey = key;
+  } catch {}
 }
 
 // =============================================================================
@@ -12874,6 +12966,8 @@ function render() {
   } else {
     document.body.dataset.uiAnims = "off";
   }
+  // Background wash when the viewer's own team changed since last render.
+  try { maybeFlashRosterBackground(); } catch {}
 
   if (isAudienceDisplayClient()) {
     const buzzedCount = (round.buzzedPlayerIds || []).length;
@@ -15040,6 +15134,7 @@ function boot() {
   renderPrejoinScreen();
   probeRankBadges();
   probeCoopChars();
+  try { ensureRosterFlashLayer(); } catch (e) { console.warn("[boot] roster flash layer failed", e); }
 }
 
 
@@ -15078,6 +15173,7 @@ try {
     getQuixortRunTimeLeftCs,
     getCoopCharMoodForKey,
     getCoopCharHtml,
+    getRosterFlashCount: () => rosterFlashCount,
     getCoopFaceKey,
     isFreshCoopFace,
     resetCoopFaceSeen: () => { coopFaceSeen.clear(); coopFaceHeld.clear(); },

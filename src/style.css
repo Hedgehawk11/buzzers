@@ -3033,6 +3033,29 @@ body[data-ui-anims="off"] * {
   animation: none !important;
 }
 
+/* Roster flash: brief background wash when the viewer's own team changes.
+   Driven by the persistent #roster-flash layer (created at boot,
+   outside #app so re-renders never wipe it); the is-flashing class replays
+   the fade. Anims-off kills it via the global rule above. */
+#roster-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(255, 255, 255, 0.14), transparent 60%),
+    radial-gradient(closest-side at 50% 55%, rgba(34, 166, 242, 0.12), transparent 70%);
+}
+@keyframes rosterFlashFade {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  100% { opacity: 0; }
+}
+body:not([data-ui-anims="off"]) #roster-flash.is-flashing {
+  animation: rosterFlashFade 900ms ease;
+}
+
 /* Screw moment: subtle shake on the active card (entrance, once) */
 @keyframes screwShake {
   0%, 100% { transform: translateX(0); }
@@ -3358,6 +3381,49 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 .coop-sub-row > span { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
 .coop-sub-row .coop-avatar { width: 30px; height: 30px; }
 .coop-sub-row.is-muted, .coop-sub-row.is-frozen { opacity: 0.55; }
+
+/* Alliance teammate strip: 3-or-fewer teams lay out horizontally (faces on
+   top, name + score below); larger teams keep the default vertical list. */
+.alliance-teammates ul.teammate-faces {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  gap: 0.5rem;
+}
+.alliance-teammates ul.teammate-faces > li {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  text-align: center;
+  padding: 0.55rem 0.35rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.alliance-teammates ul.teammate-faces .teammate-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.alliance-teammates ul.teammate-faces .teammate-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 0.92rem;
+}
+.alliance-teammates ul.teammate-faces .coop-avatar { width: 44px; height: 44px; }
+@media (max-width: 560px) {
+  .alliance-teammates ul.teammate-faces { gap: 0.35rem; }
+  .alliance-teammates ul.teammate-faces .coop-avatar { width: 34px; height: 34px; }
+}
 .coop-mute-row { margin-top: 0.4rem; }
 .coop-text-tabs { display: flex; gap: 0.4rem; margin: 0.5rem 0; flex-wrap: wrap; }
 
@@ -3381,6 +3447,7 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 
 @media (prefers-reduced-motion: reduce) {
   .coop-avatar-strip { animation-duration: 0.01s; }
+  #roster-flash.is-flashing { animation: none !important; }
   body::before, body::after { animation: none !important; opacity: 0 !important; }
   .big-red:enabled,
   button.team-buzzer:enabled,

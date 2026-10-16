@@ -1423,6 +1423,8 @@ for (const pid of Object.keys(pk._store.participants)) {
   const color = pid === "dev1" || pid === "dev2" ? "red" : "blue";
   await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: [pid, color] }, prod);
 }
+// pin join order deterministically (host assigns first-seen sequence)
+globalThis.__BUZZER_TEST__.ensureHostInit();
 S().scores = { dev1: 100, dev2: 200, dev3: 300 };
 {
   const T = globalThis.__BUZZER_TEST__;
@@ -1433,6 +1435,7 @@ S().scores = { dev1: 100, dev2: 200, dev3: 300 };
   T.setCoopCharArt(2, "correct", "/2-correct.png", 4);
   T.setCoopCharArt(1, "wrong", "/1-wrong.png", 4);
   T.setCoopCharArt(2, "wrong", "/2-wrong.png", 4);
+  T.setCoopCharArt(3, "base", "/3.png");
 }
 const viewAs = (pid, host = false) => {
   pk._store.self = pk._store.participants[pid];
@@ -1447,8 +1450,35 @@ await sleep(50);
   check("teammate sees ally score", html.includes('data-score-key="dev2"') && html.includes(">200<"), "dev2 row missing");
   check("teammate hides other alliance", !html.includes('data-score-key="dev3"'), "dev3 leaked");
   check("small alliance uses faces", html.includes("coop-avatar"), "no faces on 2-member strip");
+  check("small alliance lays out horizontally", html.includes("teammate-faces"), "no horizontal face list");
+  const strip = html.slice(html.indexOf("data-alliance-teammates"));
+  check("strip follows join order, not score", strip.indexOf('data-score-key="dev1"') < strip.indexOf('data-score-key="dev2"'), "join order wrong");
+  check("strip faces run 1,2,3", strip.indexOf('"/1.png"') !== -1 && strip.indexOf('"/1.png"') < strip.indexOf('"/2.png"'), "face order wrong");
   check("strip marks own row", html.includes("(you)"), "you marker missing");
 }
+// third joiner skates last with face 3 (join order, not score)
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+const newf3 = pk.makePlayer("newf1", "NewFace");
+pk._store.participants.newf1 = newf3;
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["newf1", "red"] }, prod);
+globalThis.__BUZZER_TEST__.ensureHostInit();
+viewAs("dev1");
+await sleep(50);
+{
+  const html3 = _mount.innerHTML;
+  const strip3 = html3.slice(html3.indexOf("data-alliance-teammates"));
+  check(
+    "third joiner skates last",
+    strip3.indexOf('data-score-key="dev1"') < strip3.indexOf('data-score-key="dev2"') && strip3.indexOf('data-score-key="dev2"') < strip3.indexOf('data-score-key="newf1"'),
+    "join order wrong",
+  );
+  check("third joiner gets face 3", strip3.indexOf('"/2.png"') !== -1 && strip3.indexOf('"/2.png"') < strip3.indexOf('"/3.png"'), "face 3 mis-seated");
+}
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+delete pk._store.participants.newf1;
+try { delete S().teamAssignments?.newf1; } catch {}
 // buzz + judged faces animate for teammates (same-alliance visibility)
 pk._store.self = pk._store.participants.host1;
 pk._store.isHost = true;
@@ -1497,7 +1527,7 @@ await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "r
 await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["plain1", "red"] }, prod);
 viewAs("dev1");
 await sleep(50);
-check("large alliance drops faces", _mount.innerHTML.includes('data-alliance-teammates="red"') && !_mount.innerHTML.includes("coop-avatar"), "faces leaked to 4-member strip");
+check("large alliance drops faces", _mount.innerHTML.includes('data-alliance-teammates="red"') && !_mount.innerHTML.includes("coop-avatar") && !_mount.innerHTML.includes("teammate-faces"), "faces leaked to 4-member strip");
 pk._store.self = pk._store.participants.host1;
 pk._store.isHost = true;
 await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "blue"] }, prod);
@@ -1537,7 +1567,40 @@ pk._store.isHost = true;
 await pk._store.rpc["producer-action"]({ fn: "closeTeamSelect", args: [] }, prod);
 {
   const T = globalThis.__BUZZER_TEST__;
-  for (const n of [1, 2]) for (const st of ["base", "buzz", "correct", "wrong"]) T.setCoopCharArt(n, st, null);
+  for (const n of [1, 2, 3]) for (const st of ["base", "buzz", "correct", "wrong"]) T.setCoopCharArt(n, st, null);
+}
+// roster flash: only the affected player's own screen flashes
+{
+  const T = globalThis.__BUZZER_TEST__;
+  viewAs("dev1"); // primes dev1's key (red team)
+  const flashBefore = T.getRosterFlashCount();
+  // someone else's team change: silent on dev1's screen
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev2", "green"] }, prod);
+  viewAs("dev1");
+  check("other team change stays silent", T.getRosterFlashCount() === flashBefore, `count=${T.getRosterFlashCount()}`);
+  // own team change: flashes
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "blue"] }, prod);
+  viewAs("dev1");
+  check("own team change flashes background", T.getRosterFlashCount() === flashBefore + 1, `count=${T.getRosterFlashCount()}`);
+  // scores/settings: silent
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  viewAs("dev1");
+  check("scores/settings don't flash background", T.getRosterFlashCount() === flashBefore + 1, `count=${T.getRosterFlashCount()}`);
+  // host screen never flashes (no team context)
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "green"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("host screen stays silent", T.getRosterFlashCount() === flashBefore + 1, `count=${T.getRosterFlashCount()}`);
+  // restore red/red for the suites below
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "red"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev2", "red"] }, prod);
 }
 pk._store.self = pk._store.participants.host1;
 // --- roll credits broadcast: host starts, everyone but tablet watches ---
