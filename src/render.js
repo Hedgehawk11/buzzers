@@ -24,6 +24,7 @@ const PRESERVED_INPUT_IDS = [
   "prejoin-room-code",
   "prejoin-team-mode",
   "prejoin-producer-password",
+  "prejoin-music",
   "teamselect-limit",
   "fibbage-lie-time",
   "fibbage-vote-time",

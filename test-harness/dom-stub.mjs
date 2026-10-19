@@ -99,4 +99,58 @@ export function installDom() {
   globalThis.CSS = { escape: (s) => String(s) };
   globalThis.HTMLElement = class {};
   globalThis.HTMLButtonElement = class {};
+
+  // Audio stub for music engine tests
+  const audioState = { instances: [] };
+  globalThis.Audio = class {
+    constructor(src) {
+      this.src = src;
+      this.volume = 1;
+      this.loop = false;
+      this.currentTime = 0;
+      this._listeners = {};
+      this._ended = false;
+      this._paused = true;
+      audioState.instances.push(this);
+    }
+    addEventListener(type, fn) {
+      (this._listeners[type] = this._listeners[type] || []).push(fn);
+    }
+    removeEventListener(type, fn) {
+      const arr = this._listeners[type] || [];
+      const i = arr.indexOf(fn);
+      if (i >= 0) arr.splice(i, 1);
+    }
+    play() {
+      this._paused = false;
+      return Promise.resolve();
+    }
+    pause() {
+      this._paused = true;
+    }
+    load() {}
+    set src(v) {
+      this._src = v;
+      // Simulate load success by default
+      setTimeout(() => {
+        const arr = this._listeners.canplaythrough || [];
+        arr.forEach(fn => fn({ type: "canplaythrough" }));
+      }, 0);
+    }
+    get src() {
+      return this._src;
+    }
+    // Test helpers
+    _emitEnded() {
+      this._ended = true;
+      const arr = this._listeners.ended || [];
+      arr.forEach(fn => fn({ type: "ended" }));
+    }
+    _emitError() {
+      const arr = this._listeners.error || [];
+      arr.forEach(fn => fn({ type: "error" }));
+    }
+  };
+  globalThis.Audio._instances = () => audioState.instances;
+  globalThis.Audio._reset = () => { audioState.instances = []; };
 }

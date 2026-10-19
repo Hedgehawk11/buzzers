@@ -96,6 +96,7 @@ IDK possibly
 - Post-Game Review (export / share via code)
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
+- Audience display music (pre-game, per-minigame intro/instructions/play/end, post-game, with fade-in extras and M-key toggle)
 - and probably more I forgot about
 
 ### Why are you using gameshow terms in this thing
