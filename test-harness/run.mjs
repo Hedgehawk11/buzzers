@@ -2116,9 +2116,11 @@ const epui = await import("../src/episodes/ui.js");
   );
   await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [{ schemaVersion: 1, meta: {}, defaults: {}, items: [] }] }, prod);
   check("invalid attach rejected", S().episodePrompt === null && S().settings?.uniformPoints === upBefore, JSON.stringify(S().episodePrompt));
+  // Ensure round is IDLE so attach applies defaults immediately (new behavior:
+  // attach defers defaults while a round is live).
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [testEp] }, prod);
   check("attach seeds defaults", S().settings?.uniformPoints === 777 && S().settings?.timeOpen === 25, JSON.stringify({ u: S().settings?.uniformPoints, t: S().settings?.timeOpen }));
-  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
   check("runner card on host", _mount.innerHTML.includes("ep-runner") && _mount.innerHTML.includes("Harness Ep"), "runner card missing");

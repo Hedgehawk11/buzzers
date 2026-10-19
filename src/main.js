@@ -10518,17 +10518,23 @@ function harvestIntoDraft() {
 function refreshCreator() { renderPrejoinScreen("creator"); }
 // Patch the host form's cloud row without re-rendering (a re-render would
 // wipe the typed host name). Top-level: probeEpisodeCloud calls it.
-// No-ops when the host form isn't showing.
+// Also patches the in-game loader's cloud row. No-ops when forms aren't showing.
   function refreshAttachCloudRow() {
     try {
+      // Prejoin form
       const input = document.querySelector("#ep-attach-code");
       const btn = document.querySelector("[data-ep-attach-cloud]");
       const hint = document.querySelector("#ep-attach-cloud-hint");
       if (input) input.disabled = !episodeCloudEnabled;
       if (btn) btn.disabled = !episodeCloudEnabled;
-      // Static strings only (no user data) — innerHTML is safe here, and the
-      // delegated Retry handler survives the swap.
       if (hint) hint.innerHTML = episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-attach-cloud-retry type="button">Retry</button>`;
+      // In-game loader card
+      const loadInput = document.querySelector("#ep-load-code");
+      const loadBtn = document.querySelector("[data-ep-load-cloud]");
+      const loadHint = document.querySelector("#ep-load-cloud-hint");
+      if (loadInput) loadInput.disabled = !episodeCloudEnabled;
+      if (loadBtn) loadBtn.disabled = !episodeCloudEnabled;
+      if (loadHint) loadHint.innerHTML = episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-load-cloud-retry type="button">Retry</button>`;
     } catch {}
   }
 function downloadEpisodeJson() {
@@ -11170,9 +11176,16 @@ function attachEpisode(episode) {
   episodeLetterIndex = 0;
   episodeLockedKeys = [];
   try { setState("episodePrompt", null, true); } catch {}
-  // Apply episode defaults immediately on explicit attach (same merge as the
-  // pre-launch path in ensureHostInit).
-  applyEpisodeSettings(episode.defaults);
+  // Apply episode defaults only when the round is not live (IDLE or CLOSED).
+  // During a live round, loading a question is blocked anyway (see episodeRunLoad),
+  // and the first load will apply effective settings then. This avoids shifting
+  // scoring/timers mid-round.
+  const liveRound = getRound();
+  if (liveRound.status === ROUND_STATUSES.IDLE || liveRound.status === ROUND_STATUSES.CLOSED) {
+    applyEpisodeSettings(episode.defaults);
+  } else {
+    setBuzzNotice("Episode attached — its settings apply when you load a question.");
+  }
   render();
   return { ok: true };
 }
@@ -11440,7 +11453,7 @@ function episodeRunEnd() {
 function renderEpisodeRunnerCard() {
   const ep = activeEpisode;
   if (!ep || !Array.isArray(ep.items) || !ep.items.length) return "";
-  if (!hasHostPrivileges()) return "";
+  if (!isHost()) return "";
   const item = ep.items[episodeIndex] || ep.items[0];
   const idx = ep.items.indexOf(item);
   const round = getRound();
@@ -11466,6 +11479,33 @@ function renderEpisodeRunnerCard() {
         <button type="button" data-ep-run-letter="1" ${episodeLetterIndex >= rounds.length - 1 ? "disabled" : ""}>Letter →</button>
       </div>` : ""}
     </section>`;
+}
+
+function renderEpisodeLoadCard() {
+  if (!isHost()) return "";
+  if (activeEpisode) return "";
+  return `
+    <section class="card ep-load">
+      <div class="ep-edit-head">
+        <h2>Load an episode</h2>
+      </div>
+      <div class="ep-attach-options">
+        <div class="ep-attach-actions">
+          <button class="secondary-action" data-ep-load-file type="button">Attach JSON file</button>
+          <input type="file" id="ep-load-file" accept="application/json,.json" hidden />
+          <button class="secondary-action" data-ep-load-draft type="button">Use creator draft</button>
+        </div>
+        <div class="ep-attach-actions">
+          <input id="ep-load-code" type="text" maxlength="12" placeholder="Cloud code (ABC123)" ${episodeCloudEnabled ? "" : "disabled"} />
+          <button class="secondary-action" data-ep-load-cloud type="button" ${episodeCloudEnabled ? "" : "disabled"}>Load by code</button>
+        </div>
+        <p class="muted" id="ep-load-cloud-hint">${episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-load-cloud-retry type="button">Retry</button>`}</p>
+      </div>
+    </section>`;
+}
+
+function renderEpisodeHostCard() {
+  return renderEpisodeRunnerCard() || renderEpisodeLoadCard();
 }
 
 function renderBroadcastHostCard() {
@@ -13000,7 +13040,7 @@ function render() {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -13038,7 +13078,7 @@ function render() {
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -13074,7 +13114,7 @@ function render() {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -13113,7 +13153,7 @@ function render() {
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${fibScoresHost}
       </section>
@@ -13151,7 +13191,7 @@ function render() {
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${qxScoresHost}
       </section>
@@ -13201,7 +13241,7 @@ function render() {
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
@@ -13844,6 +13884,63 @@ function bindEvents() {
   });
   delegate("click", "[data-ep-run-end]", () => {
     episodeRunEnd();
+  });
+
+  // --- Episode load in-game (host only; live attach) ---
+  delegate("click", "[data-ep-load-file]", () => {
+    try { document.querySelector("#ep-load-file")?.click(); } catch {}
+  });
+  delegate("change", "#ep-load-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = epParseImportText(String(reader.result || ""));
+      if (result.ok && result.episode) {
+        const res = attachEpisode(result.episode);
+        if (res.ok) showToast(`Attached "${result.episode.meta?.title || "episode"}" (${result.episode.items.length} questions).`);
+        else showToast(res.reason || "Attach failed.", { variant: "error" });
+      } else {
+        showToast(result.errorMessage || "Could not attach that file.", { variant: "error" });
+      }
+      try { input.value = ""; } catch {}
+    };
+    reader.onerror = () => showToast("Could not read that file.", { variant: "error" });
+    try { reader.readAsText(file); } catch { showToast("Could not read that file.", { variant: "error" }); }
+  });
+  delegate("click", "[data-ep-load-draft]", () => {
+    const draft = epLoadDraft();
+    const check = epValidateEpisode(draft);
+    if (!check.ok) {
+      showToast(`Creator draft has ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} — fix it in the creator first.`, { variant: "error" });
+      return;
+    }
+    const res = attachEpisode(draft);
+    if (res.ok) showToast(`Attached "${draft.meta?.title || "Untitled"}".`);
+    else showToast(res.reason || "Attach failed.", { variant: "error" });
+  });
+  delegate("click", "[data-ep-load-cloud-retry]", () => {
+    probeEpisodeCloud(true);
+  });
+  delegate("click", "[data-ep-load-cloud]", async () => {
+    if (!episodeCloudEnabled) return;
+    let code = "";
+    try { code = String(document.querySelector("#ep-load-code")?.value || "").trim().toUpperCase(); } catch {}
+    if (!code) { showToast("Enter a cloud share code first.", { variant: "error" }); return; }
+    try {
+      const { episode } = await epCloudLoad(code);
+      const check = epValidateEpisode(episode);
+      if (!check.ok) throw new Error("That episode failed validation.");
+      const res = attachEpisode(episode);
+      if (res.ok) {
+        try { const input = document.querySelector("#ep-load-code"); if (input) input.value = ""; } catch {}
+        showToast(`Attached "${episode.meta?.title || "episode"}" (${episode.items.length} questions).`);
+      } else {
+        showToast(res.reason || "Attach failed.", { variant: "error" });
+      }
+    } catch (e) {
+      showToast(e?.message || "Load failed.", { variant: "error" });
+    }
   });
 
   // --- Episode attach on the host prejoin form ---

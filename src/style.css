@@ -3642,6 +3642,7 @@ body[data-ui-anims="off"] .credits-crawl {
 .ep-prompt-banner .ep-prompt-text { font-size: 1.15rem; margin: 0.25rem 0 0; overflow-wrap: anywhere; }
 .ep-runner { border-color: var(--accent, #4aa3ff); }
 .ep-runner p { overflow-wrap: anywhere; }
+.ep-load { border-color: var(--accent, #4aa3ff); }
 .ep-attach-options { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.75rem 0; }
 /* Episode picker stays hidden until the prejoin checkbox is ticked — pure
    CSS so toggling never re-renders (typed host name survives). */
