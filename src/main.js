@@ -78,6 +78,7 @@ const DEFAULT_SETTINGS = {
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
   quixortAudienceLive: false,
+  fYouEasterEggEnabled: true,
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -3387,7 +3388,7 @@ function hostHandleBuzz(player, payload) {
 
   // F-You easter egg stays enabled in alliance/individual scoring but is
   // disabled under shared team scoring (penalty + scolding card don't fit teams).
-  const fYouAllowed = !(settings.teamModeEnabled && settings.teamScoringMode === "shared");
+  const fYouAllowed = !(settings.teamModeEnabled && settings.teamScoringMode === "shared") && settings.fYouEasterEggEnabled;
   if (usingTextEntry && fYouAllowed && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
       setState(
@@ -10919,7 +10920,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   
 // If you came here just to find this, I am both impressed and disappointed.
   if (usingTextEntry) {
-    if (fYouEasterEggUnlocked) {
+    if (fYouEasterEggUnlocked && settings.fYouEasterEggEnabled) {
       return `
         <section class="card player-card easter-egg-card">
           <h2>${escapeHtml(getSnark("player.easteregg.heading", F_YOU_EASTER_EGG_H2))}</h2>

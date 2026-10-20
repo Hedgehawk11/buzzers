@@ -416,6 +416,40 @@ button:disabled {
   min-width: 10ch;
 }
 
+.audience-options {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.audience-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid #e2e2e2;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.audience-option.is-correct {
+  border-color: #4caf50;
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.audience-option.has-buzz {
+  border-color: #2196f3;
+  color: #2196f3;
+}
+
+.audience-option:hover:not(.is-correct):not(.has-buzz) {
+  background: #f5f5f5;
+}
+
 .audience-timer {
   display: inline-block;
   min-width: 8ch;
