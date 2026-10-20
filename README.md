@@ -78,6 +78,7 @@ No. (someone else must do this beast)
 - Wen dit happ'n (Before / Never / After)
 - Fibbage (truth + lie timers, voting, 1-5x multiplier, hide-scores-mid-game option)
 - Quixort (order 4-9 items + up to 3 trash, block timer, reveal view)
+- Roadkill (episode-creator only: two clues + a streaming connector per pair, 1-12 pairs, configurable points, optional finale)
 - Episode runner (pre-set question list with per-question scoring/timing overrides)
 - Audience display
 - Timer display for host companion devices (timer is shown on audience display too)

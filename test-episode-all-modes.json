@@ -85,6 +85,35 @@
       "trash": ["Time machine", "Hoverboard"],
       "multiplier": 1,
       "blockSec": 30
+    },
+    {
+      "id": "t8-roadkill",
+      "kind": "roadkill",
+      "prompt": "Roadkill: buzz when the middle word connects both clues.",
+      "decoys": ["Cheese", "Brush", "Cloud", "Glass"],
+      "correctPoints": 1000,
+      "penaltyPoints": 1000,
+      "rounds": [
+        {
+          "clues": ["Milk", "Paint"],
+          "answer": "Chalk",
+          "decoys": ["Cheese", "Brush"]
+        },
+        {
+          "clues": ["Sky", "Ocean"],
+          "answer": "Blue",
+          "decoys": ["Green", "Cloud"]
+        },
+        {
+          "clues": ["Piano", "Voice"],
+          "answer": "Key",
+          "decoys": ["Note", "String"]
+        }
+      ],
+      "finale": {
+        "answer": "White",
+        "decoys": ["Black", "Silver"]
+      }
     }
   ]
 }

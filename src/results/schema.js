@@ -20,6 +20,7 @@ export const RESULTS_LOG_TYPES = [
   "disordat",
   "quixort",
   "fibbage",
+  "roadkill",
   "manual-adjust",
   "manual-reset",
 ];

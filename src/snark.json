@@ -505,6 +505,53 @@
         "snark2": "Wait for your teammate to call the letter! They're doing all the work."
       }
     },
+    "roadkill": {
+      "waitingHost": {
+        "en": "Waiting for the host to start...",
+        "snark1": "Waiting for the host to start... the words aren't going to stream themselves.",
+        "snark2": "Waiting on the host. Try to look like you know what's coming."
+      },
+      "notActive": {
+        "en": "Roadkill isn't playing right now.",
+        "snark1": "Roadkill isn't playing. Save the dramatics for when it is.",
+        "snark2": "Roadkill isn't playing. Your buzz has been filed under 'enthusiasm'."
+      },
+      "wordMoved": {
+        "en": "The word moved — buzz again.",
+        "snark1": "The word moved. Keep up.",
+        "snark2": "The word moved while you were deciding. Buzz again, slower."
+      },
+      "spectator": {
+        "en": "Hosts and producers watch this one.",
+        "snark1": "Hosts and producers watch this one. Yes, that means you.",
+        "snark2": "Hosts and producers watch this one. Try to look impartial."
+      },
+      "oneGuess": {
+        "en": "One guess per word — wait for the next one.",
+        "snark1": "One guess per word. Patience is a virtue you clearly lack.",
+        "snark2": "One guess per word. The next one is coming. Try not to miss that too."
+      },
+      "correctBuzz": {
+        "en": "Correct! +{points}",
+        "snark1": "Correct! +{points}. Look at you connecting things.",
+        "snark2": "Correct! +{points}. Don't let it go to your head."
+      },
+      "wrongBuzz": {
+        "en": "Wrong! -{points}",
+        "snark1": "Wrong! -{points}. That word connected nothing.",
+        "snark2": "Wrong! -{points}. Bold guess. Terrible guess."
+      },
+      "wrongBuzzFree": {
+        "en": "Wrong — no penalty.",
+        "snark1": "Wrong, but free. Generous host.",
+        "snark2": "Wrong — and somehow free. Enjoy it while it lasts."
+      },
+      "finalePrompt": {
+        "en": "What do all {count} answers have in common?",
+        "snark1": "What do all {count} answers have in common? Besides you missing them?",
+        "snark2": "What do all {count} answers have in common? Yes, that's the question."
+      }
+    },
     "disdat": {
       "waitingHost": {
         "en": "Waiting for the host to start...",
@@ -1383,6 +1430,18 @@
         "snark2": ""
       }
     },
+    "roadkill": {
+      "waitingGame": {
+        "en": "Waiting for the game to start...",
+        "snark1": "",
+        "snark2": ""
+      },
+      "standings": {
+        "en": "Standings",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "disdat": {
       "waitingGame": {
         "en": "Waiting for the game to start...",
@@ -1548,6 +1607,13 @@
     }
   },
   "shared": {
+    "analytics": {
+      "badgeRoadkill": {
+        "en": "Roadkill",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "screw": {
       "pending": {
         "en": "pending",

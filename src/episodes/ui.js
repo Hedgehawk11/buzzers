@@ -15,6 +15,14 @@ import {
   EPISODE_KINDS,
   EPISODE_OPTION_COUNTS,
   EPISODE_QUIXORT_BLOCK_SECS,
+  EPISODE_ROADKILL_DEFAULT_CORRECT,
+  EPISODE_ROADKILL_DEFAULT_PENALTY,
+  EPISODE_ROADKILL_DEFAULT_ROUNDS,
+  EPISODE_ROADKILL_MAX_DECOYS,
+  EPISODE_ROADKILL_MAX_POINTS,
+  EPISODE_ROADKILL_MAX_ROUNDS,
+  EPISODE_ROADKILL_MAX_SHARED_DECOYS,
+  EPISODE_ROADKILL_WORD_MAX,
   EPISODE_WEN_ANSWERS,
   EPISODE_WEN_LABELS,
   EPISODE_WEN_MAX_ROUNDS,
@@ -29,6 +37,7 @@ export const EPISODE_KIND_LABELS = {
   disordat: "Dis or Dat",
   fibbage: "Fibbage",
   quixort: "Quixort",
+  roadkill: "Roadkill",
 };
 
 export function kindLabel(kind) {
@@ -70,6 +79,12 @@ function itemSummary(item) {
       const rounds = Array.isArray(item.rounds) ? item.rounds : [];
       const letters = rounds.map((r) => r?.answer).filter(Boolean).join(", ");
       return `${rounds.length} round${rounds.length === 1 ? "" : "s"}${letters ? ` (${letters})` : ""}`;
+    }
+    case "roadkill": {
+      const rounds = Array.isArray(item.rounds) ? item.rounds : [];
+      const correct = Number(item.correctPoints ?? EPISODE_ROADKILL_DEFAULT_CORRECT);
+      const penalty = Number(item.penaltyPoints ?? EPISODE_ROADKILL_DEFAULT_PENALTY);
+      return `${rounds.length} pair${rounds.length === 1 ? "" : "s"} • +${correct} / −${penalty}${item.finale?.answer ? " • finale" : ""}`;
     }
     default:
       return "";
@@ -190,6 +205,60 @@ function renderDisordatFields(item, esc) {
     </div>
     <fieldset class="ep-fieldset"><legend>Seven things (${questions.filter((s) => String(s || "").trim()).length}/${EPISODE_DISORDAT_COUNT})</legend>
       <div class="ep-rounds">${rows}</div>
+    </fieldset>`;
+}
+
+function renderRoadkillFields(item, esc) {
+  const rounds = Array.isArray(item.rounds) && item.rounds.length
+    ? item.rounds
+    : Array.from({ length: EPISODE_ROADKILL_DEFAULT_ROUNDS }, () => ({ clues: ["", ""], answer: "", decoys: [] }));
+  const rows = rounds.map((round, i) => {
+    const r = round && typeof round === "object" ? round : {};
+    const clues = Array.isArray(r.clues) ? r.clues : [];
+    const decoys = Array.isArray(r.decoys) ? r.decoys.join(", ") : "";
+    return `<div class="ep-round-row ep-rk-row">
+      <span class="ep-rk-num">${i + 1}</span>
+      <input id="ep-rk-a-${i}" type="text" maxlength="120" value="${esc(clues[0] || "")}" placeholder="Clue A" aria-label="Pair ${i + 1} clue A" />
+      <input id="ep-rk-b-${i}" type="text" maxlength="120" value="${esc(clues[1] || "")}" placeholder="Clue B" aria-label="Pair ${i + 1} clue B" />
+      <input id="ep-rk-ans-${i}" type="text" maxlength="${EPISODE_ROADKILL_WORD_MAX}" value="${esc(r.answer || "")}" placeholder="Connecting word" aria-label="Pair ${i + 1} connecting word" />
+      <input id="ep-rk-dec-${i}" type="text" value="${esc(decoys)}" placeholder="Wrong words, comma-separated" aria-label="Pair ${i + 1} wrong words" />
+      <button type="button" data-ep-round-del="${i}" ${rounds.length <= 1 ? "disabled" : ""} aria-label="Remove pair ${i + 1}">×</button>
+    </div>`;
+  }).join("");
+  const shared = Array.isArray(item.decoys) ? item.decoys.join(", ") : "";
+  const finale = item.finale && typeof item.finale === "object" ? item.finale : {};
+  const finaleDecoys = Array.isArray(finale.decoys) ? finale.decoys.join(", ") : "";
+  const correct = Number(item.correctPoints ?? EPISODE_ROADKILL_DEFAULT_CORRECT);
+  const penalty = Number(item.penaltyPoints ?? EPISODE_ROADKILL_DEFAULT_PENALTY);
+  return `
+    <p class="muted">Two clues on top, one connecting word flying through the middle. Players buzz when the middle word links both clues. Wrong words can be set per pair and/or in one shared pool — they merge when the round runs.</p>
+    <fieldset class="ep-fieldset"><legend>Clue pairs (${rounds.length}/${EPISODE_ROADKILL_MAX_ROUNDS})</legend>
+      <div class="ep-rounds">${rows}</div>
+      <div class="ep-toolbar">
+        <button type="button" data-ep-round-add ${rounds.length >= EPISODE_ROADKILL_MAX_ROUNDS ? "disabled" : ""}>Add pair</button>
+      </div>
+    </fieldset>
+    <label>Shared wrong words <span class="muted">(optional, comma-separated, max ${EPISODE_ROADKILL_MAX_SHARED_DECOYS} — mixed into every pair and the finale)</span>
+      <input id="ep-rk-shared" type="text" value="${esc(shared)}" placeholder="Cream, Oat, Silk" />
+    </label>
+    <div class="ep-grid2">
+      <label>Correct points
+        <input id="ep-rk-correct" type="number" min="1" max="${EPISODE_ROADKILL_MAX_POINTS}" step="100" value="${correct}" />
+      </label>
+      <label>Wrong-buzz penalty <span class="muted">(0 = free guesses)</span>
+        <input id="ep-rk-penalty" type="number" min="0" max="${EPISODE_ROADKILL_MAX_POINTS}" step="100" value="${penalty}" />
+      </label>
+    </div>
+    <fieldset class="ep-fieldset"><legend>Finale (optional)</legend>
+      <p class="muted">After every pair, ask what all the answers had in common. Leave the answer blank for no finale.</p>
+      <div class="ep-grid2">
+        <label>Finale answer
+          <input id="ep-rk-finale-answer" type="text" maxlength="${EPISODE_ROADKILL_WORD_MAX}" value="${esc(finale.answer || "")}" placeholder="What they all have in common" />
+        </label>
+        <label>Finale wrong words <span class="muted">(comma-separated, max ${EPISODE_ROADKILL_MAX_DECOYS})</span>
+          <input id="ep-rk-finale-decoys" type="text" value="${esc(finaleDecoys)}" placeholder="Wrong, Unrelated" />
+        </label>
+      </div>
     </fieldset>`;
 }
 
@@ -336,6 +405,7 @@ function renderEditForm(item, esc, layout = "diamond") {
     case "quixort": kindFields = renderQuixortFields(item, esc); break;
     case "bingo": kindFields = renderBingoFields(item, esc); break;
     case "wendithapn": kindFields = renderWenFields(item, esc); break;
+    case "roadkill": kindFields = renderRoadkillFields(item, esc); break;
     default: kindFields = "";
   }
   return `
@@ -462,7 +532,7 @@ function renderCoopPanel(ep, esc) {
           <li>Multiple choice questions need at least ${EPISODE_COOP_MIN_OPTIONS} options; coop widens smaller ones automatically.</li>
           <li>Fibbage, Dis or Dat, and Quixort are off limits while coop is on.</li>
           <li>JACK scoring, screws, re-buzz, and shared-team scoring are disabled.</li>
-          <li>Buttons, Text answer, Bingo, and Wen Dit Happn all work in coop.</li>
+          <li>Buttons, Text answer, Bingo, Wen Dit Happn, and Roadkill all work in coop.</li>
         </ul>
         <p class="muted">To run a blocked question, turn coopertition off from buzzer mode first.</p>
       </div>
@@ -673,6 +743,35 @@ export function harvestCreatorFields(root) {
       dodQ.push(val(`#ep-dod-q-${k}`) || "");
     }
     if (hasDodQ) patch.questions = dodQ;
+    const splitList = (raw) => String(raw || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const rkRounds = [];
+    let hasRk = false;
+    for (let k = 0; q(`#ep-rk-a-${k}`); k++) {
+      hasRk = true;
+      rkRounds.push({
+        clues: [val(`#ep-rk-a-${k}`) || "", val(`#ep-rk-b-${k}`) || ""],
+        answer: val(`#ep-rk-ans-${k}`) || "",
+        decoys: splitList(val(`#ep-rk-dec-${k}`)),
+      });
+    }
+    if (hasRk) {
+      patch.rounds = rkRounds;
+      if (q("#ep-rk-shared")) patch.decoys = splitList(val("#ep-rk-shared"));
+      if (q("#ep-rk-correct")) {
+        const v = numOrRaw("#ep-rk-correct");
+        if (v !== null) patch.correctPoints = v;
+      }
+      if (q("#ep-rk-penalty")) {
+        const v = numOrRaw("#ep-rk-penalty");
+        if (v !== null) patch.penaltyPoints = v;
+      }
+      if (q("#ep-rk-finale-answer")) {
+        const answer = String(val("#ep-rk-finale-answer") || "").trim();
+        patch.finale = answer
+          ? { answer, decoys: splitList(val("#ep-rk-finale-decoys")) }
+          : null;
+      }
+    }
     const qxItems = [];
     let hasQx = false;
     for (let k = 0; k < 9; k++) {

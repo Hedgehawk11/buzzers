@@ -3676,3 +3676,137 @@ body[data-ui-anims="off"] .credits-crawl {
 .reviewer-table th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.8; }
 .reviewer-details { margin-top: 0.5rem; border: 1px solid var(--line, #2a3b4d); border-radius: 8px; padding: 0.4rem 0.6rem; }
 .reviewer-details summary { cursor: pointer; font-weight: 600; }
+
+/* === ROADKILL MODE (episode-only) === */
+.log-badge-roadkill { background: color-mix(in srgb, #ff9e57 30%, transparent); }
+.roadkill-host-panel,
+.roadkill-player-card,
+.roadkill-stage { border-color: rgba(255, 158, 87, 0.38); }
+.roadkill-stage { padding: 1rem 1.1rem; }
+.roadkill-stage-audience { padding: 1.4rem 1.6rem; }
+.roadkill-stage-head { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.roadkill-stage-head .prejoin-kicker { margin: 0; }
+.roadkill-clues { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin: 0.9rem 0; }
+.roadkill-clue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.8rem 1rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  text-align: center;
+}
+.roadkill-clue strong { font-size: clamp(1.1rem, 2.4vw, 1.6rem); line-height: 1.15; overflow-wrap: anywhere; }
+.roadkill-clue-label { font-size: 0.7rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.roadkill-finale-prompt { margin: 0.9rem 0 0.5rem; font-weight: 700; }
+.roadkill-answer-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+.roadkill-answer-chip {
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(255, 158, 87, 0.14);
+  border: 1px solid rgba(255, 158, 87, 0.35);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+.roadkill-stream {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  margin: 0.4rem 0 0.2rem;
+  padding: 0.75rem 1rem;
+  border-radius: 18px;
+  background: radial-gradient(circle at 50% 40%, rgba(255, 158, 87, 0.2), rgba(0, 0, 0, 0.18));
+  border: 2px solid rgba(255, 158, 87, 0.45);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.roadkill-stage-audience .roadkill-stream { min-height: 180px; }
+.roadkill-stream.is-revealed {
+  background: radial-gradient(circle at 50% 40%, rgba(29, 185, 84, 0.24), rgba(0, 0, 0, 0.16));
+  border-color: rgba(29, 185, 84, 0.65);
+}
+.roadkill-stream.is-paused { opacity: 0.72; }
+.roadkill-word {
+  display: inline-block;
+  font-size: clamp(2rem, 7vw, 4rem);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: center;
+  line-height: 1.05;
+  color: #ffd8b5;
+  overflow-wrap: anywhere;
+}
+.roadkill-stream.is-revealed .roadkill-word { color: #b6ffd0; }
+body:not([data-ui-anims="off"]) .roadkill-word { animation: roadkillWordIn 220ms ease-out; }
+@keyframes roadkillWordIn {
+  0% { transform: translateY(10px) scale(0.96); opacity: 0.2; }
+  100% { transform: none; opacity: 1; }
+}
+.roadkill-hint { margin: 0.35rem 0 0; font-size: 0.9rem; color: var(--muted); }
+.roadkill-points { margin: 0.4rem 0 0; font-size: 0.82rem; }
+.roadkill-pill {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.roadkill-pill.is-live { color: #ffd8b5; border-color: rgba(255, 158, 87, 0.6); }
+.roadkill-pill.is-paused { color: var(--muted); }
+.roadkill-pill.is-reveal { color: #b6ffd0; border-color: rgba(29, 185, 84, 0.6); }
+.roadkill-pill.is-done { color: #ffd700; border-color: rgba(255, 215, 0, 0.55); }
+.roadkill-outcome {
+  margin: 0.65rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+}
+.roadkill-outcome.is-correct { border-color: rgba(29, 185, 84, 0.55); background: rgba(29, 185, 84, 0.12); }
+.roadkill-outcome.is-wrong { border-color: rgba(224, 92, 92, 0.55); background: rgba(224, 92, 92, 0.1); }
+.roadkill-outcome span { font-weight: 800; }
+.roadkill-buzz-area { margin: 1rem 0; }
+.roadkill-buzz-btn {
+  width: 100%;
+  min-height: 96px;
+  font-size: 1.9rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  border-radius: 18px;
+  background: linear-gradient(160deg, #ffb066, #ff7a2f);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #1a1208;
+}
+.roadkill-buzz-btn:hover:enabled { transform: translateY(-2px); background: linear-gradient(160deg, #ffc085, #ff8b42); }
+.roadkill-buzz-btn:disabled { opacity: 0.45; }
+.roadkill-player-result { margin: 0.6rem 0; font-weight: 800; }
+.roadkill-player-result.is-correct { color: #7ff0a5; }
+.roadkill-player-result.is-wrong { color: #ff8a8a; }
+.roadkill-key-hint { margin-top: 0.35rem; }
+.roadkill-pair-list { margin: 0.75rem 0; padding-left: 1.4rem; }
+.roadkill-pair-list li { margin: 0.35rem 0; overflow-wrap: anywhere; }
+.roadkill-host-actions { flex-wrap: wrap; }
+.roadkill-slot-result { font-weight: 800; }
+.roadkill-slot-result.is-correct { color: #7ff0a5; }
+.roadkill-slot-result.is-wrong { color: #ff8a8a; }
+@media (max-width: 640px) {
+  .roadkill-clues { grid-template-columns: 1fr; }
+  .roadkill-stage-audience .roadkill-stream { min-height: 120px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .roadkill-word { animation: none !important; }
+}
+
+/* Roadkill creator rows: number + 2 clues + connector + decoys + remove.
+   Wider than the shared .ep-round-row grid, so it gets its own columns. */
+.ep-rk-row { grid-template-columns: 1.6rem 1fr 1fr 1fr 1fr 2.2rem; }
+.ep-rk-num { align-self: center; font-weight: 800; color: var(--muted); text-align: center; }
+@media (max-width: 900px) {
+  .ep-rk-row { grid-template-columns: 1.6rem 1fr 1fr 2.2rem; }
+  .ep-rk-row input:nth-of-type(3),
+  .ep-rk-row input:nth-of-type(4) { grid-column: span 2; }
+}

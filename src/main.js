@@ -23,7 +23,7 @@ import {
   updateMeta as epUpdateMeta,
 } from "./episodes/editor.js";
 import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
-import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
+import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_ROADKILL_MAX_ROUNDS as EP_MAX_ROADKILL_ROUNDS, EPISODE_ROADKILL_DEFAULT_CORRECT, EPISODE_ROADKILL_DEFAULT_PENALTY, EPISODE_ROADKILL_WORD_MAX, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
 import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 import {
   RESULTS_KIND as RESULTS_KIND_CONST,
@@ -98,6 +98,13 @@ const BINGO_RENDER_INTERVAL_MS = 50;
 const BINGO_CORRECT_POINTS = 500;
 const BINGO_INCORRECT_POINTS = -500;
 const WEN_DIT_HAPN_ITEMS = ["Before", "Never", "After"];
+
+// Roadkill (The Ride): two top clues, a connector word streaming through the
+// middle. Episode-creator exclusive; host drives the stream from its own panel.
+const ROADKILL_WORD_INTERVAL_MS = 800;
+const ROADKILL_REVEAL_MS = 2000;
+const ROADKILL_RENDER_INTERVAL_MS = 50;
+const ROADKILL_STALE_SEQ_GRACE_MS = 600;
 
 const DIS_OR_DAT_QUESTION_COUNT = 7;
 const DIS_OR_DAT_CORRECT_POINTS = 300;
@@ -201,6 +208,7 @@ let episodeSettingsBypass = false;
 let bingoCycleInterval = null;
 let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
+let lastRoadkillRenderKey = "";
 let audienceTimerFrozenCs = null;
 let disOrDatRevealUntil = 0;
 let lastAudienceParticipantCount = 0;
@@ -208,6 +216,7 @@ let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
 let bingoSpaceKeydownBound = false;
 let quixortKeydownBound = false;
+let roadkillKeydownBound = false;
 // Quixort trash two-tap confirm is client-local UI state (never shared —
 // one screen arming trash must not arm every screen). Keyed by
 // `${trackKey}:${deckPos}` so a new block auto-disarms a stale arm.
@@ -1446,6 +1455,10 @@ function isQuixortMode() {
   return getSettings().inputMode === "quixort";
 }
 
+function isRoadkillMode() {
+  return getSettings().inputMode === "roadkill";
+}
+
 function hasAudienceDisplay() {
   try {
     const parts = Object.values(getParticipants() || {});
@@ -1610,6 +1623,120 @@ function getBingo() {
     scoredTracks: {},
   });
 }
+
+// =============================================================================
+// Roadkill shared state
+// - pairs: authored clue pairs, each with a pre-merged word template
+// - finale: optional closing round ("what do all the answers have in common?")
+// - words/wordSeq: the live stream; guessed is keyed by score key and stores
+//   the wordSeq that player/team has already spent (one guess per appearance)
+// - paused: host freeze; nextWordAt/advanceAt are wall-clock deadlines
+// =============================================================================
+function freshRoadkillState() {
+  return {
+    active: false,
+    phase: "setup", // setup | playing | reveal | finished
+    pairs: [],
+    finale: null,
+    sharedDecoys: [],
+    correctPoints: 1000,
+    penaltyPoints: 1000,
+    pairIndex: 0,
+    stageCount: 0,
+    words: [],
+    wordIndex: 0,
+    wordSeq: 0,
+    prevWord: null,
+    prevSeq: 0,
+    lastWordAt: null,
+    paused: false,
+    nextWordAt: null,
+    advanceAt: null,
+    guessed: {},
+    outcome: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    startedAt: null,
+    finishedAt: null,
+  };
+}
+
+function getRoadkill() {
+  return getSafeState("roadkill", freshRoadkillState());
+}
+
+function normalizeRoadkillPoints(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.trunc(n);
+  if (v < 0) return 0;
+  return Math.min(v, 10000);
+}
+
+// Merge + dedupe word lists (case-insensitive), guaranteeing the answer is
+// present exactly once. Shared decoys are appended after per-pair ones.
+function mergeRoadkillWords(answer, ...lists) {
+  const ans = String(answer || "").trim();
+  const seen = new Set();
+  const out = [];
+  if (ans) {
+    seen.add(normalizeAnswerForCompare(ans));
+    out.push(ans);
+  }
+  for (const list of lists) {
+    for (const raw of Array.isArray(list) ? list : []) {
+      const word = String(raw || "").trim();
+      if (!word) continue;
+      const key = normalizeAnswerForCompare(word);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(word);
+    }
+  }
+  return out;
+}
+
+function shuffleRoadkillWords(words) {
+  const arr = Array.isArray(words) ? [...words] : [];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function getRoadkillStage(rk, index = rk?.pairIndex) {
+  if (!rk) return null;
+  const pairs = Array.isArray(rk.pairs) ? rk.pairs : [];
+  const stageIndex = Number(index);
+  if (!Number.isInteger(stageIndex) || stageIndex < 0) return null;
+  if (stageIndex < pairs.length) {
+    const pair = pairs[stageIndex];
+    return {
+      kind: "pair",
+      index: stageIndex,
+      number: stageIndex + 1,
+      clues: Array.isArray(pair?.clues) ? pair.clues : ["", ""],
+      answer: String(pair?.answer || ""),
+      words: Array.isArray(pair?.words) ? pair.words : [],
+    };
+  }
+  if (rk.finale && stageIndex === pairs.length) {
+    return {
+      kind: "finale",
+      index: stageIndex,
+      number: stageIndex + 1,
+      clues: pairs.map((pair) => String(pair?.answer || "")),
+      answer: String(rk.finale.answer || ""),
+      words: Array.isArray(rk.finale.words) ? rk.finale.words : [],
+    };
+  }
+  return null;
+}
+
 
 function getLog() {
   return getSafeState("gameLog", []);
@@ -2169,6 +2296,31 @@ showScoresToPlayers: settings.showScoresToPlayers,
         coopLockout: b.coopLockout,
         scoredTracks: b.scoredTracks,
         winner: b.winner,
+      };
+    })(),
+    // Roadkill: the live stream/pair must invalidate every 250ms display poll.
+    // Pair contents only change on load, so a compact digest stands in for the
+    // full authored list (the words array is the live stream, always included).
+    roadkill: (() => {
+      const rk = getRoadkill();
+      const pairs = Array.isArray(rk.pairs) ? rk.pairs : [];
+      return {
+        active: rk.active,
+        phase: rk.phase,
+        pairIndex: rk.pairIndex,
+        stageCount: rk.stageCount,
+        words: rk.words,
+        wordIndex: rk.wordIndex,
+        wordSeq: rk.wordSeq,
+        paused: rk.paused,
+        guessed: rk.guessed,
+        outcome: rk.outcome,
+        revealAnswer: rk.revealAnswer,
+        correctKey: rk.correctKey,
+        correctName: rk.correctName,
+        correctPoints: rk.correctPoints,
+        penaltyPoints: rk.penaltyPoints,
+        setupDigest: `${pairs.map((p) => `${(p.clues || []).join("|")}=${p.answer}`).join("~")}#${rk.finale?.answer || ""}`,
       };
     })(),
     participantCount: currentParticipants().length,
@@ -3508,6 +3660,11 @@ function openBuzzers() {
     if (isProducer()) RPC.call("producer-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
     return;
   }
+  if (isRoadkillMode()) {
+    setBuzzNotice("Roadkill runs from its own host panel.");
+    render();
+    return;
+  }
   console.log("openBuzzers: host triggered");
   const settings = getSettings();
   const round = getRound();
@@ -4009,6 +4166,442 @@ function handleBingoBuzz(player, payload) {
     render();
     return { ok: true, message: getSnark("player.outcome.bingoIncorrect", "Incorrect! -500") };
   }
+}
+
+// =============================================================================
+// Roadkill — host-only game logic
+// The stream is driven by a host interval (roadkillHostTick, booted once). The
+// rules are fixed: +correctPoints for the connector, −penaltyPoints for a miss,
+// one guess per player/team/slot per word appearance. First correct ends the
+// pair and auto-advances after a short reveal; the host can pause/step/reveal.
+// =============================================================================
+
+// Build the live setup from a validated episode item. Merges per-pair decoys
+// with the shared pool, guarantees the answer appears exactly once, and keeps
+// the authored points. Returns { error } when a pair is unusable (legacy or
+// hand-edited cloud files) so the runner can refuse the load.
+function buildRoadkillSetup(item) {
+  const sharedDecoys = Array.isArray(item?.decoys) ? item.decoys : [];
+  const rounds = Array.isArray(item?.rounds) ? item.rounds : [];
+  const pairs = [];
+  for (let i = 0; i < rounds.length; i++) {
+    const round = rounds[i] || {};
+    const clueList = Array.isArray(round.clues) ? round.clues : [];
+    const clues = [0, 1].map((c) => String(clueList[c] ?? "").trim());
+    const answer = String(round.answer ?? "").trim();
+    if (!answer || clues.some((clue) => !clue)) {
+      return { error: `Pair ${i + 1} is incomplete.` };
+    }
+    const words = mergeRoadkillWords(answer, round.decoys, sharedDecoys);
+    if (words.length < 2) {
+      return { error: `Pair ${i + 1} needs at least one wrong word.` };
+    }
+    pairs.push({ clues, answer, words });
+  }
+  if (!pairs.length) return { error: "That Roadkill question has no clue pairs." };
+  let finale = null;
+  const finaleAnswer = String(item?.finale?.answer ?? "").trim();
+  if (finaleAnswer) {
+    const words = mergeRoadkillWords(finaleAnswer, item.finale?.decoys, sharedDecoys);
+    if (words.length < 2) return { error: "The finale needs at least one wrong word." };
+    finale = { answer: finaleAnswer, words };
+  }
+  const correctPoints = normalizeRoadkillPoints(item?.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT) || EPISODE_ROADKILL_DEFAULT_CORRECT;
+  const penaltyPoints = normalizeRoadkillPoints(item?.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY);
+  return {
+    pairs,
+    finale,
+    sharedDecoys: sharedDecoys.map((s) => String(s ?? "").trim()).filter(Boolean),
+    correctPoints: Math.max(1, correctPoints),
+    penaltyPoints,
+    stageCount: pairs.length + (finale ? 1 : 0),
+  };
+}
+
+// Begin a stage: shuffle its word template so the answer lands somewhere new
+// each run, reset per-word guesses and arm the 800 ms stream deadline.
+function roadkillStageState(rk, index) {
+  const stage = getRoadkillStage(rk, index);
+  if (!stage) return null;
+  const words = shuffleRoadkillWords(stage.words);
+  const t = now();
+  return {
+    ...rk,
+    active: true,
+    phase: "playing",
+    pairIndex: index,
+    words,
+    wordIndex: 0,
+    wordSeq: (Number(rk.wordSeq) || 0) + 1,
+    prevWord: null,
+    prevSeq: 0,
+    lastWordAt: t,
+    paused: false,
+    nextWordAt: t + ROADKILL_WORD_INTERVAL_MS,
+    advanceAt: null,
+    guessed: {},
+    outcome: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    startedAt: Number(rk.startedAt) || t,
+    finishedAt: null,
+  };
+}
+
+function startRoadkill() {
+  if (!isHost()) return;
+  if (!isRoadkillMode()) return;
+  const rk = getRoadkill();
+  if (!Array.isArray(rk.pairs) || !rk.pairs.length) {
+    setBuzzNotice("Load a Roadkill question from an episode first.");
+    render();
+    return;
+  }
+  const next = roadkillStageState(rk, 0);
+  if (!next) return;
+  setState("roadkill", next, true);
+  setBuzzNotice("Roadkill started!");
+  render();
+}
+
+function endRoadkill(toButtons = false) {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active && rk.phase === "setup") {
+    if (toButtons) setHostSetting("inputMode", "buttons");
+    return;
+  }
+  setState("roadkill", {
+    ...rk,
+    active: false,
+    phase: "setup",
+    pairIndex: 0,
+    words: [],
+    wordIndex: 0,
+    wordSeq: 0,
+    prevWord: null,
+    prevSeq: 0,
+    lastWordAt: null,
+    paused: true,
+    nextWordAt: null,
+    advanceAt: null,
+    guessed: {},
+    outcome: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    finishedAt: null,
+  }, true);
+  setBuzzNotice("Roadkill stopped.");
+  if (toButtons) {
+    setHostSetting("inputMode", "buttons");
+  } else {
+    render();
+  }
+}
+
+function finishRoadkill(rk = getRoadkill()) {
+  setState("roadkill", {
+    ...rk,
+    active: true,
+    phase: "finished",
+    paused: true,
+    nextWordAt: null,
+    advanceAt: null,
+    finishedAt: now(),
+  }, true);
+  render();
+}
+
+function advanceRoadkillWord() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  const words = Array.isArray(rk.words) ? rk.words : [];
+  if (!words.length) return;
+  const t = now();
+  const current = words[(Number(rk.wordIndex) || 0) % words.length] ?? null;
+  setState("roadkill", {
+    ...rk,
+    prevWord: current,
+    prevSeq: Number(rk.wordSeq) || 0,
+    wordIndex: ((Number(rk.wordIndex) || 0) + 1) % words.length,
+    wordSeq: (Number(rk.wordSeq) || 0) + 1,
+    lastWordAt: t,
+    nextWordAt: rk.paused ? null : t + ROADKILL_WORD_INTERVAL_MS,
+    guessed: {},
+    outcome: null,
+  }, true);
+  render();
+}
+
+function pauseRoadkill() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || (rk.phase !== "playing" && rk.phase !== "reveal")) return;
+  setState("roadkill", {
+    ...rk,
+    paused: true,
+    nextWordAt: null,
+    // Host pause cancels a pending auto-advance; Resume re-arms it.
+    advanceAt: null,
+  }, true);
+  render();
+}
+
+function resumeRoadkill() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || !rk.paused) return;
+  const t = now();
+  const next = { ...rk, paused: false };
+  if (rk.phase === "playing") {
+    next.nextWordAt = t + ROADKILL_WORD_INTERVAL_MS;
+  } else if (rk.phase === "reveal") {
+    const hasNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+    next.advanceAt = hasNext ? t + 1000 : null;
+  }
+  setState("roadkill", next, true);
+  render();
+}
+
+function revealRoadkillAnswer() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  const stage = getRoadkillStage(rk);
+  if (!stage) return;
+  const hasNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+  setState("roadkill", {
+    ...rk,
+    phase: hasNext ? "reveal" : "finished",
+    paused: false,
+    nextWordAt: null,
+    advanceAt: hasNext ? now() + ROADKILL_REVEAL_MS : null,
+    revealAnswer: stage.answer,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    outcome: { key: null, name: "", result: "revealed", word: null, answer: stage.answer, delta: 0, ts: now() },
+    finishedAt: hasNext ? null : now(),
+  }, true);
+  render();
+}
+
+function nextRoadkillStage() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active) {
+    startRoadkill();
+    return;
+  }
+  const next = Number(rk.pairIndex) + 1;
+  if (!Number.isInteger(next) || next >= Number(rk.stageCount)) {
+    finishRoadkill(rk);
+    return;
+  }
+  const state = roadkillStageState(rk, next);
+  if (!state) return;
+  setState("roadkill", state, true);
+  render();
+}
+
+// Host interval: walk the stream and auto-advance after a reveal. Booted once
+// (see boot); cheap no-op unless this host is in Roadkill.
+function roadkillHostTick() {
+  if (!isHost()) return;
+  if (!isRoadkillMode()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.paused) return;
+  const t = now();
+  if (rk.advanceAt && t >= Number(rk.advanceAt)) {
+    const next = Number(rk.pairIndex) + 1;
+    if (next < Number(rk.stageCount)) {
+      const state = roadkillStageState(rk, next);
+      if (state) setState("roadkill", state, true);
+    } else {
+      finishRoadkill(rk);
+    }
+    return;
+  }
+  if (rk.phase === "playing" && rk.nextWordAt && t >= Number(rk.nextWordAt)) {
+    advanceRoadkillWord();
+  }
+}
+
+function setRoadkillCoopMood(scoreKey, mood) {
+  if (!isCoopMode()) return;
+  try { setState("coopMoods", { ...getCoopMoods(), [scoreKey]: mood }, true); } catch {}
+}
+
+function addRoadkillScore(scoreKey, delta) {
+  const scores = { ...getScores() };
+  const prev = Number(scores[scoreKey] || 0);
+  const base = Number.isFinite(prev) ? prev : 0;
+  const d = Number(delta);
+  const safe = Number.isFinite(d) ? Math.trunc(d) : 0;
+  scores[scoreKey] = base + safe;
+  setState("scores", scores, true);
+}
+
+// Host RPC handler: compare the word the player saw to the connector. The
+// answer is shared by the whole stage; only the guess timing differs.
+function handleRoadkillBuzz(player, payload) {
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") {
+    return { ok: false, reason: getSnark("player.roadkill.notActive", "Roadkill isn't playing right now.") };
+  }
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  if (player.id === controllerId || (Array.isArray(producerIds) && producerIds.includes(player.id))) {
+    return { ok: false, reason: getSnark("player.roadkill.spectator", "Hosts and producers watch this one.") };
+  }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const teamColor = getPlayerTeamColor(player.id, assignments);
+  if (settings.teamModeEnabled && !teamColor) {
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  }
+  if (!isPlayerBuzzerEnabled(settings, player.id)) {
+    return { ok: false, reason: getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.") };
+  }
+  if (isPlayerKicked(player.id, settings)) {
+    return { ok: false, reason: getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.") };
+  }
+
+  let coopSlot = 0;
+  let scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  let buzzName = getPlayerName(player);
+  const coopActive = isCoopMode(settings);
+  if (coopActive) {
+    const count = getCoopSlotCount(player.id);
+    if (count > 1) {
+      coopSlot = Number(payload?.coopSlot);
+      if (!Number.isInteger(coopSlot) || coopSlot < 0 || coopSlot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+    }
+    if (isCoopSlotFrozen(player.id, coopSlot) || isCoopSlotMuted(settings, player.id, coopSlot)) {
+      return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+    }
+    scoreKey = getCoopScoreKey(player.id, coopSlot);
+    buzzName = getCoopSlotName(player.id, coopSlot, getPlayerName(player));
+  }
+
+  // Latency grace: accept the word the client saw plus the immediately previous
+  // one for a short window (the host may have stepped while the RPC was in
+  // flight). Never score a word the client could not have seen.
+  const currentSeq = Number(rk.wordSeq) || 0;
+  const sentSeq = Number(payload?.wordSeq);
+  if (!Number.isInteger(sentSeq) || sentSeq <= 0) {
+    return { ok: false, reason: getSnark("player.roadkill.wordMoved", "The word moved — buzz again.") };
+  }
+  let guessedWord = null;
+  if (sentSeq === currentSeq) {
+    guessedWord = rk.words[(Number(rk.wordIndex) || 0) % Math.max(1, (rk.words || []).length)] ?? null;
+  } else if (
+    sentSeq === currentSeq - 1
+    && Number(rk.prevSeq) === sentSeq
+    && rk.prevWord
+    && Number(rk.lastWordAt)
+    && now() - Number(rk.lastWordAt) <= ROADKILL_STALE_SEQ_GRACE_MS
+  ) {
+    guessedWord = rk.prevWord;
+  }
+  if (!guessedWord) {
+    return { ok: false, reason: getSnark("player.roadkill.wordMoved", "The word moved — buzz again.") };
+  }
+
+  const guessedMap = rk.guessed && typeof rk.guessed === "object" ? rk.guessed : {};
+  if (guessedMap[scoreKey] !== undefined) {
+    return { ok: false, reason: getSnark("player.roadkill.oneGuess", "One guess per word — wait for the next one.") };
+  }
+
+  const stage = getRoadkillStage(rk);
+  if (!stage) return { ok: false, reason: getSnark("player.roadkill.notActive", "Roadkill isn't playing right now.") };
+  const isCorrect = normalizeAnswerForCompare(guessedWord) === normalizeAnswerForCompare(stage.answer);
+  const scoreTarget = scoreKey.startsWith("team:") ? `Team ${teamColor}` : buzzName;
+  const logBase = {
+    id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: "roadkill",
+    ts: now(),
+    roundId: currentRoundId(),
+    playerId: player.id,
+    playerName: coopActive ? buzzName : getPlayerName(player),
+    teamColor,
+    scoreKey,
+    coopSlot: coopActive ? coopSlot : null,
+    coopKey: coopActive ? scoreKey : null,
+    scoreTarget,
+    item: stage.answer,
+    answerText: guessedWord,
+    wordSeq: sentSeq,
+    pairIndex: Number(rk.pairIndex),
+    stageKind: stage.kind,
+  };
+
+  if (isCorrect) {
+    const points = Math.max(1, normalizeRoadkillPoints(rk.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT));
+    addRoadkillScore(scoreKey, points);
+    setRoadkillCoopMood(scoreKey, "correct");
+    const hasNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+    const guessed = { ...guessedMap, [scoreKey]: sentSeq };
+    setState("gameLog", [...getLog(), {
+      ...logBase,
+      result: "correct",
+      points,
+      basePoints: points,
+      awardedDelta: points,
+      resolved: true,
+    }], true);
+    setState("roadkill", {
+      ...rk,
+      phase: hasNext ? "reveal" : "finished",
+      paused: false,
+      guessed,
+      nextWordAt: null,
+      advanceAt: hasNext ? now() + ROADKILL_REVEAL_MS : null,
+      revealAnswer: stage.answer,
+      correctKey: scoreKey,
+      correctName: buzzName,
+      correctSlot: coopActive ? { deviceId: player.id, slot: coopSlot } : null,
+      outcome: { key: scoreKey, name: buzzName, result: "correct", word: guessedWord, answer: stage.answer, delta: points, ts: now() },
+      finishedAt: hasNext ? null : now(),
+    }, true);
+    render();
+    return {
+      ok: true,
+      message: getSnark("player.roadkill.correctBuzz", `Correct! +${points}`, { points }),
+    };
+  }
+
+  const penalty = Math.max(0, normalizeRoadkillPoints(rk.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY));
+  const delta = -penalty;
+  if (penalty > 0) addRoadkillScore(scoreKey, delta);
+  setRoadkillCoopMood(scoreKey, "wrong");
+  setState("gameLog", [...getLog(), {
+    ...logBase,
+    result: "incorrect",
+    points: delta,
+    basePoints: -penalty,
+    awardedDelta: delta,
+    resolved: true,
+  }], true);
+  setState("roadkill", {
+    ...rk,
+    guessed: { ...guessedMap, [scoreKey]: sentSeq },
+    outcome: { key: scoreKey, name: buzzName, result: "incorrect", word: guessedWord, answer: null, delta, ts: now() },
+  }, true);
+  render();
+  return {
+    ok: true,
+    message: penalty > 0
+      ? getSnark("player.roadkill.wrongBuzz", `Wrong! −${penalty}`, { points: penalty })
+      : getSnark("player.roadkill.wrongBuzzFree", "Wrong — no penalty."),
+  };
 }
 
 // =============================================================================
@@ -5736,6 +6329,7 @@ function hostTick() {
     handleQuixortTick();
     return;
   }
+  if (isRoadkillMode()) return;
   const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) {
     // Single-player target left mid-phase: finalize with current selections
@@ -6044,6 +6638,29 @@ function deactivateSpecialStates(except) {
       if (qx.active) setState("quixort", { ...qx, active: false, phase: "setup", expectedTracks: [], runs: {} }, true);
     }
   } catch {}
+  try {
+    if (except !== "roadkill") {
+      const rk = getRoadkill();
+      if (rk.active || rk.phase !== "setup") {
+        setState("roadkill", {
+          ...rk,
+          active: false,
+          phase: "setup",
+          paused: true,
+          nextWordAt: null,
+          advanceAt: null,
+          words: [],
+          wordIndex: 0,
+          guessed: {},
+          outcome: null,
+          revealAnswer: null,
+          correctKey: null,
+          correctName: null,
+          correctSlot: null,
+        }, true);
+      }
+    }
+  } catch {}
 }
 
 // =============================================================================
@@ -6160,7 +6777,10 @@ function setHostSetting(key, value) {
     } catch {}
   }
   if (key === "coopertitionEnabled") {
-    if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text") {
+    // Roadkill setup can wait with coop on; a live Roadkill cannot be flipped
+    // (score keys/roster are already in flight).
+    const roadkillSetupOnly = settings.inputMode === "roadkill" && !getRoadkill()?.active;
+    if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text" && !roadkillSetupOnly) {
       setBuzzNotice("Switch modes from buzzer mode: return to buttons/text before enabling coopertition.");
       render();
       return;
@@ -6294,6 +6914,35 @@ function setHostSetting(key, value) {
       setState("pendingLogId", null, true);
       const qx = getQuixort();
       setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: normalizeQuixortBlockSec(qx.blockSec ?? 30) }, true);
+    }
+    if (value === "roadkill") {
+      setState("round", freshIdleBuzzerRound(settings), true);
+      setState("pendingLogId", null, true);
+      // Preserve the seeded pairs (the episode runner writes them right after
+      // this call) but drop any live stream from the previous question.
+      const rk = getRoadkill();
+      setState("roadkill", {
+        ...rk,
+        active: false,
+        phase: "setup",
+        pairIndex: 0,
+        words: [],
+        wordIndex: 0,
+        wordSeq: 0,
+        prevWord: null,
+        prevSeq: 0,
+        lastWordAt: null,
+        paused: true,
+        nextWordAt: null,
+        advanceAt: null,
+        guessed: {},
+        outcome: null,
+        revealAnswer: null,
+        correctKey: null,
+        correctName: null,
+        correctSlot: null,
+        finishedAt: null,
+      }, true);
     }
   }
   if (key === "rouletteTopAmount") {
@@ -7596,6 +8245,9 @@ function ensureHostInit() {
   if (getState("bingo") === undefined || getState("bingo") === null) {
     setState("bingo", getBingo(), true);
   }
+  if (getState("roadkill") === undefined || getState("roadkill") === null) {
+    setState("roadkill", freshRoadkillState(), true);
+  }
   if (getState("teamSelect") === undefined || getState("teamSelect") === null) {
     setState("teamSelect", freshTeamSelect(), true);
   }
@@ -8212,8 +8864,244 @@ function renderBingoAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
-// Dis or Dat host panel — setup, playing controls, and results
+// Roadkill renderers — shared stage card + host/player/audience views
 // =============================================================================
+function getRoadkillCurrentWord(rk) {
+  const words = Array.isArray(rk?.words) ? rk.words : [];
+  if (!words.length) return "";
+  const index = ((Number(rk.wordIndex) || 0) % words.length + words.length) % words.length;
+  return String(words[index] ?? "");
+}
+
+function renderRoadkillStageCard(rk, { audience = false } = {}) {
+  const stage = getRoadkillStage(rk);
+  if (!stage) {
+    return `<section class="card roadkill-stage"><p class="muted">No Roadkill question loaded.</p></section>`;
+  }
+  const isFinale = stage.kind === "finale";
+  const total = Number(rk.stageCount) || 0;
+  const pairNo = Number(stage.number) || 1;
+  const revealed = (rk.phase === "reveal" || rk.phase === "finished") && Boolean(rk.revealAnswer);
+  const word = revealed ? rk.revealAnswer : getRoadkillCurrentWord(rk);
+  const cluesHtml = isFinale
+    ? `<p class="roadkill-finale-prompt">${getSnark("player.roadkill.finalePrompt", `What do all ${stage.clues.length} answers have in common?`, { count: stage.clues.length })}</p>
+       <div class="roadkill-answer-chips">${stage.clues.map((clue) => `<span class="roadkill-answer-chip">${escapeHtml(clue)}</span>`).join("")}</div>`
+    : `<div class="roadkill-clues">
+        <div class="roadkill-clue"><span class="roadkill-clue-label">Clue 1</span><strong>${escapeHtml(stage.clues[0] || "")}</strong></div>
+        <div class="roadkill-clue"><span class="roadkill-clue-label">Clue 2</span><strong>${escapeHtml(stage.clues[1] || "")}</strong></div>
+      </div>`;
+  const statePill = rk.phase === "finished"
+    ? `<span class="roadkill-pill is-done">Complete</span>`
+    : revealed
+      ? `<span class="roadkill-pill is-reveal">Answer</span>`
+      : rk.paused
+        ? `<span class="roadkill-pill is-paused">Paused</span>`
+        : `<span class="roadkill-pill is-live">Streaming</span>`;
+  const correct = Math.max(0, normalizeRoadkillPoints(rk.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT));
+  const penalty = Math.max(0, normalizeRoadkillPoints(rk.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY));
+  const outlook = rk.outcome && typeof rk.outcome === "object" ? rk.outcome : null;
+  let outcomeHtml = "";
+  if (outlook?.result === "correct") {
+    outcomeHtml = `<p class="roadkill-outcome is-correct"><strong>${escapeHtml(outlook.name || "Someone")}</strong> got it! <span>+${Math.abs(Number(outlook.delta) || correct)}</span></p>`;
+  } else if (outlook?.result === "incorrect") {
+    const d = Number(outlook.delta) || 0;
+    outcomeHtml = `<p class="roadkill-outcome is-wrong"><strong>${escapeHtml(outlook.name || "Someone")}</strong> guessed <em>${escapeHtml(outlook.word || "")}</em> <span>${d > 0 ? "+" : ""}${d}</span></p>`;
+  } else if (outlook?.result === "revealed") {
+    outcomeHtml = `<p class="roadkill-outcome is-reveal">The answer was <strong>${escapeHtml(outlook.answer || "")}</strong>.</p>`;
+  }
+  return `<section class="card roadkill-stage${audience ? " roadkill-stage-audience" : ""}" data-roadkill-stage="${escapeHtml(String(pairNo))}">
+    <div class="roadkill-stage-head">
+      <p class="prejoin-kicker">Roadkill${isFinale ? " · Finale" : ` · Pair ${pairNo} of ${total}`}</p>
+      ${statePill}
+    </div>
+    ${cluesHtml}
+    <div class="roadkill-stream${revealed ? " is-revealed" : ""}${rk.paused && !revealed ? " is-paused" : ""}" data-rk-word-seq="${Number(rk.wordSeq) || 0}">
+      <span class="roadkill-word">${escapeHtml(word || "...")}</span>
+    </div>
+    <p class="roadkill-hint">${revealed
+      ? (isFinale ? "That is what they all had in common." : "The middle word linked both clues.")
+      : "Buzz when the middle word connects both clues."}</p>
+    ${outcomeHtml}
+    <p class="muted roadkill-points">${isFinale ? "Finale" : "Pair"} points: +${escapeHtml(String(correct))} / −${escapeHtml(String(penalty))}</p>
+  </section>`;
+}
+
+function renderRoadkillHostPanel(settings, players) {
+  if (!hasHostPrivileges()) return "";
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase === "setup") {
+    const pairs = Array.isArray(rk.pairs) ? rk.pairs : [];
+    return `
+      <section class="card host-panel roadkill-host-panel">
+        <h2>Roadkill</h2>
+        <p class="muted">Episode-only special question. Load a Roadkill item from the episode runner, then start it here. Two clues on top, one connector word streaming through the middle — players buzz while it connects both.</p>
+        ${pairs.length
+          ? `<ol class="roadkill-pair-list">${pairs.map((pair) => `<li><strong>${escapeHtml((pair.clues || []).join(" + "))}</strong> → <em>${escapeHtml(pair.answer || "")}</em></li>`).join("")}</ol>`
+          : `<p class="muted">No clue pairs seeded yet.</p>`}
+        ${rk.finale ? `<p class="muted">Finale: the answer is <strong>${escapeHtml(rk.finale.answer || "")}</strong>.</p>` : ""}
+        <p class="muted">Points: +${escapeHtml(String(Math.max(0, normalizeRoadkillPoints(rk.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT))))} / −${escapeHtml(String(Math.max(0, normalizeRoadkillPoints(rk.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY))))}</p>
+        <div class="host-actions">
+          <button type="button" class="primary-action" data-roadkill-start ${pairs.length ? "" : "disabled"}>Start Roadkill</button>
+          <button type="button" data-roadkill-exit>Return to buzzer mode</button>
+        </div>
+      </section>`;
+  }
+  const stage = getRoadkillStage(rk);
+  const playing = rk.phase === "playing";
+  const finished = rk.phase === "finished";
+  const canNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+  const lockCount = Object.keys(rk.guessed || {}).length;
+  return `
+    <section class="card host-panel roadkill-host-panel">
+      <h2>Roadkill — ${stage?.kind === "finale" ? "Finale" : `Pair ${Number(rk.pairIndex) + 1} of ${rk.stageCount}`}</h2>
+      ${renderRoadkillStageCard(rk)}
+      <p class="muted">${rk.paused ? "Stream paused." : playing ? "Streaming — Next word steps immediately." : finished ? "Roadkill complete." : "Answer revealed — advancing shortly."} Guess locks this word: ${lockCount}.</p>
+      <div class="host-actions roadkill-host-actions">
+        ${playing ? `<button type="button" data-roadkill-pause>Pause</button>` : ""}
+        ${rk.paused && !finished ? `<button type="button" data-roadkill-resume>Resume</button>` : ""}
+        ${playing ? `<button type="button" data-roadkill-next-word>Next word</button>` : ""}
+        ${playing ? `<button type="button" data-roadkill-reveal>Reveal answer</button>` : ""}
+        ${!finished ? `<button type="button" class="primary-action" data-roadkill-next-pair>${canNext ? "Next pair" : "Finish"}</button>` : ""}
+        <button type="button" data-roadkill-restart>Restart</button>
+        <button type="button" data-roadkill-end>Stop Roadkill</button>
+        <button type="button" data-roadkill-exit>Return to buzzer mode</button>
+      </div>
+    </section>`;
+}
+
+function renderRoadkillCoopBuzzRow(settings, mePlayer, rk) {
+  const deviceId = mePlayer.id;
+  const count = getCoopSlotCount(deviceId);
+  const playing = rk.active && rk.phase === "playing";
+  const allowed = !isControllerPlayer() && !isProducer() && !isAudienceDisplayClient() && isPlayerBuzzerEnabled(settings, deviceId);
+  const cols = [];
+  for (let slot = 0; slot < count; slot++) {
+    const key = getCoopScoreKey(deviceId, slot);
+    const name = getCoopSlotName(deviceId, slot);
+    const hint = getCoopKeyHint(slot, count);
+    const muted = isCoopSlotMuted(settings, deviceId, slot) || isCoopSlotFrozen(deviceId, slot);
+    const spent = Number(rk.guessed?.[key]) === Number(rk.wordSeq);
+    const outcome = rk.outcome?.key === key ? rk.outcome : null;
+    const resultMsg = outcome?.result === "correct"
+      ? `<span class="roadkill-slot-result is-correct">+${Math.abs(Number(outcome.delta) || 0)}</span>`
+      : outcome?.result === "incorrect"
+        ? `<span class="roadkill-slot-result is-wrong">${Number(outcome.delta) || 0}</span>`
+        : "";
+    const off = !playing || !allowed || muted || spent;
+    cols.push(`
+      <div class="coop-slot${spent ? " is-locked" : ""}">
+        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()), "", key)}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
+        <p class="muted">${resultMsg || (spent ? "Guessed this word." : "Ready.")}</p>
+        <button type="button" class="roadkill-buzz-btn" data-roadkill-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
+      </div>`);
+  }
+  return `<div class="roadkill-buzz-area"><div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div></div>`;
+}
+
+function renderRoadkillPlayerPanel(settings, mePlayer) {
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase === "setup") {
+    return `<section class="card player-card roadkill-player-card"><h2>Roadkill</h2><p class="muted">${getSnark("player.roadkill.waitingHost", "Waiting for the host to start...")}</p></section>`;
+  }
+  const coopActive = isCoopMode(settings);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = settings.teamModeEnabled && settings.teamScoringMode === "shared" && myTeamColor
+    ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>`
+    : "";
+  const scoreKey = coopActive ? getCoopScoreKey(mePlayer.id, 0) : getScoreKeyForPlayer(mePlayer.id, settings, assignments);
+  const myScore = coopActive
+    ? getCoopGroupTotal(mePlayer.id, getScores())
+    : (getScores()[scoreKey] || 0);
+  const playing = rk.phase === "playing";
+  const spent = Number(rk.guessed?.[scoreKey]) === Number(rk.wordSeq);
+  const outcome = rk.outcome?.key === scoreKey ? rk.outcome : null;
+  const canBuzz = playing
+    && !isControllerPlayer()
+    && !isProducer()
+    && !isAudienceDisplayClient()
+    && isPlayerBuzzerEnabled(settings, mePlayer.id)
+    && !(coopActive && isCoopSlotMuted(settings, mePlayer.id, 0));
+  const isMultiSlot = coopActive && getCoopSlotCount(mePlayer.id) > 1;
+  let resultHtml = "";
+  if (outcome?.result === "correct") {
+    resultHtml = `<p class="roadkill-player-result is-correct">${getSnark("player.roadkill.correctBuzz", `Correct! +${Math.abs(Number(outcome.delta) || 0)}`, { points: Math.abs(Number(outcome.delta) || 0) })}</p>`;
+  } else if (outcome?.result === "incorrect") {
+    resultHtml = `<p class="roadkill-player-result is-wrong">${getSnark("player.roadkill.wrongBuzz", `Wrong! −${Math.abs(Number(outcome.delta) || 0)}`, { points: Math.abs(Number(outcome.delta) || 0) })}</p>`;
+  } else if (spent) {
+    resultHtml = `<p class="muted">${getSnark("player.roadkill.oneGuess", "One guess per word — wait for the next one.")}</p>`;
+  }
+  const buzzHtml = isMultiSlot
+    ? renderRoadkillCoopBuzzRow(settings, mePlayer, rk)
+    : `<div class="roadkill-buzz-area">
+        <button type="button" class="roadkill-buzz-btn" data-roadkill-buzz ${canBuzz && !spent ? "" : "disabled"}>BUZZ${canBuzz && !spent ? "!" : ""}</button>
+        ${playing && !spent ? `<p class="muted roadkill-key-hint">Tip: <kbd>Space</kbd> buzzes too.</p>` : ""}
+      </div>`;
+  return `
+    <section class="card player-card roadkill-player-card">
+      <h2>Roadkill ${teamPill}</h2>
+      ${renderRoadkillStageCard(rk)}
+      ${buzzHtml}
+      ${resultHtml}
+      <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
+    </section>`;
+}
+
+function renderRoadkillAudienceDisplay(settings, players) {
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase === "setup") {
+    return `
+      <main class="layout audience-layout" data-roadkill-active="true" data-round-status="idle">
+        <header class="hero audience-hero">
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Roadkill</span></p><h1 class="audience-title">Roadkill</h1><p class="muted">${getSnark("audience.roadkill.waitingGame", "Waiting for the game to start...")}</p></div>
+        </header>
+      </main>`;
+  }
+  const scores = getScores();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const visible = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  let standings = "";
+  if (isSharedTeam) {
+    standings = TEAM_COLORS.map((teamColor) => {
+      const members = getTeamMembers(teamColor, players, assignments);
+      if (!members.length) return "";
+      const s = Number(scores[getTeamScoreKey(teamColor)] || 0);
+      const names = members.map((m) => escapeHtml(getPlayerName(m))).join(", ");
+      return `<li><span class="team-pill team-${teamColor}">${teamColor}</span> <small>(${names})</small> ${getSnark("shared.bingo.score", `Score: ${s}`, { points: s })}</li>`;
+    }).filter(Boolean).join("");
+  } else if (isCoopMode(settings)) {
+    const rows = [];
+    visible.forEach((p) => {
+      const count = getCoopSlotCount(p.id);
+      for (let slot = 0; slot < count; slot++) {
+        const key = getCoopScoreKey(p.id, slot);
+        rows.push({
+          label: `${escapeHtml(getCoopGroupName(p.id, getPlayerName(p)))} — ${escapeHtml(getCoopSlotName(p.id, slot))}`,
+          score: Number(scores[key] || 0),
+        });
+      }
+    });
+    rows.sort((a, b) => b.score - a.score);
+    standings = rows.map((row) => `<li><strong>${row.label}</strong> ${getSnark("shared.bingo.score", `Score: ${row.score}`, { points: row.score })}</li>`).join("");
+  } else {
+    standings = [...visible]
+      .sort((a, b) => (Number(scores[b.id] || 0)) - (Number(scores[a.id] || 0)))
+      .map((p) => `<li><strong>${escapeHtml(getPlayerName(p))}</strong> ${getSnark("shared.bingo.score", `Score: ${Number(scores[p.id] || 0)}`, { points: Number(scores[p.id] || 0) })}</li>`)
+      .join("");
+  }
+  return `
+    <main class="layout audience-layout" data-roadkill-active="true" data-round-status="${rk.phase === "finished" ? "closed" : "open"}">
+      <header class="hero audience-hero">
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Roadkill</span></p><h1 class="audience-title">Roadkill</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+      </header>
+      ${renderRoadkillStageCard(rk, { audience: true })}
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.bingo.standings", "Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+    </main>`;
+}
+
 function renderDisOrDatHostPanel(settings, players) {
   if (!hasHostPrivileges()) return "";
   const dd = getDisOrDat();
@@ -9816,6 +10704,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
   if (isQuixortMode()) return renderQuixortPlayerPanel(settings, mePlayer);
+  if (isRoadkillMode()) return renderRoadkillPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   // Host/producer have the full host panel already — no buzzer card needed.
   if (isControllerPlayer() || isProducer()) {
@@ -10498,6 +11387,10 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     return renderTabletTimerNotUseful();
   }
 
+  if (isRoadkillMode()) {
+    return renderTabletTimerNotUseful();
+  }
+
   if (isFibbageMode()) {
     const fb = getFibbage();
     if (fb.phase === "lying") {
@@ -10692,7 +11585,7 @@ function endAnalyticsSpotlight() {
 function getCurrentRoundAnalytics() {
   const settings = getSettings();
   const roundId = currentRoundId();
-  if (isBingoMode() || isDisOrDatMode() || isFibbageMode() || isQuixortMode()) {
+  if (isBingoMode() || isDisOrDatMode() || isFibbageMode() || isQuixortMode() || isRoadkillMode()) {
     return { kind: "minigame", roundId, total: 0, rows: [] };
   }
   const entries = (getLog() || []).filter((e) => e && e.type === "buzz" && Number(e.roundId) === Number(roundId));
@@ -10745,6 +11638,7 @@ function getLogEntryBadge(entry) {
   if (entry.type === "disordat") return { slug: "disordat", label: getSnark("shared.analytics.badgeDisOrDat", "DisOrDat") };
   if (entry.type === "quixort") return { slug: "quixort", label: getSnark("shared.analytics.badgeQuixort", "Quixort") };
   if (entry.type === "fibbage") return { slug: "fibbage", label: getSnark("shared.analytics.badgeFibbage", "Fibbage") };
+  if (entry.type === "roadkill") return { slug: "roadkill", label: getSnark("shared.analytics.badgeRoadkill", "Roadkill") };
   if (entry.answerText !== null && entry.answerText !== undefined && String(entry.answerText) !== "") return { slug: "text", label: getSnark("shared.analytics.badgeText", "Text") };
   if (entry.option !== null && entry.option !== undefined) return { slug: "buttons", label: getSnark("shared.analytics.badgeButtons", "Buttons") };
   return { slug: "buzz", label: getSnark("shared.analytics.badgeBuzz", "Buzz") };
@@ -11067,7 +11961,7 @@ function renderResultsExportCard() {
 // Accuracy covers buzz + bingo/disordat/quixort/fibbage; manual-* and
 // unresolved entries are listed but excluded from the denominator.
 // ---------------------------------------------------------------------------
-const REVIEW_ACCURACY_TYPES = ["buzz", "bingo", "disordat", "quixort", "fibbage"];
+const REVIEW_ACCURACY_TYPES = ["buzz", "bingo", "disordat", "quixort", "fibbage", "roadkill"];
 
 function reviewerEntryCorrect(e) {
   if (!e || typeof e !== "object") return false;
@@ -11648,6 +12542,14 @@ function episodeRunLoad(index) {
     setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers], questions }, true);
   } else if (item.kind === "quixort") {
     setState("quixort", { ...getQuixort(), items: [...item.items], trash: [...(item.trash || [])], multiplier: item.multiplier, blockSec: item.blockSec }, true);
+  } else if (item.kind === "roadkill") {
+    const setup = buildRoadkillSetup(item);
+    if (setup.error) {
+      setBuzzNotice(setup.error);
+      render();
+      return false;
+    }
+    setState("roadkill", { ...freshRoadkillState(), ...setup }, true);
   } else if (item.kind === "bingo" || item.kind === "wendithapn") {
     // Fresh question state: reset per-question play (a stale active game
     // from the previous question must not leak in), seed the word + the
@@ -11896,7 +12798,7 @@ function renderBroadcastHostCard() {
           : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`}
       </div>`);
   }
-  if (hasHostPrivileges() && !isBingoMode() && !isDisOrDatMode() && !isFibbageMode() && !isQuixortMode()) {
+  if (hasHostPrivileges() && !isBingoMode() && !isDisOrDatMode() && !isFibbageMode() && !isQuixortMode() && !isRoadkillMode()) {
     const analyticsActive = Boolean(getAnalyticsSpotlight());
     const audienceHint = hasAudienceDisplay()
       ? getSnark("shared.analytics.audienceConnected", "An audience display is connected.")
@@ -12097,6 +12999,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isDisOrDatMode()) return renderEpisodePromptBanner() + renderDisOrDatAudienceDisplay(settings, players);
   if (isFibbageMode()) return renderEpisodePromptBanner() + renderFibbageAudienceDisplay(settings, players);
   if (isQuixortMode()) return renderEpisodePromptBanner() + renderQuixortAudienceDisplay(settings, players);
+  if (isRoadkillMode()) return renderEpisodePromptBanner() + renderRoadkillAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const screwActive = Boolean(round.screw?.active);
   // Results read side-by-side (analytics + scores); live play stacks the
@@ -12398,6 +13301,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   if (isQuixortMode()) {
     if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Quixort. The host must manage it.</p></section>`;
     return renderQuixortHostPanel(settings, players);
+  }
+
+  if (isRoadkillMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Roadkill. The host must manage it.</p></section>`;
+    return renderRoadkillHostPanel(settings, players);
   }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
@@ -12821,8 +13729,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <button type="button" data-set-mode="quixort" ${settingDisabledAttr} ${settings.inputMode === "quixort" || isCoopMode(settings) ? "disabled" : ""}>Quixort</button>
                 <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +250 each (+250 all-trash bonus with 2+ trash blocks), wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
+              <div>
+                <p class="setting-helper"><strong>Roadkill</strong> is episode-creator only — two clues on top, a connector word streaming through the middle. It is not selectable here by design; build a Roadkill question in the Episode Creator and load it from the episode runner.${isCoopMode(settings) ? " Coopertition is supported." : ""}</p>
+              </div>
             </div>
-            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort"
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort" || isRoadkillMode()
               ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
               : ""}
           </div>
@@ -13454,11 +14365,11 @@ function render() {
     const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
 
     if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
-      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? "tablet-fibbage" : "tablet";
+      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? "tablet-fibbage" : isRoadkillMode() ? "tablet-roadkill" : "tablet";
       const html = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
       if (!transitionMount(mount, html, tabletKey)) mount.innerHTML = html;
     } else {
-      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? "audience-disordat" : isFibbageMode() ? "audience-fibbage" : "audience";
+      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? "audience-disordat" : isFibbageMode() ? "audience-fibbage" : isRoadkillMode() ? "audience-roadkill" : "audience";
       const html = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
       mountView(mount, html, audienceKey);
     }
@@ -13536,6 +14447,42 @@ function render() {
       </main>
     `;
     mountView(mount, _html_bingo, "bingo");
+    lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
+    return;
+  }
+
+  if (isRoadkillMode()) {
+    const roadkillBody = showAdminData ? `
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderBroadcastHostCard()}
+      ${renderEpisodeHostCard()}
+      <section class="grid">
+        ${renderScores(players, scores, "score-card-host")}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")))}
+      </section>` ;
+    const _html_roadkill = `
+      <main class="layout" data-roadkill-active="true">
+        <header class="hero">
+          <div>
+            <h1>Roadkill</h1>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
+          </div>
+          <div class="hero-meta">
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
+          </div>
+        </header>
+        ${roadkillBody}
+      </main>
+    `;
+    mountView(mount, _html_roadkill, "roadkill");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -13720,6 +14667,10 @@ function bindEvents() {
   if (!bingoSpaceKeydownBound) {
     document.addEventListener("keydown", handleBingoSpaceKeydown);
     bingoSpaceKeydownBound = true;
+  }
+  if (!roadkillKeydownBound) {
+    document.addEventListener("keydown", handleRoadkillSpaceKeydown);
+    roadkillKeydownBound = true;
   }
   if (!quixortKeydownBound) {
     document.addEventListener("keydown", handleQuixortKeydown);
@@ -13995,6 +14946,23 @@ function bindEvents() {
     const slot = slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw);
     await submitBingoBuzz(Number.isInteger(slot) ? slot : null);
   });
+  // Roadkill host controls (host-only, like Bingo)
+  delegate("click", "[data-roadkill-start]", requireHost(() => startRoadkill()));
+  delegate("click", "[data-roadkill-pause]", requireHost(() => pauseRoadkill()));
+  delegate("click", "[data-roadkill-resume]", requireHost(() => resumeRoadkill()));
+  delegate("click", "[data-roadkill-next-word]", requireHost(() => advanceRoadkillWord()));
+  delegate("click", "[data-roadkill-reveal]", requireHost(() => revealRoadkillAnswer()));
+  delegate("click", "[data-roadkill-next-pair]", requireHost(() => nextRoadkillStage()));
+  delegate("click", "[data-roadkill-restart]", requireHost(() => startRoadkill()));
+  delegate("click", "[data-roadkill-end]", requireHost(() => endRoadkill(false)));
+  delegate("click", "[data-roadkill-exit]", requireHost(() => endRoadkill(true)));
+  delegate("pointerdown", "[data-roadkill-buzz]", async (e, btn) => {
+    e.preventDefault();
+    if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+    const slotRaw = btn?.dataset?.coopSlot;
+    const slot = slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw);
+    await submitRoadkillBuzz(Number.isInteger(slot) ? slot : null);
+  });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
@@ -14197,11 +15165,14 @@ function bindEvents() {
   delegate("click", "[data-ep-round-add]", () => {
     harvestIntoDraft();
     const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
-    if (!sel || (sel.kind !== "bingo" && sel.kind !== "wendithapn")) return;
+    if (!sel) return;
+    const isRoadkill = sel.kind === "roadkill";
+    if (sel.kind !== "bingo" && sel.kind !== "wendithapn" && !isRoadkill) return;
     const rounds = Array.isArray(sel.rounds) ? sel.rounds : [];
-    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : EP_MAX_WEN_ROUNDS;
+    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : isRoadkill ? EP_MAX_ROADKILL_ROUNDS : EP_MAX_WEN_ROUNDS;
     if (rounds.length >= max) return;
-    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, { prompt: "", answer: "" }] });
+    const blank = isRoadkill ? { clues: ["", ""], answer: "", decoys: [] } : { prompt: "", answer: "" };
+    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, blank] });
     epPersistDraft(episodeDraft);
     refreshCreator();
   });
@@ -14684,6 +15655,26 @@ function handleBingoSpaceKeydown(event) {
   submitBingoBuzz(slot);
 }
 
+// Roadkill spacebar buzz. Multi-slot coop devices use Q/B/P (the per-slot
+// buttons are the canonical target); Space covers single-slot devices and
+// non-coop players.
+function handleRoadkillSpaceKeydown(event) {
+  if (event.code !== "Space" && event.key !== " ") return;
+  if (event.repeat) return;
+  if (isEditingControl()) return;
+  try { if (document.activeElement?.tagName === "BUTTON") return; } catch {}
+  if (!isRoadkillMode()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const self = me();
+  if (!self?.id) return;
+  const settings = getSettings();
+  if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) return;
+  event.preventDefault();
+  submitRoadkillBuzz(null);
+}
+
 // =============================================================================
 function handleRouletteKeydown(event) {
   if (event.code !== "Space" && event.key !== " ") {
@@ -14805,6 +15796,13 @@ function handleCoopBuzzKeydown(event) {
     submitBingoBuzz(slot);
     return;
   }
+  if (isRoadkillMode()) {
+    const rk = getRoadkill();
+    if (!rk.active || rk.phase !== "playing") return;
+    event.preventDefault();
+    submitRoadkillBuzz(slot);
+    return;
+  }
   if (isDisOrDatMode()) {
     const dd = getDisOrDat();
     if (dd.active && dd.phase === "playing" && dd.mode === "allPlayHostPaced") {
@@ -14861,6 +15859,42 @@ async function submitBingoBuzz(slot = null) {
   if (slot !== null && slot !== undefined) payload.coopSlot = slot;
   try {
     const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
+    if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+    else if (result?.message) setBuzzNotice(result.message);
+  } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
+  scheduleRender(render);
+}
+
+async function submitRoadkillBuzz(slot = null) {
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  const self = me();
+  if (!self?.id) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  let myKey = null;
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(self.id);
+    if (count > 1) {
+      if (!Number.isInteger(slot) || slot < 0 || slot >= count) return;
+      myKey = getCoopScoreKey(self.id, slot);
+    } else {
+      myKey = getCoopScoreKey(self.id, 0);
+    }
+  } else {
+    myKey = getTeamTrackKey(self.id, settings, assignments);
+  }
+  if (myKey && Number(rk.guessed?.[myKey]) === Number(rk.wordSeq)) {
+    setBuzzNotice(getSnark("player.roadkill.oneGuess", "One guess per word — wait for the next one."));
+    scheduleRender(render);
+    return;
+  }
+  if (myKey && isCoopMode(settings)) noteCoopLocalBuzz(myKey);
+  const payload = { wordSeq: Number(rk.wordSeq) || 0 };
+  if (slot !== null && slot !== undefined) payload.coopSlot = slot;
+  try {
+    const result = await RPC.call("roadkill-buzz", payload, RPC.Mode.HOST);
     if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
     else if (result?.message) setBuzzNotice(result.message);
   } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
@@ -15355,6 +16389,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return handleBingoBuzz(senderPlayer, payload);
   });
 
+  RPC.register("roadkill-buzz", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleRoadkillBuzz(senderPlayer, payload);
+  });
+
   RPC.register("disordat-answer", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false, reason: "Not host" };
     return handleDisOrDatAnswer(senderPlayer, payload);
@@ -15555,6 +16594,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     try { scheduleRender(render); } catch {}
   }, 250);
   startRouletteAnimationLoop();
+  // Roadkill stream driver: host-only work inside; 100 ms keeps the 800 ms
+  // word cadence sharp without a fat 1 s tick.
+  setInterval(() => {
+    try { roadkillHostTick(); } catch (e) { console.warn("[roadkill] tick failed", e); }
+  }, 100);
 
   setInterval(() => {
     try { ensureHostInit(); } catch (e) { console.warn("[hostInit] failed", e); }
@@ -15604,6 +16648,17 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     lastBingoRenderKey = key;
     scheduleRender(render);
   }, BINGO_RENDER_INTERVAL_MS);
+
+  // Roadkill mode re-render — the 800 ms word stream needs a tighter poll than
+  // the 1 s signature tick (players included; audience has its own 250 ms one).
+  setInterval(() => {
+    if (!isRoadkillMode()) return;
+    const rk = getRoadkill();
+    const key = `${rk.active}|${rk.phase}|${rk.pairIndex}|${rk.wordIndex}|${rk.wordSeq}|${rk.paused}|${rk.revealAnswer || ""}|${rk.outcome?.ts || ""}|${rk.correctKey || ""}|${JSON.stringify(rk.guessed || {})}`;
+    if (key === lastRoadkillRenderKey) return;
+    lastRoadkillRenderKey = key;
+    scheduleRender(render);
+  }, ROADKILL_RENDER_INTERVAL_MS);
 }
 
 // =============================================================================
@@ -15743,5 +16798,19 @@ try {
     loadReviewerByCode,
     downloadReviewerJson,
     reviewerDownloadFileName,
+    // Roadkill test seams (host-only actions + RPC handler + setup builder).
+    buildRoadkillSetup,
+    getRoadkill,
+    startRoadkill,
+    endRoadkill,
+    roadkillHostTick,
+    advanceRoadkillWord,
+    pauseRoadkill,
+    resumeRoadkill,
+    revealRoadkillAnswer,
+    nextRoadkillStage,
+    handleRoadkillBuzz,
+    roadkillStageState,
+    renderRoadkillPlayerPanel,
   });
 } catch {}

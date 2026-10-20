@@ -2008,7 +2008,7 @@ for (const [name, mutate, field] of badCases) {
     check("legacy validates after migrate", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
   }
 }
-check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}), ...(k === "roadkill" ? { rounds: [{ clues: ["A", "B"], answer: "C", decoys: ["D"] }], finale: null } : {}) }] }).ok), "blank failed");
 // --- episode editor ops (mode-independent, DOM-free) ---
 const eped = await import("../src/episodes/editor.js");
 const epui = await import("../src/episodes/ui.js");
@@ -2085,9 +2085,14 @@ const epui = await import("../src/episodes/ui.js");
         { id: "v2", kind: "text", prompt: "T?", correctAnswer: "A" },
         { id: "v3", kind: "fibbage", prompt: "F?", truth: "T", lieTimeSec: 30, voteTimeSec: 30, multiplier: 1 },
         { id: "v4", kind: "bingo", prompt: "G?", word: "GAMES", rounds: [{ answer: "G" }] },
+        { id: "v5", kind: "roadkill", prompt: "R?", rounds: [{ clues: ["A", "B"], answer: "C", decoys: ["D"] }], decoys: ["E"], correctPoints: 250, penaltyPoints: 50, finale: { answer: "F", decoys: ["G"] } },
       ],
     };
     const vis = (id) => epui.renderCreatorScreen({ ep: visEp, selectedId: id, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    const roadkillHtml = vis("v5");
+    check("roadkill editor fields render", ["ep-rk-a-0", "ep-rk-b-0", "ep-rk-ans-0", "ep-rk-dec-0", "ep-rk-shared", "ep-rk-correct", "ep-rk-penalty", "ep-rk-finale-answer", "ep-rk-finale-decoys"].every((id) => roadkillHtml.includes(`id="${id}"`)), "roadkill fields missing");
+    check("roadkill editor shows authored values", roadkillHtml.includes('value="C"') && roadkillHtml.includes('value="250"') && roadkillHtml.includes('value="F"'), "roadkill values missing");
+    check("roadkill hides overrides", !roadkillHtml.includes('id="ep-ov-scoring"') && roadkillHtml.includes("fixed scoring and timing"), "roadkill overrides leaked");
     const buttonsHtml = vis("v1");
     check("buttons sees all overrides", ["ep-ov-scoring", "ep-ov-points", "ep-ov-jack", "ep-ov-time", "ep-ov-maxbuzz", "ep-ov-layout", "ep-ov-lock", "ep-ov-rebuzz", "ep-ov-close"].every((oid) => buttonsHtml.includes(`id="${oid}"`)), "buttons missing overrides");
     const textHtml = vis("v2");
@@ -3251,6 +3256,113 @@ const epui = await import("../src/episodes/ui.js");
 }
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
+
+// --- Roadkill: schema merge + host/stream/rpc/scoring/finale (both modes) ---
+{
+  const T = globalThis.__BUZZER_TEST__;
+  const setup = T.buildRoadkillSetup({
+    rounds: [
+      { clues: ["Milk", "Paint"], answer: "Chalk", decoys: ["Cheese", "Brush"] },
+      { clues: ["Sky", "Ocean"], answer: "Blue", decoys: ["Green"] },
+    ],
+    decoys: ["Chalk", "Cheese", "Cloud"],
+    finale: { answer: "White", decoys: ["Black"] },
+    correctPoints: 250,
+    penaltyPoints: 50,
+  });
+  check("roadkill setup builds pairs", setup.pairs?.length === 2 && setup.stageCount === 3, JSON.stringify(setup).slice(0, 200));
+  check("roadkill merges/dedupes words", setup.pairs?.[0]?.words?.length === 4 && setup.pairs[0].words.filter((w) => w.toLowerCase() === "chalk").length === 1, JSON.stringify(setup.pairs?.[0]?.words));
+  check("roadkill keeps authored points", setup.correctPoints === 250 && setup.penaltyPoints === 50, `${setup.correctPoints}/${setup.penaltyPoints}`);
+  check("roadkill setup rejects empty pair", T.buildRoadkillSetup({ rounds: [{ clues: ["", "B"], answer: "C" }] }).error, "missing error");
+
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "roadkill"] }, prod);
+  check("roadkill mode on", S().settings?.inputMode === "roadkill", S().settings?.inputMode);
+  S().roadkill = {
+    ...S().roadkill,
+    ...setup,
+    active: false,
+    phase: "setup",
+    pairIndex: 0,
+    words: [],
+    wordIndex: 0,
+    wordSeq: 0,
+    guessed: {},
+    paused: true,
+    nextWordAt: null,
+    advanceAt: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    outcome: null,
+    startedAt: null,
+    finishedAt: null,
+  };
+  T.startRoadkill();
+  check("roadkill starts streaming", S().roadkill?.active === true && S().roadkill?.phase === "playing" && S().roadkill?.paused === false, JSON.stringify(S().roadkill?.phase));
+  check("roadkill first stage shuffled", S().roadkill?.pairIndex === 0 && S().roadkill?.words?.length === 4 && S().roadkill?.wordSeq === 1, JSON.stringify(S().roadkill?.words));
+  const dev1Slots = Math.max(1, Number(S().coopRosters?.dev1?.slots?.length) || 1);
+  const coopKeyFor = (slot) => (dev1Slots <= 1 ? "dev1" : `coop:dev1:${slot}`);
+  const roadkillKey = COOP ? coopKeyFor(0) : "dev1";
+  // Force a decoy onto the stream, then miss on purpose.
+  const decoyIndex = S().roadkill.words.findIndex((w) => w.toLowerCase() !== "chalk");
+  S().roadkill.wordIndex = decoyIndex;
+  const scoreBefore = Number(S().scores?.[roadkillKey] || 0);
+  const wrong = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: 0 } : {}) }, dev1);
+  check("roadkill wrong accepted", wrong?.ok === true && wrong?.message, JSON.stringify(wrong));
+  check("roadkill wrong penalty applied", Number(S().scores?.[roadkillKey] || 0) === scoreBefore - 50, `${scoreBefore}→${S().scores?.[roadkillKey]}`);
+  check("roadkill stays playing after miss", S().roadkill?.phase === "playing", S().roadkill?.phase);
+  const wrongEntry = S().gameLog.filter((e) => e.type === "roadkill").pop();
+  check("roadkill wrong log resolved", wrongEntry?.result === "incorrect" && wrongEntry?.resolved === true && wrongEntry?.awardedDelta === -50, JSON.stringify(wrongEntry));
+  const again = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: 0 } : {}) }, dev1);
+  check("roadkill one guess per word", again?.ok === false, JSON.stringify(again));
+  // Next word frees the guess; put the connector on-screen and hit it.
+  T.advanceRoadkillWord();
+  check("roadkill next word resets guesses", Number(S().roadkill?.wordSeq) === 2 && Object.keys(S().roadkill?.guessed || {}).length === 0, JSON.stringify(S().roadkill?.guessed));
+  S().roadkill.wordIndex = S().roadkill.words.findIndex((w) => w.toLowerCase() === "chalk");
+  const correctKey = COOP && dev1Slots > 1 ? coopKeyFor(1) : "dev2";
+  const correctBefore = Number(S().scores?.[correctKey] || 0);
+  const hitTarget = COOP && dev1Slots > 1 ? dev1 : dev2;
+  const hit = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: dev1Slots > 1 ? 1 : 0 } : {}) }, hitTarget);
+  check("roadkill correct accepted", hit?.ok === true && hit?.message, JSON.stringify(hit));
+  check("roadkill correct points applied", Number(S().scores?.[correctKey] || 0) === correctBefore + 250, `${correctBefore}→${S().scores?.[correctKey]}`);
+  check("roadkill reveal state", S().roadkill?.phase === "reveal" && S().roadkill?.revealAnswer === "Chalk" && S().roadkill?.correctName, JSON.stringify(S().roadkill?.revealAnswer));
+  const correctEntry = S().gameLog.filter((e) => e.type === "roadkill").pop();
+  check("roadkill correct log", correctEntry?.result === "correct" && correctEntry?.awardedDelta === 250 && correctEntry?.basePoints === 250, JSON.stringify(correctEntry));
+  // Host pause cancels the auto-advance; resume re-arms it.
+  T.pauseRoadkill();
+  check("roadkill pause cancels advance", S().roadkill?.paused === true && S().roadkill?.advanceAt === null, JSON.stringify(S().roadkill?.advanceAt));
+  T.resumeRoadkill();
+  check("roadkill resume re-arms advance", S().roadkill?.paused === false && Number(S().roadkill?.advanceAt) > 0, JSON.stringify(S().roadkill?.advanceAt));
+  // Jump the wall clock to advance into the finale (one pair + finale = 3 stages).
+  S().roadkill.advanceAt = Date.now() - 1;
+  T.roadkillHostTick();
+  check("roadkill auto-advances stage", S().roadkill?.pairIndex === 1 && S().roadkill?.phase === "playing", `${S().roadkill?.pairIndex}/${S().roadkill?.phase}`);
+  // Advance again to the finale via the host control.
+  T.nextRoadkillStage();
+  check("roadkill finale stage", S().roadkill?.pairIndex === 2 && S().roadkill?.phase === "playing", `${S().roadkill?.pairIndex}/${S().roadkill?.phase}`);
+  S().roadkill.words = ["White", "Black"];
+  S().roadkill.wordIndex = 0;
+  const finKey = roadkillKey;
+  const finBefore = Number(S().scores?.[finKey] || 0);
+  const fin = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: 0 } : {}) }, dev1);
+  check("roadkill finale correct", fin?.ok === true && Number(S().scores?.[finKey] || 0) === finBefore + 250, JSON.stringify(fin));
+  check("roadkill finishes after finale", S().roadkill?.phase === "finished" && S().roadkill?.advanceAt === null, S().roadkill?.phase);
+  // Rendered host panel and player panel carry the roadkill surfaces.
+  pk._store.self = pk._store.participants.host1;
+  S().roadkill.phase = "playing";
+  S().roadkill.paused = false;
+  T.renderNow();
+  check("roadkill host panel renders", _mount.innerHTML.includes("roadkill-host-panel") && _mount.innerHTML.includes("data-roadkill-next-pair"), "host panel missing");
+  pk._store.self = pk._store.participants.dev1;
+  T.renderNow();
+  const playerHtml = T.renderRoadkillPlayerPanel(S().settings, pk._store.participants.dev1);
+  check("roadkill player panel renders", playerHtml.includes("roadkill-player-card") && playerHtml.includes("data-roadkill-buzz"), "player panel missing");
+  pk._store.self = pk._store.participants.host1;
+  T.endRoadkill(true);
+  check("roadkill exits to buzzer mode", S().settings?.inputMode === "buttons" && S().roadkill?.active === false, `${S().settings?.inputMode}/${S().roadkill?.active}`);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
