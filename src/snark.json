@@ -1804,6 +1804,16 @@
         "en": "Roll the credits on every screen (except the timer tablet).",
         "snark1": "",
         "snark2": ""
+      },
+      "writersHeading": {
+        "en": "Writers",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noWriters": {
+        "en": "No writers credited.",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "misc": {

@@ -12959,6 +12959,9 @@ function renderCreditsOverlay() {
   const endButton = isHost()
     ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
     : "";
+  const closeButton = isHost()
+    ? `<button type="button" data-credits-close>${escapeHtml(getSnark("shared.credits.closeButton", "Close"))}</button>`
+    : "";
 
   return `
     <div class="credits-overlay" data-credits-overlay data-credits-since="${escapeHtml(String(credits.startedAt))}">
@@ -12967,7 +12970,7 @@ function renderCreditsOverlay() {
           <strong>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</strong>
           <div class="credits-topbar-actions">
             ${endButton}
-            <button type="button" data-credits-close>${escapeHtml(getSnark("shared.credits.closeButton", "Close"))}</button>
+            ${closeButton}
           </div>
         </div>
         <div class="credits-viewport">
@@ -12976,6 +12979,9 @@ function renderCreditsOverlay() {
             <p><strong>${escapeHtml(hostName)}</strong></p>
             <h3>${escapeHtml(getSnark("shared.credits.producersHeading", "Producers"))}</h3>
             ${producerNames.length === 0 ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noProducers", "No producers assigned."))}</p>` : producerNames.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join("")}
+            ${activeEpisode && activeEpisode.meta && activeEpisode.meta.author
+              ? `<h3>${escapeHtml(getSnark("shared.credits.writersHeading", "Writers"))}</h3>${String(activeEpisode.meta.author).split(",").map((name) => `<p><strong>${escapeHtml(name.trim())}</strong></p>`).join("")}`
+              : `<h3>${escapeHtml(getSnark("shared.credits.writersHeading", "Writers"))}</h3><p class="muted">${escapeHtml(getSnark("shared.credits.noWriters", "No writers credited."))}</p>`}
             <h3>${escapeHtml(getSnark("shared.credits.playersHeading", "Players"))}</h3>
             ${playerHtml}
             <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Credits"))}</h3>
