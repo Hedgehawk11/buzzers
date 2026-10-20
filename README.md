@@ -36,7 +36,6 @@ In no particular order:
  - BINGO/Wendit UI revamp
  - Some love to the main buzzers
  - Better UI
- - Custom music/sfx engine
  - Screw Revamp
  - YDKJ The Ride RNG preset for pick-a-value
  - whatever people ask via creating issues
