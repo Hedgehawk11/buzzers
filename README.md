@@ -65,6 +65,9 @@ In the hypothetical situation where you want to give that kind of time, I gave t
 ### Sample slideshow?
 IDK possibly
 
+### Audio?
+No. (someone else must do this beast)
+
 ### What's in this thing?
 (breathes in) 
 - 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off, plus custom labels and diamond / grid / list layouts
@@ -96,7 +99,6 @@ IDK possibly
 - Post-Game Review (export / share via code)
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
-- Audience display music (pre-game, per-minigame intro/instructions/play/end, post-game, with fade-in extras and M-key toggle)
 - and probably more I forgot about
 
 ### Why are you using gameshow terms in this thing

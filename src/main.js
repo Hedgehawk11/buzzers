@@ -6,7 +6,6 @@ import "./style.css";
 import { RPC, getParticipants, getRoomCode, getState, insertCoin, isHost, me, setState } from "playroomkit";
 import SNARK from "./snark.json";
 import { scheduleRender, renderImmediate, initRenderer, delegate, getApp, computeAudienceTimerFrozenCs, showToast, trackScoreSnapshot, applyScoreDeltas, startSmoothTimer, transitionMount } from "./render.js";
-import { createMusicEngine, getDisplayMusicPlan, modeTrack, rootTrack } from "./music.js";
 import {
   addItem as epAddItem,
   deleteItem as epDeleteItem,
@@ -208,7 +207,6 @@ let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
 let bingoSpaceKeydownBound = false;
 let quixortKeydownBound = false;
-let displayMusicKeydownBound = false;
 // Quixort trash two-tap confirm is client-local UI state (never shared —
 // one screen arming trash must not arm every screen). Keyed by
 // `${trackKey}:${deckPos}` so a new block auto-disarms a stale arm.
@@ -230,16 +228,6 @@ let creditsDismissedAt = null;
 const COOP_COUNT_KEY = "buzzer_coop_count";
 const COOP_NAMES_KEY = "buzzer_coop_names";
 const PRODUCER_PASSWORD_KEY = "buzzer_producer_password";
-const DISPLAY_MUSIC_KEY = "buzzer_display_music";
-// Display music engine and state (audience-display clients only, never shared)
-let displayMusicEngine = null;
-let displayMusicEnabled = false;
-let hasShowStarted = false; // sticky: true once a round opens or a special mode is selected
-let preGameEnded = false;   // true once we leave pre-game
-let postGameStarted = false; // true after post-game one-shot finishes
-let postLoopStarted = false;  // true once post-loop is running
-let bingoSeenPlay = false;   // true once bingo/wen enters cycling (for winner detection)
-let lastMusicPlanStage = ""; // for detecting stage changes
 // Producer password is host-local only (never shared PlayroomKit state —
 // room state is synced to every client, so broadcasting it leaks the code).
 // Persisted in localStorage so a same-device host reload keeps the code;
@@ -1357,117 +1345,6 @@ function isFibbageMode() {
 
 function isQuixortMode() {
   return getSettings().inputMode === "quixort";
-}
-
-// =============================================================================
-// Display music helpers (audience-display clients only)
-// =============================================================================
-function isDisplayMusicClient() {
-  return clientMode === "display";
-}
-
-function getMinigameMode() {
-  const settings = getSettings();
-  if (settings.inputMode === "bingo") return "bingo";
-  if (settings.inputMode === "wendithapn") return "wendithapn";
-  if (settings.inputMode === "disordat") return "disordat";
-  if (settings.inputMode === "fibbage") return "fibbage";
-  if (settings.inputMode === "quixort") return "quixort";
-  return null;
-}
-
-function getActivePlayerCount() {
-  const controllerId = getControllerId();
-  const producerIds = getSafeState("producerIds", []);
-  const settings = getSettings();
-  const kicked = new Set(settings.kickedPlayerIds || []);
-  return currentParticipants().filter((p) =>
-    p.id !== controllerId &&
-    !(Array.isArray(producerIds) && producerIds.includes(p.id)) &&
-    !kicked.has(p.id)
-  ).length;
-}
-
-function getMinigameState() {
-  const mode = getMinigameMode();
-  if (!mode) return { active: false, phase: "idle", winner: null };
-  if (mode === "bingo" || mode === "wendithapn") {
-    const b = getBingo();
-    return { active: b.active, phase: b.active ? (b.cycling ? "playing" : "setup") : "idle", winner: b.winner };
-  }
-  if (mode === "disordat") {
-    const dd = getDisOrDat();
-    return { active: dd.active, phase: dd.phase, winner: null };
-  }
-  if (mode === "fibbage") {
-    const fb = getFibbage();
-    return { active: fb.active, phase: fb.phase, winner: null };
-  }
-  if (mode === "quixort") {
-    const qx = getQuixort();
-    return { active: qx.active, phase: qx.phase, winner: null };
-  }
-  return { active: false, phase: "idle", winner: null };
-}
-
-function getCreditsActive() {
-  const credits = getSafeState("credits", null);
-  return credits?.active === true;
-}
-
-function updateDisplayMusic() {
-  if (!isDisplayMusicClient() || !displayMusicEngine) return;
-
-  const minigameMode = getMinigameMode();
-  const minigameState = getMinigameState();
-  const playerCount = getActivePlayerCount();
-  const creditsActive = getCreditsActive();
-
-  // Detect show start: any round opens or a special mode is selected
-  const round = getRound();
-  const roundActive = round.status === "open" || round.status === "locked" || round.status === "roulette";
-  if (!hasShowStarted && (roundActive || minigameMode)) {
-    hasShowStarted = true;
-    preGameEnded = true;
-    // Reset post-game flags when a new show starts
-    postGameStarted = false;
-    postLoopStarted = false;
-    bingoSeenPlay = false;
-  }
-
-  // Track bingo/wen play state for winner detection
-  if ((minigameMode === "bingo" || minigameMode === "wendithapn") && minigameState.active && minigameState.phase === "playing") {
-    bingoSeenPlay = true;
-  }
-
-  // Detect post-game sequence
-  const isResults = minigameState.phase === "results" || ((minigameMode === "bingo" || minigameMode === "wendithapn") && minigameState.winner && bingoSeenPlay);
-  if (isResults && !postGameStarted && !postLoopStarted) {
-    postGameStarted = true;
-  }
-
-  const plan = getDisplayMusicPlan({
-    hasShowStarted,
-    minigameMode,
-    minigameActive: minigameState.active,
-    minigamePhase: minigameState.phase,
-    minigameWinner: minigameState.winner,
-    minigameSeenPlay: bingoSeenPlay,
-    playerCount,
-    creditsActive,
-    preGameEnded,
-    postGameStarted,
-    postLoopStarted,
-  });
-
-  // Detect post-game -> post-loop transition
-  if (lastMusicPlanStage === "post-game" && plan.nextStage === "post-loop") {
-    postGameStarted = false;
-    postLoopStarted = true;
-  }
-  lastMusicPlanStage = plan.nextStage;
-
-  displayMusicEngine.applyPlan(plan);
 }
 
 function hasAudienceDisplay() {
@@ -13417,10 +13294,6 @@ function bindEvents() {
     document.addEventListener("keydown", handleQuixortKeydown);
     quixortKeydownBound = true;
   }
-  if (!displayMusicKeydownBound) {
-    document.addEventListener("keydown", handleDisplayMusicKeydown);
-    displayMusicKeydownBound = true;
-  }
 
   // --- Delegated handlers below ---
   delegate("pointerdown", "[data-buzz]", (e, btn) => {
@@ -14252,13 +14125,6 @@ function bindEvents() {
     if (mode !== "display" && mode !== "tablet_timer") {
       try { localStorage.setItem(NAME_KEY, chosenName); } catch {}
     }
-    // Persist display music preference (display clients only)
-    if (mode === "display") {
-      const musicCheckbox = mount.querySelector("#prejoin-music");
-      const musicEnabled = musicCheckbox?.checked === true;
-      try { localStorage.setItem(DISPLAY_MUSIC_KEY, String(musicEnabled)); } catch {}
-      displayMusicEnabled = musicEnabled;
-    }
     if (mode === "host") {
       const selectedTeamSetting = String(teamModeInput?.value || "off");
       hostPrejoinTeamSetting = selectedTeamSetting === "shared" ? "shared" : selectedTeamSetting === "alliance" ? "alliance" : "off";
@@ -14573,27 +14439,6 @@ async function submitDisOrDatClaim(q, slot = null) {
 }
 
 // =============================================================================
-// Display music toggle — M key on audience display
-// =============================================================================
-function handleDisplayMusicKeydown(event) {
-  if (event.code !== "KeyM" && event.key !== "m" && event.key !== "M") return;
-  if (event.repeat) return;
-  if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
-  if (isEditingControl()) return;
-  if (!isDisplayMusicClient()) return;
-
-  displayMusicEnabled = !displayMusicEnabled;
-  try { localStorage.setItem(DISPLAY_MUSIC_KEY, String(displayMusicEnabled)); } catch {}
-  if (displayMusicEngine) {
-    displayMusicEngine.setEnabled(displayMusicEnabled);
-    if (displayMusicEnabled) {
-      updateDisplayMusic();
-    }
-  }
-  showToast(displayMusicEnabled ? "Music enabled" : "Music disabled", { ttlMs: 2000 });
-}
-
-// =============================================================================
 // Returns true when the user is focused on an input (to ignore space key)
 // =============================================================================
 function isEditingControl() {
@@ -14799,7 +14644,6 @@ function renderPrejoinScreen(mode = "landing", error = "") {
       </main>
     `;
   } else if (mode === "display") {
-    const savedMusic = localStorage.getItem(DISPLAY_MUSIC_KEY) === "true";
     prejoinHtml = `
       <main class="prejoin-layout">
         <section class="card prejoin-panel prejoin-panel-display">
@@ -14816,10 +14660,6 @@ function renderPrejoinScreen(mode = "landing", error = "") {
             <label>
               Room code
               <input data-prejoin-input id="prejoin-room-code" type="text" maxlength="4" placeholder="XXXX" />
-            </label>
-            <label class="prejoin-check">
-              <input data-prejoin-input id="prejoin-music" type="checkbox" ${savedMusic ? "checked" : ""} />
-              <span>Play music on this display (M toggles later)</span>
             </label>
 
             ${error ? `<p class="error-text">${escapeHtml(error)}</p>` : ""}
@@ -15262,13 +15102,6 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   }
   // Ensure delegated listeners are bound once before first render
   bindEvents();
-  // Initialize display music engine for audience-display clients
-  if (isDisplayMusicClient() && displayMusicEnabled) {
-    displayMusicEngine = createMusicEngine();
-    displayMusicEngine.setEnabled(true);
-    // Initial plan (pre-game)
-    updateDisplayMusic();
-  }
   renderImmediate(render);
   // Re-render 0.25s after login: displayName/controllerId can lag the first
   // render, leaving the host with a wrong top-right name and a player buzzer.
@@ -15296,10 +15129,6 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   setInterval(() => {
     if (!isAudienceDisplayClient()) return;
     if (isFibbageMode() && getFibbage().revealed?.singleIdx !== null) return;
-    // Update display music on every audience poll (250ms) so cue changes are responsive
-    if (isDisplayMusicClient() && displayMusicEngine) {
-      try { updateDisplayMusic(); } catch (e) { console.warn("[displayMusic] poll failed", e); }
-    }
     const sig = getUiSignature();
     if (sig !== lastUiSignature) {
       scheduleRender(render);
