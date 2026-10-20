@@ -477,6 +477,7 @@ if (COOP) {
   check("host screw button hidden in coop", !mount.innerHTML.includes("Screw a Player"), "button present");
 } else {
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["allowScrewing", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwMode", "individual"] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   check("host screw button visible off-coop", mount.innerHTML.includes("Screw a Player"), "button missing");
   const screwRes = await pk._store.rpc.screw({ screweeId: null }, dev1);

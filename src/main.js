@@ -58,7 +58,7 @@ const DEFAULT_SETTINGS = {
   uniformPoints: 1000,
   jackMultiplier: 1,
   allowScrewing: false,
-  screwMode: "individual",
+  screwMode: "all",
   reopenBuzzersAfterScrew: false,
   screwTimerSec: 5,
   screwBonus: 1000,
@@ -7551,6 +7551,7 @@ function ensureHostInit() {
     if (s.screwTimerSec === undefined) patch.screwTimerSec = 5;
     if (s.screwBonus === undefined) patch.screwBonus = 1000;
     if (s.screwAutoStart === undefined) patch.screwAutoStart = true;
+    if (s.screwMode === undefined) patch.screwMode = "all";
     if (Object.keys(patch).length) setState("settings", { ...s, ...patch }, true);
   } catch {}
   if (getState("round") === undefined || getState("round") === null) {
