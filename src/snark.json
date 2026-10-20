@@ -369,6 +369,41 @@
         "en": "Waiting for the host's ruling.",
         "snark1": "",
         "snark2": ""
+      },
+      "allScrewButton": {
+        "en": "SCREW EM'",
+        "snark1": "CHAOS MODE",
+        "snark2": "SCREW THEM ALL"
+      },
+      "allScrewGranted": {
+        "en": "All screw granted!",
+        "snark1": "You've been handed chaos. Use it wisely.",
+        "snark2": "All screw in hand. Make it count."
+      },
+      "allScrewUsed": {
+        "en": "You used your All Screw!",
+        "snark1": "Chaos unleashed!",
+        "snark2": "Everyone's answers are scrambled. Good luck to them."
+      },
+      "allScrewNotGranted": {
+        "en": "Host hasn't handed you an All Screw.",
+        "snark1": "No All Screw for you. Ask the host.",
+        "snark2": "Host hasn't given you an All Screw yet."
+      },
+      "allScrewActiveSelf": {
+        "en": "Your All Screw is active! Everyone else is scrambled.",
+        "snark1": "You're the only one with the real answers.",
+        "snark2": "Everyone else is guessing. You're not."
+      },
+      "allScrewActiveOther": {
+        "en": "{screwer} used an All Screw! Your answers are scrambled.",
+        "snark1": "{screwer} scrambled your answers. Good luck!",
+        "snark2": "{screwer} hit you with an All Screw. Your buttons are shuffled."
+      },
+      "allScrewUnavailableText": {
+        "en": "All screw is unavailable in text entry mode.",
+        "snark1": "All screw doesn't work with text answers.",
+        "snark2": "Text mode? No All Screw for you."
       }
     },
     "roulette": {
@@ -1287,6 +1322,16 @@
         "en": "Timer",
         "snark1": "",
         "snark2": ""
+      },
+      "audienceAllScrewActive": {
+        "en": "All Screw Active",
+        "snark1": "CHAOS MODE",
+        "snark2": "ALL SCREW!"
+      },
+      "audienceAllScrewOver": {
+        "en": "{screwer} used an All Screw! Everyone else is scrambled.",
+        "snark1": "{screwer} scrambled everyone. +300 per wrong answer.",
+        "snark2": "{screwer} hit the room with an All Screw. Good luck everyone else."
       }
     },
     "roulette": {
