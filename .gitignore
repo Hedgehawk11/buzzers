@@ -24,7 +24,7 @@ dist-ssr
 *.sln
 *.sw?
 
-#tests for anims
+#tests for anims/music
 public/3.gif
 public/3-dance.gif
 public/2.gif
@@ -40,7 +40,10 @@ public/2-buzz.png
 public/1-wrong.png
 public/1-correct.png
 public/1-buzz.png
+*.ogg
+*.mp3
 
 # NONONONONO
 .env
+
 

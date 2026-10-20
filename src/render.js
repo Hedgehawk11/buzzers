@@ -69,6 +69,7 @@ const PRESERVED_INPUT_IDS = [
   "disordat-q-text-4",
   "disordat-q-text-5",
   "disordat-q-text-6",
+  "ep-load-code",
 ];
 
 let inputDrafts = new Map(); // id -> { value, selStart, selEnd, focused }

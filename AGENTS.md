@@ -13,7 +13,7 @@ npm run test:harness     # coop-on run, several hundred checks
 npm run test:harness:all # both runs: HARNESS_COOP=on + off
 npm run episode-server   # standalone episode share API on :3001 (needs MONGO_URL)
 ```
-No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports. CI (`.github/workflows/node.js.yml`, node 20/22/24) runs only `npm run build` — the harness never runs in CI, so run it locally.
+No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports. No CI workflow exists; the harness never runs in CI, so run it locally.
 
 ## Key structure
 - `src/main.js` — entire game: state, RPC, render assembly. Game logic goes here. File is very large; function names are stable but line numbers rot fast, so grep instead of trusting any cited line.
@@ -52,7 +52,7 @@ No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — s
 - Score delta: `renderScores` emits `data-score-key`/`data-score-value`; `applyScoreDeltas` adds the `::after` pill, which floats **above** the row (never over the number). Audience never shows deltas (guard + CSS).
 - Smooth timer is display-only; 1s `hostTick` stays authoritative.
 - Buzzers-open background flash applies **only** with anims on (`body:not([data-ui-anims="off"]):has([data-buzzers-open])`) — the flash animation is the sole background color source, so gating it (not just `animation:none`) is what keeps the closed background.
-- Animation suite is CSS-only: fast feedback anims are subtle (150–300ms: buzzer breathe/press, `scoreShake` for losses, log slide-in, `winnerPop`, roulette tick, bingo tile pop, screw shake, `data-timer-urgent` pulse, card stagger); idle ambient loops are seconds-long and transform/opacity/box-shadow-only (`idleGlowDrift`/`idleGlowDrift2` orbs, `idleFloat` headers, `idleBuzzerWait` disabled buzzer, `idleBadgeGlow` room-code badge, `idlePillSoft` status pill, `idleMutedPulse` waiting text). Gate every new anim behind `body:not([data-ui-anims="off"])` + the `prefers-reduced-motion` kill block — the global `data-ui-anims="off"` kill covers the rest.
+- Animation suite is CSS-only: fast feedback anims are subtle (150–300ms: buzzer breathe/press, `scoreShake` for losses, log slide-in, `winnerPop`, roulette tick, bingo tile pop, screw shake, `data-timer-urgent` pulse, card stagger); idle ambient loops are seconds-long and transform/opacity/box-shadow-only (`idleFloat` headers, `idleBuzzerWait` disabled buzzer, `idleBadgeGlow` room-code badge, `idlePillSoft` status pill, `idleMutedPulse` waiting text). Gate every new anim behind `body:not([data-ui-anims="off"])` + the `prefers-reduced-motion` kill block — the global `data-ui-anims="off"` kill covers the rest.
 
 ## Coopertition mode (`settings.coopertitionEnabled`)
 - Up to 3 sub-players per device. Join name = group name; setup screen takes count 1–3 + names (1P uses group name). Roster RPC `coop-roster`, edits gated by `coopAllowEdit`. Local drafts in `localStorage` (`buzzer_coop_*`); all `localStorage` access is try/catch (private-mode throws).

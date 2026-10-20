@@ -170,6 +170,11 @@
         "en": "Time left",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "outcome": {
@@ -219,6 +224,11 @@
         "en": "A screw is being used by {screwer} on {screwee}.",
         "snark1": "{screwer} is screwing over {screwee}. Break out the popcorn.",
         "snark2": "{screwee} is being screwed by {screwer}. Get ready for a new war between them."
+      },
+      "selecting": {
+        "en": "{screwer} is selecting a target...",
+        "snark1": "{screwer} is picking a victim... Run!",
+        "snark2": "{screwer} is choosing who to screw... Good luck everyone."
       },
       "youreScrewed": {
         "en": "You're Being Screwed!",
@@ -349,6 +359,51 @@
         "en": "Time",
         "snark1": "",
         "snark2": ""
+      },
+      "answerSubmitted": {
+        "en": "Answer submitted!",
+        "snark1": "Answer locked in! No take-backs.",
+        "snark2": "Answer submitted! Hope it was worth the sweat."
+      },
+      "waitingRuling": {
+        "en": "Waiting for the host's ruling.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "allScrewButton": {
+        "en": "SCREW EM'",
+        "snark1": "CHAOS MODE",
+        "snark2": "SCREW THEM ALL"
+      },
+      "allScrewGranted": {
+        "en": "All screw granted!",
+        "snark1": "You've been handed chaos. Use it wisely.",
+        "snark2": "All screw in hand. Make it count."
+      },
+      "allScrewUsed": {
+        "en": "You used your All Screw!",
+        "snark1": "Chaos unleashed!",
+        "snark2": "Everyone's answers are scrambled. Good luck to them."
+      },
+      "allScrewNotGranted": {
+        "en": "Host hasn't handed you an All Screw.",
+        "snark1": "No All Screw for you. Ask the host.",
+        "snark2": "Host hasn't given you an All Screw yet."
+      },
+      "allScrewActiveSelf": {
+        "en": "Your All Screw is active! Everyone else is scrambled.",
+        "snark1": "You're the only one with the real answers.",
+        "snark2": "Everyone else is guessing. You're not."
+      },
+      "allScrewActiveOther": {
+        "en": "{screwer} used an All Screw! Your answers are scrambled.",
+        "snark1": "{screwer} scrambled your answers. Good luck!",
+        "snark2": "{screwer} hit you with an All Screw. Your buttons are shuffled."
+      },
+      "allScrewUnavailableText": {
+        "en": "All screw is unavailable in text entry mode.",
+        "snark1": "All screw doesn't work with text answers.",
+        "snark2": "Text mode? No All Screw for you."
       }
     },
     "roulette": {
@@ -575,6 +630,11 @@
         "en": "Dis or Dat is off limits in coopertition mode.",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "quixort": {
@@ -645,6 +705,16 @@
       },
       "timeLeftLabel": {
         "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerEstimate": {
+        "en": "untimed",
         "snark1": "",
         "snark2": ""
       },
@@ -862,6 +932,11 @@
       },
       "notPlayer": {
         "en": "Host cannot lie.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
         "snark1": "",
         "snark2": ""
       },
@@ -1205,6 +1280,11 @@
         "en": "buzzed",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "screw": {
@@ -1242,6 +1322,16 @@
         "en": "Timer",
         "snark1": "",
         "snark2": ""
+      },
+      "audienceAllScrewActive": {
+        "en": "All Screw Active",
+        "snark1": "CHAOS MODE",
+        "snark2": "ALL SCREW!"
+      },
+      "audienceAllScrewOver": {
+        "en": "{screwer} used an All Screw! Everyone else is scrambled.",
+        "snark1": "{screwer} scrambled everyone. +300 per wrong answer.",
+        "snark2": "{screwer} hit the room with an All Screw. Good luck everyone else."
       }
     },
     "roulette": {
@@ -1449,6 +1539,11 @@
         "en": "{buzzed}/{total} players answered",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     }
   },
@@ -1519,6 +1614,11 @@
         "en": "Time left",
         "snark1": "",
         "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "scores": {
@@ -1544,6 +1644,21 @@
       },
       "allianceTotalsTitle": {
         "en": "Alliance totals",
+        "snark1": "",
+        "snark2": ""
+      },
+      "teammatesTitle": {
+        "en": "Your alliance",
+        "snark1": "",
+        "snark2": ""
+      },
+      "teammatesTotal": {
+        "en": "Alliance total",
+        "snark1": "",
+        "snark2": ""
+      },
+      "teammatesYou": {
+        "en": "you",
         "snark1": "",
         "snark2": ""
       },

@@ -2901,63 +2901,7 @@ body[data-team="brown"]:not(:has([data-screw-active])) { background-image: linea
 body[data-team="cyan"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #062423, #031010); }
 body[data-team="lime"]:not(:has([data-screw-active])) { background-image: linear-gradient(160deg, #1d2405, #0d1202); }
 
-/* Idle-phase glow: faint floating orb behind content during prejoin and
-   between rounds (round idle/closed). Transform-only motion (compositor-cheap);
-   the base layer stays hidden unless an idle selector below matches. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: -12%;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0;
-  background:
-    radial-gradient(closest-side, rgba(34, 166, 242, 0.24), transparent 70%) 82% 74% / 70vmax 70vmax no-repeat;
-}
-@keyframes idleGlowDrift {
-  from { transform: translate3d(-2.5%, 2%, 0) scale(1); }
-  to   { transform: translate3d(2.5%, -2%, 0) scale(1.08); }
-}
-/* Prejoin lobby drifts gently (screw still wins ties via its later rule). */
-body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::before {
-  opacity: 1;
-  animation: idleGlowDrift 9s ease-in-out infinite alternate;
-}
-/* Between rounds (idle/closed) on player, host, and display — never while
-   buzzers are open, screwed, or a minigame/timer flash is active. */
-body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::before {
-  opacity: 0.9;
-  animation: idleGlowDrift 9s ease-in-out infinite alternate;
-}
-/* Audience + tablet displays get a slightly more visible drift. */
-body:not([data-ui-anims="off"]):has(main.audience-layout[data-round-status="idle"], main.audience-layout[data-round-status="closed"], main.tablet-timer-layout[data-round-status="idle"], main.tablet-timer-layout[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open]))::before {
-  opacity: 1;
-  filter: saturate(1.25);
-}
-/* Second depth orb (parallax): opposite drift, longer loop, warm tint.
-   Same idle gating as ::before; hidden by default. */
-body::after {
-  content: "";
-  position: fixed;
-  inset: -12%;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0;
-  background:
-    radial-gradient(closest-side, rgba(255, 139, 36, 0.16), transparent 70%) 18% 22% / 55vmax 55vmax no-repeat;
-}
-@keyframes idleGlowDrift2 {
-  from { transform: translate3d(2%, -1.5%, 0) scale(1.06); }
-  to   { transform: translate3d(-2%, 1.5%, 0) scale(1); }
-}
-body:not([data-ui-anims="off"]):has(.prejoin-layout):not(:has([data-screw-active]))::after {
-  opacity: 0.9;
-  animation: idleGlowDrift2 13s ease-in-out infinite alternate;
-}
-body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-round-status="closed"]):not(:has([data-screw-active])):not(:has([data-buzzers-open])):not(:has([data-bingo-active])):not(:has([data-disordat-active])):not(:has([data-fibbage-active])):not(:has([data-quixort-active]))::after {
-  opacity: 0.8;
-  animation: idleGlowDrift2 13s ease-in-out infinite alternate;
-}
+
 /* Gentle float for idle headers/cards (transform-only). */
 @keyframes idleFloat {
   from { transform: translate3d(0, -4px, 0); }
@@ -3007,6 +2951,34 @@ body:not([data-ui-anims="off"]):has(main[data-round-status="idle"], main[data-ro
   animation: idleMutedPulse 2.5s ease-in-out infinite;
 }
 
+/* Site-wide ambient background drift: a fixed, non-interactive overlay that
+   slowly pans two soft radial gradients. Lives on body::before (not body) so
+   the host's ui-anims kill switch doesn't reach it — reduced-motion hides it
+   via the existing body::before opacity kill below. Fades under the priority
+   screw/buzzers-open backgrounds so it never fights them. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 1;
+  background:
+    radial-gradient(60% 55% at 22% 30%, rgba(255, 139, 36, 0.09), transparent 62%),
+    radial-gradient(55% 60% at 78% 72%, rgba(34, 166, 242, 0.08), transparent 60%);
+  background-size: 200% 200%;
+  transition: opacity 500ms ease;
+  animation: bgDrift 34s ease-in-out infinite alternate;
+}
+@keyframes bgDrift {
+  from { background-position: 0% 50%; }
+  to   { background-position: 100% 50%; }
+}
+body:has([data-screw-active])::before,
+body:has([data-buzzers-open])::before {
+  opacity: 0;
+}
+
 /* Rapid color crossfade while buzzers are open on a multiple-choice question */
 @keyframes buzzersOpenFlash {
   0%, 100% { background-color: #2b0d0d; }
@@ -3033,7 +3005,30 @@ body[data-ui-anims="off"] * {
   animation: none !important;
 }
 
-/* Screw moment: subtle shake on the active card (entrance, 2 iterations) */
+/* Roster flash: brief background wash when the viewer's own team changes.
+   Driven by the persistent #roster-flash layer (created at boot,
+   outside #app so re-renders never wipe it); the is-flashing class replays
+   the fade. Anims-off kills it via the global rule above. */
+#roster-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(255, 255, 255, 0.14), transparent 60%),
+    radial-gradient(closest-side at 50% 55%, rgba(34, 166, 242, 0.12), transparent 70%);
+}
+@keyframes rosterFlashFade {
+  0% { opacity: 0; }
+  25% { opacity: 1; }
+  100% { opacity: 0; }
+}
+body:not([data-ui-anims="off"]) #roster-flash.is-flashing {
+  animation: rosterFlashFade 900ms ease;
+}
+
+/* Screw moment: subtle shake on the active card (entrance, once) */
 @keyframes screwShake {
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-5px); }
@@ -3043,7 +3038,7 @@ body[data-ui-anims="off"] * {
 
 body:not([data-ui-anims="off"]):has([data-screw-active]) .ruling-card,
 body:not([data-ui-anims="off"]):has([data-screw-active]) .player-card {
-  animation: screwShake 300ms ease-out 2;
+  animation: screwShake 300ms ease-out 1;
 }
 
 /* Timer urgency: red under 5s (attribute set by updateTimerDisplays + smooth rAF).
@@ -3358,6 +3353,49 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 .coop-sub-row > span { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
 .coop-sub-row .coop-avatar { width: 30px; height: 30px; }
 .coop-sub-row.is-muted, .coop-sub-row.is-frozen { opacity: 0.55; }
+
+/* Alliance teammate strip: 3-or-fewer teams lay out horizontally (faces on
+   top, name + score below); larger teams keep the default vertical list. */
+.alliance-teammates ul.teammate-faces {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  gap: 0.5rem;
+}
+.alliance-teammates ul.teammate-faces > li {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  text-align: center;
+  padding: 0.55rem 0.35rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.alliance-teammates ul.teammate-faces .teammate-line {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: 100%;
+}
+.alliance-teammates ul.teammate-faces .teammate-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 0.92rem;
+}
+.alliance-teammates ul.teammate-faces .coop-avatar { width: 44px; height: 44px; }
+@media (max-width: 560px) {
+  .alliance-teammates ul.teammate-faces { gap: 0.35rem; }
+  .alliance-teammates ul.teammate-faces .coop-avatar { width: 34px; height: 34px; }
+}
 .coop-mute-row { margin-top: 0.4rem; }
 .coop-text-tabs { display: flex; gap: 0.4rem; margin: 0.5rem 0; flex-wrap: wrap; }
 
@@ -3381,6 +3419,7 @@ body[data-ui-anims="off"] .coop-avatar-strip {
 
 @media (prefers-reduced-motion: reduce) {
   .coop-avatar-strip { animation-duration: 0.01s; }
+  #roster-flash.is-flashing { animation: none !important; }
   body::before, body::after { animation: none !important; opacity: 0 !important; }
   .big-red:enabled,
   button.team-buzzer:enabled,
@@ -3603,6 +3642,7 @@ body[data-ui-anims="off"] .credits-crawl {
 .ep-prompt-banner .ep-prompt-text { font-size: 1.15rem; margin: 0.25rem 0 0; overflow-wrap: anywhere; }
 .ep-runner { border-color: var(--accent, #4aa3ff); }
 .ep-runner p { overflow-wrap: anywhere; }
+.ep-load { border-color: var(--accent, #4aa3ff); }
 .ep-attach-options { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.75rem 0; }
 /* Episode picker stays hidden until the prejoin checkbox is ticked — pure
    CSS so toggling never re-renders (typed host name survives). */

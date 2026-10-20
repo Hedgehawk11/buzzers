@@ -58,7 +58,11 @@ const DEFAULT_SETTINGS = {
   uniformPoints: 1000,
   jackMultiplier: 1,
   allowScrewing: false,
+  screwMode: "all",
   reopenBuzzersAfterScrew: false,
+  screwTimerSec: 5,
+  screwBonus: 1000,
+  screwAutoStart: true,
   valueSelectionMethod: "standard",
   rouletteMode: "additive",
   rouletteTopAmount: 1000,
@@ -101,10 +105,10 @@ const DIS_OR_DAT_TIMED_SECONDS = 30;
 const DIS_OR_DAT_REVEAL_MS = 150;
 const DIS_OR_DAT_BONUS_MIN_CORRECT = 5;
 const DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS = 30;
-const DIS_OR_DAT_TIMED_OPTIONS = [30, 40, 60, 90];
+const DIS_OR_DAT_TIMED_OPTIONS = [0, 30, 40, 60, 90];
 
-const FIBBAGE_TIMES = [30, 45, 60];
-const FIBBAGE_LIE_TIMES = [30, 45, 60, 90];
+const FIBBAGE_TIMES = [0, 30, 45, 60];
+const FIBBAGE_LIE_TIMES = [0, 30, 45, 60, 90];
 const FIBBAGE_FOOL_POINTS = 500;
 const FIBBAGE_TRUTH_POINTS = 1000;
 const FIBBAGE_MAX_MULT = 5;
@@ -119,7 +123,9 @@ const QUIXORT_BONUS_TRASH_ALL = 250;
 const QUIXORT_PENALTY_MISCLASS = 500;
 const QUIXORT_BONUS_CLEAN = 1500;
 const QUIXORT_MAX_MULT = 5;
-const QUIXORT_BLOCK_SECONDS_OPTIONS = [15, 20, 30, 45, 60];
+const QUIXORT_BLOCK_SECONDS_OPTIONS = [0, 15, 20, 30, 45, 60];
+
+const TIME_OPEN_OPTIONS = [0, 10, 15, 20, 30, 45, 60, 90, 120];
 
 const VALUE_OPTIONS = Array.from({ length: 20 }, (_, index) => (index + 1) * 500);
 
@@ -476,6 +482,31 @@ function getTeamMembers(teamColor, players = currentParticipants(), assignments 
   return players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id) && assignments[player.id] === teamColor);
 }
 
+// Alliance teammate strip: team mode on with per-player scoring (not shared,
+// not coop). Members see each other's scores on their own player screens when
+// the global player scoreboard is hidden.
+function isAllianceTeammatesMode(settings = getSettings()) {
+  if (isCoopMode(settings)) return false;
+  if (!settings.teamModeEnabled) return false;
+  return settings.teamScoringMode !== "shared";
+}
+
+// First-seen sequence per pid (host-assigned in ensureHostInit) for
+// join-ordered strips: earliest-joined teammate skates as 1, then 2, 3.
+function getJoinOrder() {
+  const j = getSafeState("joinOrder", {});
+  return j && typeof j === "object" ? j : {};
+}
+function compareJoinOrder(aId, bId) {
+  const order = getJoinOrder();
+  const sa = Number(order[aId]);
+  const sb = Number(order[bId]);
+  const va = Number.isFinite(sa) ? sa : Infinity;
+  const vb = Number.isFinite(sb) ? sb : Infinity;
+  if (va !== vb) return va - vb;
+  return String(aId).localeCompare(String(bId));
+}
+
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
   if (!settings.teamModeEnabled) {
     return false;
@@ -727,6 +758,192 @@ function isScrewBlocked(playerId, settings = getSettings()) {
   return blocked.includes(playerId);
 }
 
+// =============================================================================
+// Screw helpers — single source of truth for state shape, timing, bonus and
+// victim eligibility. The idle shape is the null-invariant: every reset path
+// must write all keys (never drop to undefined).
+// =============================================================================
+const ALL_SCREW_WRONG_BONUS = 300;
+
+function makeIdleScrew() {
+  return {
+    active: false,
+    kind: null,
+    screwerId: null,
+    screwerName: null,
+    screweeId: null,
+    screweeName: null,
+    screwTimerMs: null,
+    screwTimerEndsAt: null,
+    frozenCs: null,
+    frozenPoints: null,
+    activatedAt: null,
+    grantedPlayerIds: [],
+  };
+}
+
+// Screw mode helpers
+function isVictimScrewActive(round) {
+  return round?.screw?.active && round.screw.kind !== "all";
+}
+
+function isAllScrewActive(round) {
+  return round?.screw?.active && round.screw.kind === "all";
+}
+
+function isAllScrewAvailable(settings = getSettings()) {
+  return settings.allowScrewing
+    && settings.screwMode === "all"
+    && !isCoopMode(settings)
+    && settings.inputMode === "buttons";
+}
+
+// All-screw: returns the option order for a given player.
+// In all-screw mode, non-screwers (and non-screwer's teammates in shared team mode)
+// get a deterministic shuffled order. Screwer and their teammates (in shared mode)
+// see the canonical order.
+function getAllScrewOptionOrder(round, playerId, settings) {
+  const optionCount = settings.optionCount || 4;
+  const canonical = Array.from({ length: optionCount }, (_, i) => i + 1);
+  
+  if (!isAllScrewActive(round)) return canonical;
+  
+  const screwerId = round.screw?.screwerId;
+  if (!screwerId) return canonical;
+  
+  // Check if player is the screwer
+  if (playerId === screwerId) return canonical;
+  
+  // Check team exemption for shared team mode
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    const playerTeam = getPlayerTeamColor(playerId, assignments);
+    const screwerTeam = getPlayerTeamColor(screwerId, assignments);
+    if (playerTeam && playerTeam === screwerTeam) return canonical;
+  }
+  
+  // Deterministic shuffle based on round number + screw activation time + player identifier
+  // For shared team mode, use team color as identifier so teammates see same order
+  let seedId = playerId;
+  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    const teamColor = getPlayerTeamColor(playerId, assignments);
+    seedId = teamColor || playerId;
+  }
+  
+  const seed = `${round.roundNumber || 0}-${round.screw?.activatedAt || 0}-${seedId}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = ((hash << 5) - hash) + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  
+  // Fisher-Yates shuffle with deterministic RNG
+  const shuffled = [...canonical];
+  const rand = (max) => {
+    hash = (hash * 1664525 + 1013904223) >>> 0;
+    return hash % max;
+  };
+  
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = rand(i + 1);
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  
+  return shuffled;
+}
+
+function normalizeScrewTimerSec(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 5;
+  return Math.max(3, Math.min(30, Math.trunc(n)));
+}
+
+function normalizeScrewBonus(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1000;
+  return Math.max(0, Math.min(5000, Math.trunc(n)));
+}
+
+function getScrewTimerSec(settings = getSettings()) {
+  return normalizeScrewTimerSec(settings?.screwTimerSec ?? 5);
+}
+
+function getScrewBonus(settings = getSettings()) {
+  return normalizeScrewBonus(settings?.screwBonus ?? 1000);
+}
+
+function getScrewAutoStart(settings = getSettings()) {
+  return settings?.screwAutoStart !== false;
+}
+
+// Back-compat read: rooms created before the screweeName→screweeName rename
+// still carry the misspelled key.
+function getScrewScreweeName(screw) {
+  if (!screw || typeof screw !== "object") return null;
+  return screw.screweeName ?? screw.screeeName ?? null;
+}
+
+// One shared victim filter for UI lists + selectScrewee validation, so the UI
+// never offers a pick the RPC then rejects.
+function getScrewEligibleVictims(screwerId, { settings = getSettings(), assignments = null } = {}) {
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const list = assignments || normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+  const screwerTeam = screwerId ? getPlayerTeamColor(screwerId, list) : null;
+  return currentParticipants().filter((p) => {
+    if (p.id === controllerId) return false;
+    if (Array.isArray(producerIds) && producerIds.includes(p.id)) return false;
+    if (screwerId && p.id === screwerId) return false;
+    if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(p.id)) return false;
+    if (isPlayerKicked(p.id, settings)) return false;
+    if (settings.teamModeEnabled && settings.teamScoringMode === "shared" && screwerTeam) {
+      if (getPlayerTeamColor(p.id, list) === screwerTeam) return false;
+    }
+    return true;
+  });
+}
+
+function renderScrewButton({ disabled = false } = {}) {
+  return `<button type="button" class="screw-btn" data-screw ${disabled ? "disabled" : ""}>SCREW EM'</button>`;
+}
+
+function renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew, allScrewGranted, allScrewUsed }) {
+  if (!settings.allowScrewing) return "";
+  
+  if (isAllScrew) {
+    if (allScrewUsed) {
+      return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`;
+    }
+    if (allScrewGranted && !disabled && !playerDisabled) {
+      return `<button type="button" class="screw-btn" data-screw-all>${getSnark("player.screw.allScrewButton", "SCREW EVERYONE")}</button>`;
+    }
+    if (screwBlockedMe) {
+      return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`;
+    }
+    return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.allScrewNotGranted", "Host hasn't handed you an All Screw.")}</p>`;
+  }
+  
+  if (screwBlockedMe) {
+    return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`;
+  }
+  if (screwUsedByMe) {
+    return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`;
+  }
+  if (screwInProgress) return "";
+  if (screwAvailable && !disabled && !playerDisabled) return renderScrewButton({});
+  return `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`;
+}
+
+// Get the option display order for the current player (scrambled in all-screw mode)
+function getPlayerOptionOrder(settings, round, playerId) {
+  if (isAllScrewActive(round)) {
+    return getAllScrewOptionOrder(round, playerId, settings);
+  }
+  // Canonical order
+  return Array.from({ length: settings.optionCount || 4 }, (_, i) => i + 1);
+}
+
 // All score keys owned by one device (pid + coop:pid:*). In shared-team
 // mode the device shares its team key instead.
 function getScoreKeysForDevice(playerId, settings = getSettings(), assignments = getTeamAssignments()) {
@@ -865,21 +1082,12 @@ function getRound() {
       finalValue: null,
       finishedAt: null,
     },
-    screw: {
-      active: false,
-      screwerId: null,
-      screwerName: null,
-      screweeId: null,
-      screeeName: null,
-      screwTimerMs: null,
-      frozenCs: null,
-      frozenPoints: null,
-    },
+    screw: makeIdleScrew(),
     screwsUsedBy: [],
   });
 }
 
-// =============================================================================
+ // =============================================================================
 // Score / Bingo / Log / Controller accessors
 // =============================================================================
 function getScores() {
@@ -1117,18 +1325,23 @@ function isFreshCoopFace(faceKey) {
 function getCoopCharMoodForKey(scoreKey, round) {
   // Audience/tablet displays stay idle 24/7 — faces are player/host only.
   try { if (isAudienceDisplayClient()) return "idle"; } catch {}
+  // Roulette dance is a coop rep telegraph: non-coop keys have no rep model
+  // (every plain pid would read as its device's rep), so alliance teammates
+  // never dance — only buzz/correct/wrong play there.
+  let allowDance = false;
+  try { allowDance = isCoopMode(); } catch { allowDance = false; }
   const moods = getCoopMoods();
   const mood = moods?.[scoreKey];
   let face = null;
   if (mood === "correct" || mood === "wrong" || mood === "rewind") {
     // The active pick-a-value dancer wins over a stored face during roulette.
-    if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+    if (allowDance && round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
       const rep = getRouletteRepForDevice(round.roulette, scoreKey);
       if (rep) return "dance";
     }
     face = mood;
   } else {
-    if (round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
+    if (allowDance && round?.status === ROUND_STATUSES.ROULETTE && round?.roulette?.active) {
       const rep = getRouletteRepForDevice(round.roulette, scoreKey);
       if (rep) return "dance";
     }
@@ -1152,13 +1365,25 @@ function getCoopCharMoodForKey(scoreKey, round) {
   if (!face) return "idle";
   // One-shot faces (buzz/correct/wrong) play only on the owning device and
   // on host/producer screens — other players just see the idle avatar.
-  // (Dance is a turn telegraph and stays visible to everyone.)
+  // (Dance is a turn telegraph and stays visible to everyone.) Exception:
+  // alliance teammates see each other's faces on the teammate strip (coop
+  // keeps the strict owner-only rule).
   if (face !== "dance") {
     try {
       if (!hasHostPrivileges()) {
         const myId = me()?.id;
         const owner = parseCoopScoreKey(scoreKey)?.deviceId || scoreKey;
-        if (myId && owner && myId !== owner) return "idle";
+        if (myId && owner && myId !== owner) {
+          let teammate = false;
+          try {
+            if (!isCoopMode()) {
+              const asg = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+              const mine = getPlayerTeamColor(myId, asg);
+              teammate = Boolean(mine) && mine === getPlayerTeamColor(owner, asg);
+            }
+          } catch { teammate = false; }
+          if (!teammate) return "idle";
+        }
       }
     } catch { /* fail-open: show the face */ }
   }
@@ -1260,12 +1485,20 @@ function getFibbage() {
 }
 
 function getFibbageLieTimeLeftCs(fb) {
-  if (!fb?.timeEndsAt) return (fb?.lieTimeSec || 30) * 100;
+  if (!fb?.timeEndsAt) {
+    const sec = Number(fb?.lieTimeSec);
+    if (sec === 0) return null;
+    return (Number.isFinite(sec) && sec > 0 ? sec : 30) * 100;
+  }
   return Math.max(0, Math.ceil((fb.timeEndsAt - now()) / 10));
 }
 
 function getFibbageVoteTimeLeftCs(fb) {
-  if (!fb?.voteEndsAt) return (fb?.voteTimeSec || 30) * 100;
+  if (!fb?.voteEndsAt) {
+    const sec = Number(fb?.voteTimeSec);
+    if (sec === 0) return null;
+    return (Number.isFinite(sec) && sec > 0 ? sec : 30) * 100;
+  }
   return Math.max(0, Math.ceil((fb.voteEndsAt - now()) / 10));
 }
 
@@ -1317,22 +1550,30 @@ function renderDisOrDatQuestionText(dd, i) {
 
 function getDisOrDatTimeLeftCs(dd) {
   if (!dd?.timeEndsAt) {
-    const settings = getSettings();
-    const timedSeconds = settings.disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
-    return timedSeconds * 100;
+    const raw = dd?.timedSeconds ?? getSettings().disOrDatTimedSeconds ?? DIS_OR_DAT_TIMED_SECONDS;
+    const timedSeconds = Number(raw);
+    if (timedSeconds === 0) return null;
+    return (Number.isFinite(timedSeconds) && timedSeconds > 0 ? timedSeconds : DIS_OR_DAT_TIMED_SECONDS) * 100;
   }
   return Math.max(0, Math.ceil((dd.timeEndsAt - now()) / 10));
 }
 
 // Time bonus is only awarded in short (<=30s) timed games. Longer timed
 // durations are bonus-free by decision.
+function formatDisOrDatCs(dd) {
+  const cs = getDisOrDatTimeLeftCs(dd);
+  if (cs === null || cs === undefined) return getSnark("player.disdat.noTimerLabel", "No timer");
+  return `${formatSeconds(cs)}s`;
+}
 function getDisOrDatTimedSeconds(dd) {
   const d = dd || getDisOrDat();
-  return Number(d?.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS);
+  const raw = d?.timedSeconds ?? getSettings().disOrDatTimedSeconds ?? DIS_OR_DAT_TIMED_SECONDS;
+  return Number(raw);
 }
 
 function isDisOrDatBonusEligible(dd) {
-  return getDisOrDatTimedSeconds(dd) <= DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS;
+  const sec = getDisOrDatTimedSeconds(dd);
+  return sec > 0 && sec <= DIS_OR_DAT_BONUS_MAX_TIMED_SECONDS;
 }
 
 function freshQuixortState() {
@@ -1529,7 +1770,7 @@ async function producerDispatch(fnName, ...args) {
     const     dispatch = {
       openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
       startRoulettePhase, startScrewTimer, closeScrewMode,
-      initiateScrew, selectScrewee,
+      initiateScrew, selectScrewee, grantPlayerScrew, revokePlayerScrew, initiateAllScrew,
       startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
       setHostSetting, toggleBuzzerOption, togglePlayerBuzzer,
       setPlayerTeam, randomizeTeams,
@@ -1588,14 +1829,19 @@ function canBuzz(playerId, option) {
     return false;
   }
   
-  // If screw is active with a timer running, only screwee can buzz
-  if (round.screw?.active && getScrewTimerMs(round) !== null && getScrewTimerMs(round) > 0) {
+  // If VICTIM screw is active with a timer running, only screwee can buzz
+  if (isVictimScrewActive(round) && getScrewTimerMs(round) !== null && getScrewTimerMs(round) > 0) {
     return playerId === round.screw?.screweeId;
   }
   
-  // If screw is active but timer not started, no one can buzz
-  if (round.screw?.active) {
+  // If VICTIM screw is active but timer not started, no one can buzz
+  if (isVictimScrewActive(round)) {
     return false;
+  }
+  
+  // All-screw: everyone can buzz (round doesn't freeze)
+  if (isAllScrewActive(round)) {
+    // fall through to normal buzz checks
   }
   
   if (!settings.rebuzzAllowed && round.buzzedPlayerIds.includes(playerId)) {
@@ -1634,11 +1880,19 @@ function canBuzz(playerId, option) {
 }
 
 function getTimeLeftCs(round, settings) {
-  if (round?.screw?.active && round.screw?.frozenCs != null) {
+  if (isVictimScrewActive(round) && round.screw?.frozenCs != null) {
     return round.screw.frozenCs;
   }
+  const timerEnabled = Number(settings?.timeOpen) > 0;
+  if (!timerEnabled) {
+    if (!round || round.status === ROUND_STATUSES.IDLE) return null;
+    if ((round.status === ROUND_STATUSES.LOCKED || round.status === ROUND_STATUSES.CLOSED) && typeof round.remainingCs === "number") {
+      return round.remainingCs;
+    }
+    return null;
+  }
   if (!round || round.status === ROUND_STATUSES.IDLE) {
-    return settings.timeOpen * 100;
+    return normalizeTimeOpen(settings?.timeOpen) * 100;
   }
   if (round.status === ROUND_STATUSES.LOCKED && typeof round.remainingCs === "number") {
     return round.remainingCs;
@@ -1650,7 +1904,8 @@ function getTimeLeftCs(round, settings) {
     const msLeft = Math.max(0, round.closesAt - now());
     return Math.ceil(msLeft / 10);
   }
-  return settings.timeOpen * 100;
+  const fallbackOpen = normalizeTimeOpen(settings?.timeOpen);
+  return fallbackOpen > 0 ? fallbackOpen * 100 : null;
 }
 
 // Screw timer remaining in ms. When the timer has a wall-clock end timestamp
@@ -1673,8 +1928,9 @@ function updateTimerDisplays() {
   const round = getRound();
   const settings = getSettings();
   const liveCs = getTimeLeftCs(round, settings);
-  const timeLeftText = `${formatSeconds(liveCs)}s`;
-  const liveUrgent = Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
+  const noMainTimer = liveCs === null || liveCs === undefined;
+  const timeLeftText = noMainTimer ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(liveCs)}s`;
+  const liveUrgent = !noMainTimer && Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
   document.querySelectorAll("[data-live-time-left]").forEach((element) => {
     element.textContent = timeLeftText;
     try {
@@ -1696,7 +1952,7 @@ function updateTimerDisplays() {
       element.textContent = timeLeftText;
     }
     try {
-      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || round?.screw?.active);
+      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || isVictimScrewActive(round));
       if (urgent) element.setAttribute("data-timer-urgent", "true");
       else element.removeAttribute("data-timer-urgent");
     } catch {}
@@ -1708,22 +1964,22 @@ function updateTimerDisplays() {
     if (ms != null) {
       shownCs = Math.ceil(ms / 10);
       element.textContent = `${formatSeconds(shownCs)}s`;
-    } else if (round.screw?.active) {
+    } else if (isVictimScrewActive(round)) {
       element.textContent = "SCREW";
     } else {
       shownCs = liveCs;
       element.textContent = timeLeftText;
     }
     try {
-      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || round?.screw?.active);
+      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || isVictimScrewActive(round));
       if (urgent) element.setAttribute("data-timer-urgent", "true");
       else element.removeAttribute("data-timer-urgent");
     } catch {}
   });
   if (isDisOrDatMode()) {
     const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
-    const ddText = `${formatSeconds(ddCs)}s`;
-    const ddUrgent = Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
+    const ddText = ddCs === null || ddCs === undefined ? getSnark("player.disdat.noTimerLabel", "No timer") : `${formatSeconds(ddCs)}s`;
+    const ddUrgent = ddCs !== null && ddCs !== undefined && Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
     document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
       element.textContent = ddText;
       try {
@@ -1736,13 +1992,13 @@ function updateTimerDisplays() {
     const fb = getFibbage();
     if (fb.phase === "lying") {
       const cs = getFibbageLieTimeLeftCs(fb);
-      const t = `${formatSeconds(cs)}s`;
-      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
+      const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     } else if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
-      const t = `${formatSeconds(cs)}s`;
-      const urgent = Number.isFinite(cs) && cs <= 500 && cs > 0;
+      const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
       document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
     }
   }
@@ -1751,7 +2007,11 @@ function updateTimerDisplays() {
     document.querySelectorAll("[data-quixort-time-left]").forEach((el) => {
       try {
         const run = qx.runs?.[el.dataset?.quixortTrack];
-        if (!run || run.finished || typeof run.blockEndsAt !== "number") return;
+        if (!run || run.finished) return;
+        if (typeof run.blockEndsAt !== "number") {
+          // Untimed block: static label set at render; nothing to patch.
+          return;
+        }
         const cs = Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
         el.textContent = `${formatSeconds(cs)}s`;
         if (Number.isFinite(cs) && cs <= 500 && cs > 0) el.setAttribute("data-timer-urgent", "true");
@@ -1759,7 +2019,7 @@ function updateTimerDisplays() {
       } catch {}
     });
   }
-  // Screw countdown is itself a 5s timer — always urgent while it runs.
+  // Screw countdown is itself a short timer — always urgent while it runs.
   {
     const ms = getScrewTimerMs(round);
     const screwUrgent = round?.screw?.active && ms !== null && Number.isFinite(ms) && ms > 0;
@@ -1813,7 +2073,11 @@ showScoresToPlayers: settings.showScoresToPlayers,
       uniformPoints: settings.uniformPoints,
       jackMultiplier: settings.jackMultiplier,
       allowScrewing: settings.allowScrewing,
+      screwMode: settings.screwMode,
       reopenBuzzersAfterScrew: settings.reopenBuzzersAfterScrew,
+      screwTimerSec: normalizeScrewTimerSec(settings.screwTimerSec ?? 5),
+      screwBonus: normalizeScrewBonus(settings.screwBonus ?? 1000),
+      screwAutoStart: settings.screwAutoStart !== false,
       valueSelectionMethod: settings.valueSelectionMethod,
       rouletteMode: settings.rouletteMode,
       rouletteTopAmount: settings.rouletteTopAmount,
@@ -1833,6 +2097,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
     coopLastCorrect: getCoopLastCorrect(),
+    joinOrder: getJoinOrder(),
     customNames: getCustomNames(),
     // Scores + rulings must invalidate the signature or other clients never
     // re-render after a host ruling (their tick only patches timers). The log
@@ -1928,6 +2193,21 @@ function computeBasePoints(settings, timeLeftCs, round = getRound()) {
 }
 
 const JACK_MULTIPLIER_OPTIONS = [1, 1.5, 2, 2.5, 3];
+
+// Timer sentinel: 0 = no timer (round stays open until closed manually).
+// All four timed surfaces (main buzzer, fibbage lie/vote, disordat timed,
+// quixort block) share the convention.
+function normalizeTimeOpen(value) {
+  if (value === "" || value === null || value === undefined) return 20;
+  const n = Number(value);
+  if (n === 0) return 0;
+  if (!Number.isFinite(n) || n <= 0) return 20;
+  return Math.min(Math.trunc(n), 120);
+}
+
+function isMainTimerEnabled(settings = getSettings()) {
+  return Number(settings?.timeOpen) > 0;
+}
 
 function normalizeJackMultiplier(value) {
   const numeric = Number(value);
@@ -2137,7 +2417,7 @@ function maybeFinalizeRoulettePhase() {
       status: ROUND_STATUSES.CLOSED,
       opensAt: null,
       closesAt: null,
-      remainingCs: settings.timeOpen * 100,
+      remainingCs: normalizeTimeOpen(settings.timeOpen) > 0 ? normalizeTimeOpen(settings.timeOpen) * 100 : null,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -2187,14 +2467,15 @@ function startRoulettePhase() {
   }
 
   if (players.length === 0) {
+    const fallbackOpen = normalizeTimeOpen(settings.timeOpen);
     setState(
       "round",
       {
         ...round,
         status: ROUND_STATUSES.OPEN,
         opensAt: now(),
-        closesAt: now() + settings.timeOpen * 1000,
-        remainingCs: settings.timeOpen * 100,
+        closesAt: fallbackOpen > 0 ? now() + fallbackOpen * 1000 : null,
+        remainingCs: fallbackOpen > 0 ? fallbackOpen * 100 : null,
         winnerId: null,
         winnerTeam: null,
         winnerOption: null,
@@ -2232,7 +2513,7 @@ function startRoulettePhase() {
       status: ROUND_STATUSES.ROULETTE,
       opensAt: null,
       closesAt: null,
-      remainingCs: settings.timeOpen * 100,
+      remainingCs: normalizeTimeOpen(settings.timeOpen) > 0 ? normalizeTimeOpen(settings.timeOpen) * 100 : null,
         winnerId: null,
         winnerTeam: null,
         winnerOption: null,
@@ -2258,17 +2539,7 @@ function startRoulettePhase() {
         finalValue: null,
         finishedAt: null,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
     },
     true,
   );
@@ -2386,9 +2657,27 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
     return;
   }
   
-  if (round.screw?.active && round.screw?.screweeId === entry.playerId) {
-    const screwBonus = nextAwarded >= 0 ? 1000 : -1000;
+  if (isVictimScrewActive(round) && round.screw?.screweeId === entry.playerId) {
+    const bonus = getScrewBonus(settings);
+    const screwBonus = nextAwarded >= 0 ? bonus : -bonus;
     nextAwarded = nextAwarded + screwBonus;
+  }
+  
+  // All-screw: screwer gains +300 for each non-screwer wrong answer
+  let allScrewBonus = 0;
+  if (isAllScrewActive(round) && round.screw?.screwerId) {
+    const screwerId = round.screw.screwerId;
+    // Check if this entry is from a non-screwer (and not screwer's team in shared mode)
+    const isScrewerEntry = entry.playerId === screwerId;
+    let isScrewerTeam = false;
+    if (!isScrewerEntry && settings.teamModeEnabled && settings.teamScoringMode === "shared") {
+      const screwerTeam = getPlayerTeamColor(screwerId, assignments);
+      const entryTeam = getPlayerTeamColor(entry.playerId, assignments);
+      isScrewerTeam = screwerTeam && entryTeam === screwerTeam;
+    }
+    if (!isScrewerEntry && !isScrewerTeam && nextAwarded < 0) {
+      allScrewBonus = ALL_SCREW_WRONG_BONUS;
+    }
   }
   
   const diff = nextAwarded - oldAwarded;
@@ -2396,18 +2685,29 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
   const scores = { ...getScores() };
   scores[entryScoreKey] = Number(scores[entryScoreKey] || 0) + diff;
   // Reverse any prior screw-mirror move so re-ruling the same entry while a
-  // screw is active doesn't compound the screwer's ±1000 on every edit.
+  // screw is active doesn't compound the screwer's bonus on every edit.
   if (entry.screwerScoreKey && Number.isFinite(Number(entry.screwerDelta))) {
     const priorKey = entry.screwerScoreKey;
     scores[priorKey] = Number(scores[priorKey] || 0) - Number(entry.screwerDelta);
   }
   let screwerScoreKey = null;
   let screwerDelta = 0;
-  if (round.screw?.active && round.screw?.screwerId) {
+  if (isVictimScrewActive(round) && round.screw?.screwerId) {
     screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
-    const screwSign = nextAwarded >= 0 ? -1000 : 1000;
+    const bonus = getScrewBonus(settings);
+    const screwSign = nextAwarded >= 0 ? -bonus : bonus;
     scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwSign;
     screwerDelta = screwSign;
+  }
+  // All-screw bonus for screwer
+  if (allScrewBonus > 0 && round.screw?.screwerId) {
+    const screwerKey = getScoreKeyForPlayer(round.screw.screwerId, settings, assignments);
+    // Avoid self-award if entry is from screwer (shouldn't happen due to check above, but safety)
+    if (screwerKey !== entryScoreKey) {
+      scores[screwerKey] = Number(scores[screwerKey] || 0) + allScrewBonus;
+      screwerScoreKey = screwerKey;
+      screwerDelta = allScrewBonus;
+    }
   }
 
   const updatedLog = [...log];
@@ -2430,7 +2730,18 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
       const parsedKey = parseCoopScoreKey(entryScoreKey);
       if (parsedKey) setState("coopLastCorrect", { ...getCoopLastCorrect(), [parsedKey.deviceId]: parsedKey.slot }, true);
     }
-    if (isCoopMode(settings) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && isCoopMoodKey(entryScoreKey, entry.playerId)) {
+    // Alliance faces: a small alliance (3 or fewer teammates) earns judged
+    // faces on the buzzing player's pid key through the same coopMoods
+    // pipeline (buzz faces already resolve from the round log, no write
+    // needed). Larger alliances show no faces, so nothing is written.
+    let allianceFaceEligible = false;
+    if (!isCoopMode(settings) && settings.teamModeEnabled && settings.teamScoringMode !== "shared" && !isCoopScoreKey(entryScoreKey)) {
+      try {
+        const ownerTeam = getPlayerTeamColor(entry.playerId, assignments);
+        allianceFaceEligible = Boolean(ownerTeam) && getTeamMembers(ownerTeam, currentParticipants(), assignments).length <= 3;
+      } catch { allianceFaceEligible = false; }
+    }
+    if ((isCoopMode(settings) || allianceFaceEligible) && entry.type === "buzz" && entry.option !== null && entry.option !== undefined && (isCoopMoodKey(entryScoreKey, entry.playerId) || allianceFaceEligible)) {
       if (opts?.buzzFirst && nextAwarded !== 0) {
         // Instant-scoring path: points are already final, but the buzz face
         // (derived from buzzedPlayerIds) gets to play first — flip to the
@@ -2488,9 +2799,9 @@ function updateScoresForLogEntry(logId, newAwardedDelta, opts) {
       // Coop: a correct solution locks the solving device's siblings out of
       // the round — other groups keep playing (no global close).
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
-      const reopenAfterScrew = round.screw?.active && Boolean(settings.reopenBuzzersAfterScrew);
+      const reopenAfterScrew = isVictimScrewActive(round) && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (((round.screw?.active || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
+      if (((isVictimScrewActive(round) || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -2620,9 +2931,9 @@ function resolveLogEntryWithForcedDelta(logId, forcedDelta) {
       const shouldCloseOnPointsGiven =
         Boolean(settings.lockAfterBuzz) && Boolean(settings.closeBuzzersOnPointsGiven) && nextAwarded > 0;
       const remainingCs = Number.isFinite(round.remainingCs) ? Math.max(0, Number(round.remainingCs)) : 0;
-      const reopenAfterScrew = round.screw?.active && Boolean(settings.reopenBuzzersAfterScrew);
+      const reopenAfterScrew = isVictimScrewActive(round) && Boolean(settings.reopenBuzzersAfterScrew);
 
-      if (((round.screw?.active || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
+      if (((isVictimScrewActive(round) || shouldCloseOnPointsGiven) && !reopenAfterScrew) || remainingCs <= 0) {
         setState(
           "round",
           {
@@ -2793,7 +3104,7 @@ function hostHandleBuzz(player, payload) {
   const players = currentParticipants();
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
   const playerTeamColor = getPlayerTeamColor(player.id, assignments);
-  const shouldLockAfterBuzz = round.screw?.active || (settings.lockAfterBuzz && !settings.rebuzzAllowed);
+  const shouldLockAfterBuzz = isVictimScrewActive(round) || (settings.lockAfterBuzz && !settings.rebuzzAllowed);
   const usingTextEntry = settings.inputMode === "text";
 
   let validOption = null;
@@ -2874,7 +3185,7 @@ function hostHandleBuzz(player, payload) {
     return { ok: false, reason: getSnark("player.buzzer.buzzNotAllowed", "Buzzers are not open, disabled, or you already buzzed.") };
   }
 
-  const timeLeftCs = round.screw?.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
+  const timeLeftCs = isVictimScrewActive(round) && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
   const buzzDisplayName = coopActive ? getCoopSlotName(player.id, coopSlot, getPlayerName(player)) : getPlayerName(player);
   const logEntry = pushBuzzLogEntry(
     player,
@@ -3230,9 +3541,8 @@ function openBuzzers() {
     }
   }
   const openedAt = now();
-  const rawTimeOpen = Number(settings.timeOpen);
-  const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
-  const closesAt = openedAt + safeTimeOpen * 1000;
+  const safeTimeOpen = normalizeTimeOpen(settings.timeOpen);
+  const closesAt = safeTimeOpen > 0 ? openedAt + safeTimeOpen * 1000 : null;
   const nextRoundNumber = (() => {
     const n = Number(round.roundNumber);
     return Number.isFinite(n) && n >= 0 ? Math.trunc(n) + 1 : 1;
@@ -3244,7 +3554,7 @@ function openBuzzers() {
       status: ROUND_STATUSES.OPEN,
       opensAt: openedAt,
       closesAt,
-      remainingCs: safeTimeOpen * 100,
+      remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null,
       roundNumber: nextRoundNumber,
       pausedFrom: null,
       winnerId: null,
@@ -3270,17 +3580,7 @@ function openBuzzers() {
         finalValue: round.roulette?.finalValue ?? null,
         finishedAt: null,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
       screwsUsedBy: [],
     },
     true,
@@ -3318,8 +3618,10 @@ function pauseBuzzers() {
     render();
     return;
   }
-  const rawRemaining = Number(getTimeLeftCs(round, settings));
-  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
+  const timeLeftCs = getTimeLeftCs(round, settings);
+  const safeRemaining = timeLeftCs === null || timeLeftCs === undefined
+    ? null
+    : (Number.isFinite(Number(timeLeftCs)) ? Math.max(0, Number(timeLeftCs)) : 0);
   setState(
     "round",
     {
@@ -3338,17 +3640,7 @@ function pauseBuzzers() {
         ...round.roulette,
         active: false,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
     },
     true,
   );
@@ -3372,9 +3664,12 @@ function resumeBuzzers() {
     render();
     return;
   }
-  const rawRemaining = Number(round.remainingCs);
-  const safeRemaining = Number.isFinite(rawRemaining) ? Math.max(0, rawRemaining) : 0;
-  if (safeRemaining <= 0) {
+  const rawRemaining = round.remainingCs;
+  const untimedResume = rawRemaining === null || rawRemaining === undefined;
+  const safeRemaining = untimedResume
+    ? null
+    : (Number.isFinite(Number(rawRemaining)) ? Math.max(0, Number(rawRemaining)) : 0);
+  if (!untimedResume && safeRemaining <= 0) {
     setBuzzNotice("No time left — open a new round.");
     render();
     return;
@@ -3395,7 +3690,7 @@ function resumeBuzzers() {
       ...round,
       status: resumeToLocked ? ROUND_STATUSES.LOCKED : ROUND_STATUSES.OPEN,
       opensAt: round.opensAt,
-      closesAt: resumedAt + safeRemaining * 10,
+      closesAt: untimedResume ? null : resumedAt + safeRemaining * 10,
       remainingCs: safeRemaining,
       pausedFrom: null,
     },
@@ -3777,7 +4072,9 @@ function startDisOrDat(mode, playerId) {
   if (dd.answers.some(a => a !== "dis" && a !== "dat" && a !== "both")) return;
   const coopActive = isCoopMode();
   const isTimed = mode === "onePlayTimed" || mode === "allPlayTimed";
-  const timedSeconds = dd.timedSeconds || getSettings().disOrDatTimedSeconds || DIS_OR_DAT_TIMED_SECONDS;
+  const rawTimed = dd.timedSeconds ?? getSettings().disOrDatTimedSeconds ?? DIS_OR_DAT_TIMED_SECONDS;
+  const timedSeconds = Number(rawTimed);
+  const timedMs = isTimed && timedSeconds > 0 ? now() + timedSeconds * 1000 : null;
   setState("disordat", {
     ...dd,
     active: true,
@@ -3786,7 +4083,7 @@ function startDisOrDat(mode, playerId) {
     activePlayerId: mode === "onePlayTimed" ? (coopActive ? (parseCoopScoreKey(playerId)?.deviceId || playerId) : playerId) : null,
     activeCoopKey: mode === "onePlayTimed" && coopActive ? playerId : null,
     pendingPick: false,
-    timeEndsAt: isTimed ? now() + timedSeconds * 1000 : null,
+    timeEndsAt: timedMs,
     currentQuestion: 0,
     responses: {},
     pointsEarned: {},
@@ -3884,7 +4181,8 @@ function handleDisOrDatAnswer(player, payload) {
   if (answeredAll && isTimed && !nextFinished.includes(trackKey)) {
     const correctCount = nextResps.filter((a, i) => a === dd.answers[i]).length;
     if (correctCount >= DIS_OR_DAT_BONUS_MIN_CORRECT && isDisOrDatBonusEligible(dd)) {
-      nextBonus[trackKey] = getDisOrDatTimeLeftCs(dd);
+      const leftCs = getDisOrDatTimeLeftCs(dd);
+      nextBonus[trackKey] = leftCs === null || leftCs === undefined ? 0 : leftCs;
     }
     nextFinished = [...nextFinished, trackKey];
   }
@@ -4150,7 +4448,9 @@ function normalizeQuixortMultiplier(v) {
   return n;
 }
 function normalizeQuixortBlockSec(v) {
+  if (v === "" || v === null || v === undefined) return 30;
   const n = Number(v);
+  if (n === 0) return 0;
   return QUIXORT_BLOCK_SECONDS_OPTIONS.includes(n) ? n : 30;
 }
 // Non-empty trimmed setup lists.
@@ -4211,7 +4511,10 @@ function getQuixortBlockText(qx, entry) {
 }
 function getQuixortRunTimeLeftCs(run, qx) {
   if (!run || run.finished) return 0;
-  if (typeof run.blockEndsAt !== "number") return normalizeQuixortBlockSec(qx?.blockSec) * 100;
+  if (typeof run.blockEndsAt !== "number") {
+    const sec = normalizeQuixortBlockSec(qx?.blockSec);
+    return sec > 0 ? sec * 100 : null;
+  }
   return Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
 }
 // End scoring for one run (pairwise / Kendall style). Every correctly-ordered
@@ -4442,7 +4745,7 @@ function startQuixort() {
   const items = getQuixortItems(qx);
   const trash = getQuixortTrash(qx);
   const blockSec = normalizeQuixortBlockSec(qx.blockSec);
-  const deadline = now() + blockSec * 1000;
+  const deadline = blockSec > 0 ? now() + blockSec * 1000 : null;
   const runs = {};
   for (const track of tracks) {
     runs[track] = {
@@ -4478,7 +4781,7 @@ function voidQuixortBlock(qx, track) {
       [track]: {
         ...run, voided, deckPos,
         turnIndex: (Number(run.turnIndex) || 0) + 1,
-        blockEndsAt: finished ? null : now() + blockSec * 1000,
+        blockEndsAt: finished || blockSec <= 0 ? null : now() + blockSec * 1000,
         finished,
       },
     },
@@ -4546,7 +4849,7 @@ function handleQuixortPlace(player, payload) {
       [trackKey]: {
         ...run, row, trashed, deckPos,
         turnIndex: (Number(run.turnIndex) || 0) + 1,
-        blockEndsAt: finished ? null : now() + normalizeQuixortBlockSec(working.blockSec) * 1000,
+        blockEndsAt: finished || normalizeQuixortBlockSec(working.blockSec) <= 0 ? null : now() + normalizeQuixortBlockSec(working.blockSec) * 1000,
         finished,
       },
     },
@@ -4683,11 +4986,15 @@ function normalizeFibbageMultiplier(v) {
   return n;
 }
 function normalizeFibbageTime(v) {
+  if (v === "" || v === null || v === undefined) return 30;
   const n = Number(v);
+  if (n === 0) return 0;
   return FIBBAGE_TIMES.includes(n) ? n : 30;
 }
 function normalizeFibbageLieTime(v) {
+  if (v === "" || v === null || v === undefined) return 30;
   const n = Number(v);
+  if (n === 0) return 0;
   return FIBBAGE_LIE_TIMES.includes(n) ? n : 30;
 }
 function getEligibleFibbageTrackKeys() {
@@ -4728,7 +5035,7 @@ function startFibbageLying() {
     ...fb,
     active: true,
     phase: "lying",
-    timeEndsAt: now() + lieTime * 1000,
+    timeEndsAt: lieTime > 0 ? now() + lieTime * 1000 : null,
     voteEndsAt: null,
     seed: Math.floor(Math.random() * 2147483647) + 1,
     lies: {},
@@ -4842,7 +5149,8 @@ function startFibbageVoteTimer() {
   if (!isHost()) return;
   const fb = getFibbage();
   if (fb.phase !== "voting_ready") return;
-  setState("fibbage", { ...fb, phase: "voting", voteEndsAt: now() + normalizeFibbageTime(fb.voteTimeSec) * 1000 }, true);
+  const voteSec = normalizeFibbageTime(fb.voteTimeSec);
+  setState("fibbage", { ...fb, phase: "voting", voteEndsAt: voteSec > 0 ? now() + voteSec * 1000 : null }, true);
   render();
 }
 function finalizeFibbageScores() {
@@ -5031,15 +5339,14 @@ function resetRound() {
   }
   const settings = getSettings();
   const currentRound = getRound();
-  const rawTimeOpen = Number(settings.timeOpen);
-  const safeTimeOpen = Number.isFinite(rawTimeOpen) && rawTimeOpen > 0 ? Math.min(rawTimeOpen, 120) : 20;
+  const safeTimeOpen = normalizeTimeOpen(settings.timeOpen);
   setState(
     "round",
     {
       status: ROUND_STATUSES.IDLE,
       opensAt: null,
       closesAt: null,
-      remainingCs: safeTimeOpen * 100,
+      remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null,
       roundNumber: Number.isFinite(Number(currentRound.roundNumber)) ? Math.trunc(Number(currentRound.roundNumber)) : 0,
       pausedFrom: null,
       winnerId: null,
@@ -5067,17 +5374,7 @@ function resetRound() {
         finalValue: currentRound.roulette?.finalValue ?? null,
         finishedAt: null,
       },
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
       screwsUsedBy: [],
     },
     true,
@@ -5137,13 +5434,10 @@ function initiateScrew(screwerId) {
     {
       ...round,
       screw: {
-        ...round.screw,
+        ...makeIdleScrew(),
         active: true,
         screwerId,
         screwerName: getPlayerName(screwer),
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
         activatedAt: now(),
         frozenCs,
         frozenPoints,
@@ -5187,13 +5481,10 @@ function hostInitiateScrew() {
   setState("round", {
     ...round,
     screw: {
-      ...round.screw,
+      ...makeIdleScrew(),
       active: true,
       screwerId: mePlayer.id,
       screwerName: getPlayerName(mePlayer),
-      screweeId: null,
-      screeeName: null,
-      screwTimerMs: null,
       activatedAt: now(),
       frozenCs,
       frozenPoints,
@@ -5216,39 +5507,40 @@ function selectScrewee(screweeId) {
   if (!round.screw?.active) {
     return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress.") };
   }
-  if (round.screw?.screweeId !== null) {
+  if (round.screw?.screweeId !== null && round.screw?.screweeId !== undefined) {
     return { ok: false, reason: getSnark("player.screw.screweeAlreadySelected", "Screwee already selected.") };
   }
-  
-  const screwee = currentParticipants().find((p) => p.id === screweeId);
-  if (!screwee) {
-    return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
-  }
-  if (screwee.id === getControllerId()) {
-    return { ok: false, reason: getSnark("player.screw.cannotHost", "Cannot screw the host.") };
-  }
-  if (screwee.id === round.screw?.screwerId) {
-    return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
-  }
-  const producerIds = getSafeState("producerIds", []);
-  if (Array.isArray(producerIds) && producerIds.includes(screwee.id)) {
-    return { ok: false, reason: "Cannot screw a producer." };
-  }
+
   const settings = getSettings();
-  if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
-    return { ok: false, reason: "That player's buzzer is disabled." };
-  }
-  if (isPlayerKicked(screwee.id, settings)) {
-    return { ok: false, reason: "That player was removed by the host." };
-  }
-  if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
-    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
-    const screwerTeam = getPlayerTeamColor(round.screw?.screwerId, assignments);
-    const screweeTeam = getPlayerTeamColor(screweeId, assignments);
-    if (screwerTeam && screwerTeam === screweeTeam) {
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const eligible = new Set(getScrewEligibleVictims(round.screw?.screwerId, { settings, assignments }).map((p) => p.id));
+  if (!eligible.has(screweeId)) {
+    const screwee = currentParticipants().find((p) => p.id === screweeId);
+    if (!screwee) {
+      return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
+    }
+    if (screwee.id === getControllerId()) {
+      return { ok: false, reason: getSnark("player.screw.cannotHost", "Cannot screw the host.") };
+    }
+    if (screwee.id === round.screw?.screwerId) {
+      return { ok: false, reason: getSnark("player.screw.cannotSelf", "Cannot screw yourself.") };
+    }
+    const producerIds = getSafeState("producerIds", []);
+    if (Array.isArray(producerIds) && producerIds.includes(screwee.id)) {
+      return { ok: false, reason: "Cannot screw a producer." };
+    }
+    if (Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(screwee.id)) {
+      return { ok: false, reason: "That player's buzzer is disabled." };
+    }
+    if (isPlayerKicked(screwee.id, settings)) {
+      return { ok: false, reason: "That player was removed by the host." };
+    }
+    if (settings.teamModeEnabled && settings.teamScoringMode === "shared") {
       return { ok: false, reason: getSnark("player.screw.cannotOwnTeam", "Cannot screw your own team in shared team mode.") };
     }
+    return { ok: false, reason: getSnark("player.screw.invalidScrewee", "Invalid screwee.") };
   }
+  const screwee = currentParticipants().find((p) => p.id === screweeId);
   
   setState(
     "round",
@@ -5257,18 +5549,32 @@ function selectScrewee(screweeId) {
       screw: {
         ...round.screw,
         screweeId,
-        screeeName: getPlayerName(screwee),
+        screweeName: getPlayerName(screwee),
         screwTimerMs: null,
+        screwTimerEndsAt: null,
       },
     },
     true,
   );
+
+  // Streamlined flow: auto-start the countdown once a victim is picked, so a
+  // screw can't stall waiting for a second host click. Hosts that want manual
+  // control turn screwAutoStart off and press Start Timer.
+  if (getScrewAutoStart(settings)) {
+    const started = startScrewTimer();
+    if (started?.ok === false && started?.reason !== "Screw timer already running.") {
+      render();
+    } else {
+      render();
+    }
+    return { ok: true, message: getSnark("player.screw.over", `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.`, { screwer: round.screw.screwerName, screwee: getPlayerName(screwee) }) };
+  }
   
   render();
   return { ok: true, message: getSnark("player.screw.over", `${round.screw.screwerName} is screwing over ${getPlayerName(screwee)}.`, { screwer: round.screw.screwerName, screwee: getPlayerName(screwee) }) };
 }
 
-// Start the 5-second screw countdown — only screwee can buzz during this window
+// Start the screw countdown — only screwee can buzz during this window
 function startScrewTimer() {
   if (!isHost()) {
     if (isProducer()) { RPC.call("producer-action", { fn: "startScrewTimer", args: [] }, RPC.Mode.HOST); return { ok: true }; }
@@ -5286,6 +5592,8 @@ function startScrewTimer() {
   }
   
   const settings = getSettings();
+  const timerSec = getScrewTimerSec(settings);
+  const timerMs = timerSec * 1000;
   const timeLeftCs = getTimeLeftCs(round, settings);
   const frozenPoints = computeBasePoints(settings, timeLeftCs, round);
   
@@ -5295,8 +5603,8 @@ function startScrewTimer() {
       ...round,
       screw: {
         ...round.screw,
-        screwTimerMs: 5000,
-        screwTimerEndsAt: now() + 5000,
+        screwTimerMs: timerMs,
+        screwTimerEndsAt: now() + timerMs,
         frozenCs: timeLeftCs,
         frozenPoints: frozenPoints,
       },
@@ -5308,6 +5616,52 @@ function startScrewTimer() {
   return { ok: true, message: "Screw timer started." };
 }
 
+// Cancel a live screw without consuming the screwer's one use (e.g. wrong
+// victim, accidental tap). Judged/timeout closes still go through
+// closeScrewMode, which records the use.
+function cancelScrew() {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "cancelScrew", args: [] }, RPC.Mode.HOST);
+    return { ok: false, reason: "Only host can cancel a screw." };
+  }
+  const round = getRound();
+  if (!round.screw?.active) return { ok: false, reason: "No screw in progress." };
+  
+  // All-screw: re-grant the token to the screwer
+  if (round.screw.kind === "all") {
+    const screwerId = round.screw.screwerId;
+    const used = Array.isArray(round.screwsUsedBy) ? round.screwsUsedBy : [];
+    const nextUsed = used.filter((id) => id !== screwerId);
+    const granted = round.screw?.grantedPlayerIds || [];
+    const nextGranted = [...new Set([...granted, screwerId])];
+    
+    const frozenCs = round.screw?.frozenCs;
+    const resumeOpen = round.status === ROUND_STATUSES.OPEN && Number.isFinite(frozenCs);
+    const nextRound = { ...round, screw: makeIdleScrew(), screwsUsedBy: nextUsed };
+    if (resumeOpen) {
+      nextRound.closesAt = now() + frozenCs * 10;
+      nextRound.remainingCs = frozenCs;
+    }
+    nextRound.screw.grantedPlayerIds = nextGranted;
+    setState("round", nextRound, true);
+    setBuzzNotice("All Screw cancelled, token returned.");
+    render();
+    return { ok: true };
+  }
+  
+  const frozenCs = round.screw?.frozenCs;
+  const resumeOpen = round.status === ROUND_STATUSES.OPEN && Number.isFinite(frozenCs);
+  const nextRound = { ...round, screw: makeIdleScrew() };
+  if (resumeOpen) {
+    nextRound.closesAt = now() + frozenCs * 10;
+    nextRound.remainingCs = frozenCs;
+  }
+  setState("round", nextRound, true);
+  setBuzzNotice("Screw cancelled.");
+  render();
+  return { ok: true };
+}
+
 // End the screw and increment the screw-use counter
 function closeScrewMode() {
   if (!isHost()) {
@@ -5316,6 +5670,12 @@ function closeScrewMode() {
   }
   const round = getRound();
   if (!round.screw?.active) return;
+  
+  // All-screw: do not close via closeScrewMode — it lasts until round end/reset
+  if (round.screw.kind === "all") {
+    return;
+  }
+  
   const frozenCs = round.screw?.frozenCs;
   const resumeOpen = round.status === ROUND_STATUSES.OPEN && Number.isFinite(frozenCs);
   const screwerId = round.screw?.screwerId;
@@ -5325,18 +5685,7 @@ function closeScrewMode() {
   }
   const nextRound = {
     ...round,
-    screw: {
-      active: false,
-      screwerId: null,
-      screwerName: null,
-      screweeId: null,
-      screeeName: null,
-      screwTimerMs: null,
-      screwTimerEndsAt: null,
-      frozenCs: null,
-      frozenPoints: null,
-      activatedAt: null,
-    },
+    screw: makeIdleScrew(),
     screwsUsedBy,
   };
   if (resumeOpen) {
@@ -5359,18 +5708,7 @@ function resetScrews() {
     "round",
     {
       ...round,
-      screw: {
-        active: false,
-        screwerId: null,
-        screwerName: null,
-        screweeId: null,
-        screeeName: null,
-        screwTimerMs: null,
-        screwTimerEndsAt: null,
-        frozenCs: null,
-        frozenPoints: null,
-        activatedAt: null,
-      },
+      screw: makeIdleScrew(),
       screwsUsedBy: [],
     },
     true,
@@ -5423,8 +5761,8 @@ function hostTick() {
     return;
   }
   
-  // Handle screw timer
-  if (round.screw?.active && round.screw.screwTimerMs !== null && round.screw.screwTimerMs > 0) {
+  // Handle screw timer (victim screw only)
+  if (isVictimScrewActive(round) && round.screw.screwTimerMs !== null && round.screw.screwTimerMs > 0) {
     const remainingMs = typeof round.screw.screwTimerEndsAt === "number"
       ? Math.max(0, round.screw.screwTimerEndsAt - now())
       : Math.max(0, round.screw.screwTimerMs - 1000);
@@ -5453,18 +5791,20 @@ function hostTick() {
           const screweeTeamColor = getPlayerTeamColor(round.screw?.screweeId, assignments);
           const screweeScoreKey = getScoreKeyForPlayer(round.screw?.screweeId, settings, assignments);
           const screwerScoreKey = getScoreKeyForPlayer(round.screw?.screwerId, settings, assignments);
-          const frozenCs = round.screw.frozenCs ?? (round.remainingCs || settings.timeOpen * 100);
-          const basePoints = round.screw.frozenPoints ?? computeBasePoints(settings, round.remainingCs || settings.timeOpen * 100, round);
+          const fallbackCs = round.remainingCs ?? (normalizeTimeOpen(settings.timeOpen) > 0 ? normalizeTimeOpen(settings.timeOpen) * 100 : null);
+          const frozenCs = round.screw.frozenCs ?? fallbackCs;
+          const basePoints = round.screw.frozenPoints ?? computeBasePoints(settings, fallbackCs, round);
+          const screwBonus = getScrewBonus(settings);
           const entry = {
             id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
             type: "buzz",
             ts: now(),
             roundId: currentRoundId(),
             playerId: round.screw?.screweeId,
-            playerName: round.screw.screeeName,
+            playerName: getScrewScreweeName(round.screw),
             teamColor: screweeTeamColor,
             scoreKey: screweeScoreKey,
-            scoreTarget: screweeScoreKey.startsWith("team:") ? `Team ${screweeTeamColor}` : round.screw.screeeName,
+            scoreTarget: screweeScoreKey.startsWith("team:") ? `Team ${screweeTeamColor}` : getScrewScreweeName(round.screw),
             option: null,
             answerText: "[No answer - Screw timeout]",
             timeLeftCs: frozenCs,
@@ -5476,15 +5816,15 @@ function hostTick() {
             rouletteTopAmount: settings.rouletteTopAmount,
             rouletteFinalValue: round.roulette?.finalValue ?? null,
             basePoints: basePoints,
-            awardedDelta: -(basePoints + 1000),
+            awardedDelta: -(basePoints + screwBonus),
             resolved: true,
           };
           const log = getLog();
           setState("gameLog", [...log, entry], true);
           
           const scores = { ...getScores() };
-          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints - 1000;
-          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + 1000;
+          scores[screweeScoreKey] = Number(scores[screweeScoreKey] || 0) - basePoints - screwBonus;
+          scores[screwerScoreKey] = Number(scores[screwerScoreKey] || 0) + screwBonus;
           setState("scores", scores, true);
         }
       }
@@ -5494,10 +5834,10 @@ function hostTick() {
     return;
   }
   
-  // When screw is active but timer not started, don't tick main timer.
+  // When victim screw is active but timer not started, don't tick main timer.
   // Grace period: if the host never starts the timer, release the screw
   // after 60s so the round can't sit OPEN forever.
-  if (round.screw?.active) {
+  if (isVictimScrewActive(round)) {
     const activatedAt = Number(round.screw?.activatedAt);
     if (Number.isFinite(activatedAt) && activatedAt > 0 && now() - activatedAt > 60000) {
       closeScrewMode();
@@ -5506,9 +5846,23 @@ function hostTick() {
     return;
   }
   
-  // Normal timer tick
+  // All-screw: don't block main timer, but check 60s grace for cleanup
+  if (isAllScrewActive(round)) {
+    const activatedAt = Number(round.screw?.activatedAt);
+    if (Number.isFinite(activatedAt) && activatedAt > 0 && now() - activatedAt > 60000) {
+      closeScrewMode();
+    }
+    render();
+    return;
+  }
+  
+  // Normal timer tick (skipped entirely when no timer is set — the round
+  // stays open until the host pauses/closes it).
   const settings = getSettings();
   const timeLeftCs = getTimeLeftCs(round, settings);
+  if (timeLeftCs === null || timeLeftCs === undefined) {
+    return;
+  }
   if (timeLeftCs <= 0) {
     setState(
       "round",
@@ -5642,9 +5996,10 @@ function handleCoopRoster(senderPlayer, payload) {
 // Preset is intentionally cleared (new mode = new question context).
 // =============================================================================
 function freshIdleBuzzerRound(settings) {
+  const safeTimeOpen = normalizeTimeOpen(settings?.timeOpen);
   return {
     status: ROUND_STATUSES.IDLE, opensAt: null, closesAt: null,
-    remainingCs: settings.timeOpen * 100, roundNumber: currentRoundId(), pausedFrom: null,
+    remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null, roundNumber: currentRoundId(), pausedFrom: null,
     winnerId: null, winnerTeam: null,
     winnerOption: null, winnerAnswer: null, winnerName: null, winnerCoopKey: null,
     coopControl: null,
@@ -5653,7 +6008,7 @@ function freshIdleBuzzerRound(settings) {
     buzzedPlayerIds: [],
     buzzCounts: {},
     roulette: { active: false, startedAt: null, mode: settings.rouletteMode, topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount), ceiling: 0, seed: null, targetPlayerId: null, targetPlayerName: null, selections: {}, completedPlayerIds: [], finalValue: null, finishedAt: null },
-    screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null },
+    screw: makeIdleScrew(),
     screwsUsedBy: [],
   };
 }
@@ -5709,6 +6064,15 @@ function setHostSetting(key, value) {
   }
   const settings = getSettings();
   const next = { ...settings, [key]: value };
+  if (key === "timeOpen") {
+    next.timeOpen = normalizeTimeOpen(value);
+    if (next.timeOpen === 0 && next.scoringMode === "jack") {
+      next.scoringMode = "uniform";
+      next.valueSelectionMethod = "standard";
+      next.uniformPoints = settings.uniformPoints || 1000;
+      setBuzzNotice("JACK scoring needs a timer — switched to Uniform (fixed points).");
+    }
+  }
   if (key === "jackMultiplier") {
     next.jackMultiplier = normalizeJackMultiplier(value);
   }
@@ -5720,6 +6084,11 @@ function setHostSetting(key, value) {
     next.valueSelectionMethod = "standard";
   }
   if (key === "scoringMode" && value === "jack") {
+    if (Number(next.timeOpen) <= 0) {
+      setBuzzNotice("JACK scoring needs a timer — pick a buzz time first.");
+      render();
+      return;
+    }
     next.jackMultiplier = settings.jackMultiplier || 1;
     next.valueSelectionMethod = "standard";
   }
@@ -5815,6 +6184,7 @@ function setHostSetting(key, value) {
     if (next.coopertitionEnabled) {
       // Coop locks: screws off, one response per player, uniform-style scoring, alliances only.
       next.allowScrewing = false;
+      next.screwMode = "individual";
       next.rebuzzAllowed = false;
       next.maxBuzzesPerOption = 1;
       if (next.scoringMode === "jack") {
@@ -5844,7 +6214,7 @@ function setHostSetting(key, value) {
         if (curRound.screw?.active) {
           setState("round", {
             ...curRound,
-            screw: { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, screwTimerEndsAt: null, frozenCs: null, frozenPoints: null, activatedAt: null },
+            screw: makeIdleScrew(),
             screwsUsedBy: [],
           }, true);
         }
@@ -5873,12 +6243,17 @@ function setHostSetting(key, value) {
         if (patch.correctAnswer === undefined) patch.correctAnswer = null;
         if (patch.screwsUsedBy === undefined) patch.screwsUsedBy = [];
         if (!patch.screw || typeof patch.screw !== "object") {
-          patch.screw = { active: false, screwerId: null, screwerName: null, screweeId: null, screeeName: null, screwTimerMs: null, frozenCs: null, frozenPoints: null, activatedAt: null };
+          patch.screw = makeIdleScrew();
         } else {
           if (patch.screw.frozenCs === undefined) patch.screw.frozenCs = null;
           if (patch.screw.frozenPoints === undefined) patch.screw.frozenPoints = null;
           if (patch.screw.activatedAt === undefined) patch.screw.activatedAt = null;
           if (patch.screw.screwTimerMs === undefined) patch.screw.screwTimerMs = null;
+          if (patch.screw.screwTimerEndsAt === undefined) patch.screw.screwTimerEndsAt = null;
+          if (patch.screw.kind === undefined) patch.screw.kind = null;
+          if (patch.screw.grantedPlayerIds === undefined) patch.screw.grantedPlayerIds = [];
+          if (patch.screw.screweeName === undefined) patch.screw.screweeName = patch.screw.screeeName ?? null;
+          if ("screeeName" in patch.screw) delete patch.screw.screeeName;
         }
         const changed = patch.winnerCoopKey !== cur.winnerCoopKey || patch.correctAnswer !== cur.correctAnswer || patch.correctOptions !== cur.correctOptions || patch.screwsUsedBy !== cur.screwsUsedBy || patch.screw !== cur.screw;
         if (changed) setState("round", patch, true);
@@ -5912,17 +6287,29 @@ function setHostSetting(key, value) {
       setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const fb = getFibbage();
-      setState("fibbage", { ...freshFibbageState(), lieTimeSec: fb.lieTimeSec || 30, voteTimeSec: fb.voteTimeSec || 30, multiplier: fb.multiplier || 1 }, true);
+      setState("fibbage", { ...freshFibbageState(), lieTimeSec: normalizeFibbageLieTime(fb.lieTimeSec ?? 30), voteTimeSec: normalizeFibbageTime(fb.voteTimeSec ?? 30), multiplier: fb.multiplier || 1 }, true);
     }
     if (value === "quixort") {
       setState("round", freshIdleBuzzerRound(settings), true);
       setState("pendingLogId", null, true);
       const qx = getQuixort();
-      setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: qx.blockSec || 30 }, true);
+      setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: normalizeQuixortBlockSec(qx.blockSec ?? 30) }, true);
     }
   }
   if (key === "rouletteTopAmount") {
     next.rouletteTopAmount = normalizeRouletteTopAmount(value);
+  }
+  if (key === "screwTimerSec") {
+    next.screwTimerSec = normalizeScrewTimerSec(value);
+  }
+  if (key === "screwBonus") {
+    next.screwBonus = normalizeScrewBonus(value);
+  }
+  if (key === "screwAutoStart") {
+    next.screwAutoStart = value !== false && value !== "false" && value !== 0 && value !== "0";
+  }
+  if (key === "screwMode") {
+    next.screwMode = value === "all" ? "all" : "individual";
   }
   if (key === "teamModeEnabled" && !value) {
     next.teamScoringMode = "alliance";
@@ -6287,8 +6674,139 @@ function refundPlayerScrew(playerId) {
   const round = getRound();
   const used = Array.isArray(round.screwsUsedBy) ? round.screwsUsedBy : [];
   if (!used.includes(playerId)) return;
-  setState("round", { ...round, screwsUsedBy: used.filter((id) => id !== playerId) }, true);
+  
+  // In all-screw mode, refund also re-grants the screw token
+  if (round.screw?.kind === "all" && round.screw?.screwerId === playerId) {
+    // Cancel active all-screw and return token to granted
+    const granted = round.screw?.grantedPlayerIds || [];
+    setState("round", {
+      ...round,
+      screw: makeIdleScrew(),
+      screwsUsedBy: used.filter((id) => id !== playerId),
+    }, true);
+  } else {
+    setState("round", { ...round, screwsUsedBy: used.filter((id) => id !== playerId) }, true);
+  }
   render();
+}
+
+// All-screw: host grants a screw token to a player
+function grantPlayerScrew(playerId) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "grantPlayerScrew", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const settings = getSettings();
+  const round = getRound();
+  const players = currentParticipants();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  
+  if (!players.some((p) => p.id === playerId) || playerId === controllerId) return;
+  if (Array.isArray(producerIds) && producerIds.includes(playerId)) return;
+  if (isPlayerKicked(playerId, settings)) return;
+  if (isScrewBlocked(playerId, settings)) return;
+  if (settings.screwMode !== "all" || isCoopMode(settings) || settings.inputMode !== "buttons") return;
+  if (round.status !== ROUND_STATUSES.OPEN) return;
+  
+  const granted = round.screw?.grantedPlayerIds || [];
+  const used = round.screwsUsedBy || [];
+  if (granted.includes(playerId) || used.includes(playerId)) return;
+  
+  setState("round", {
+    ...round,
+    screw: { ...round.screw, grantedPlayerIds: [...granted, playerId] },
+  }, true);
+  render();
+}
+
+// All-screw: host revokes a granted screw token
+function revokePlayerScrew(playerId) {
+  if (!isHost()) {
+    if (isProducer()) RPC.call("producer-action", { fn: "revokePlayerScrew", args: [playerId] }, RPC.Mode.HOST);
+    return;
+  }
+  const round = getRound();
+  const granted = round.screw?.grantedPlayerIds || [];
+  if (!granted.includes(playerId)) return;
+  
+  setState("round", {
+    ...round,
+    screw: { ...round.screw, grantedPlayerIds: granted.filter((id) => id !== playerId) },
+  }, true);
+  render();
+}
+
+// All-screw: player uses their granted screw
+function initiateAllScrew(screwerId) {
+  if (!isHost()) {
+    if (isProducer()) { RPC.call("producer-action", { fn: "initiateAllScrew", args: [screwerId] }, RPC.Mode.HOST); return { ok: true }; }
+    return { ok: false, reason: "Only host can initiate all-screw." };
+  }
+  const settings = getSettings();
+  const round = getRound();
+  const players = currentParticipants();
+  const producerIds = getSafeState("producerIds", []);
+  
+  if (isCoopMode(settings)) {
+    return { ok: false, reason: "Screws are disabled in coopertition mode." };
+  }
+  if (!settings.allowScrewing || settings.screwMode !== "all") {
+    return { ok: false, reason: "All screw mode is not enabled." };
+  }
+  if (settings.inputMode !== "buttons") {
+    return { ok: false, reason: "All screw is only available in button mode." };
+  }
+  if (round.status !== ROUND_STATUSES.OPEN) {
+    return { ok: false, reason: "Buzzers are not open." };
+  }
+  if (round.screw?.active) {
+    return { ok: false, reason: "A screw is already in progress." };
+  }
+  
+  const screwer = players.find((p) => p.id === screwerId);
+  if (!screwer) {
+    return { ok: false, reason: "Invalid screwer." };
+  }
+  if (isScrewBlocked(screwerId, settings)) {
+    return { ok: false, reason: "Your screw is blocked by the host." };
+  }
+  if (isPlayerKicked(screwerId, settings)) {
+    return { ok: false, reason: "You were removed by the host." };
+  }
+  
+  const granted = round.screw?.grantedPlayerIds || [];
+  const used = round.screwsUsedBy || [];
+  if (!granted.includes(screwerId) || used.includes(screwerId)) {
+    return { ok: false, reason: "You don't have an all-screw to use." };
+  }
+  
+  // Consume the grant, mark as used, activate all-screw
+  const nextGranted = granted.filter((id) => id !== screwerId);
+  const nextUsed = [...used, screwerId];
+  
+  const frozenCs = getTimeLeftCs(round, settings);
+  const frozenPoints = computeBasePoints(settings, frozenCs, round);
+  
+  setState("round", {
+    ...round,
+    screw: {
+      ...makeIdleScrew(),
+      active: true,
+      kind: "all",
+      screwerId,
+      screwerName: getPlayerName(screwer),
+      activatedAt: now(),
+      frozenCs,
+      frozenPoints,
+      grantedPlayerIds: nextGranted,
+    },
+    screwsUsedBy: nextUsed,
+  }, true);
+  
+  setBuzzNotice(`${getPlayerName(screwer)} used an All Screw!`);
+  render();
+  return { ok: true, message: `${getPlayerName(screwer)} used an All Screw!` };
 }
 
 // =============================================================================
@@ -7028,9 +7546,13 @@ function ensureHostInit() {
   // Coop + shared-team scoring can never coexist (alliances only).
   try {
     const s = getSettings();
-    if (s.coopertitionEnabled && s.teamScoringMode === "shared") {
-      setState("settings", { ...s, teamScoringMode: "alliance" }, true);
-    }
+    const patch = {};
+    if (s.coopertitionEnabled && s.teamScoringMode === "shared") patch.teamScoringMode = "alliance";
+    if (s.screwTimerSec === undefined) patch.screwTimerSec = 5;
+    if (s.screwBonus === undefined) patch.screwBonus = 1000;
+    if (s.screwAutoStart === undefined) patch.screwAutoStart = true;
+    if (s.screwMode === undefined) patch.screwMode = "all";
+    if (Object.keys(patch).length) setState("settings", { ...s, ...patch }, true);
   } catch {}
   if (getState("round") === undefined || getState("round") === null) {
     resetRound();
@@ -7038,12 +7560,27 @@ function ensureHostInit() {
     // Backfill the round counter / pause marker for rooms created before them.
     try {
       const r = getState("round") || {};
-      if (r.roundNumber === undefined || r.pausedFrom === undefined) {
-        setState("round", {
+      const needsCounter = r.roundNumber === undefined || r.pausedFrom === undefined;
+      const needsScrew = !r.screw || typeof r.screw !== "object"
+        || r.screw.screwTimerEndsAt === undefined || r.screw.screweeName === undefined
+        || r.screw.frozenCs === undefined || r.screw.frozenPoints === undefined
+        || r.screw.activatedAt === undefined || r.screw.screwTimerMs === undefined;
+      if (needsCounter || needsScrew) {
+        const next = {
           ...r,
           roundNumber: Number.isFinite(Number(r.roundNumber)) ? Math.trunc(Number(r.roundNumber)) : 0,
           pausedFrom: r.pausedFrom ?? null,
-        }, true);
+        };
+        if (needsScrew) {
+          const prev = (r.screw && typeof r.screw === "object") ? r.screw : {};
+          next.screw = {
+            ...makeIdleScrew(),
+            ...prev,
+            screweeName: prev.screweeName ?? prev.screeeName ?? null,
+          };
+          if ("screeeName" in next.screw) delete next.screw.screeeName;
+        }
+        setState("round", next, true);
       }
     } catch {}
   }
@@ -7126,6 +7663,29 @@ function ensureHostInit() {
         try { console.warn(`[hostInit] pruned scores for ${Object.keys(scores || {}).filter((k) => !(k in prunedScores)).join(",")}`); } catch {}
         setState("scores", prunedScores, true);
       }
+    } catch {}
+    // Join order (pid -> first-seen sequence) for join-ordered strips.
+    // Assigned only on stable snapshots so a halved roster can't misorder
+    // latecomers; expired ids drop with the other identity state.
+    try {
+      const order = getJoinOrder();
+      const next = { ...order };
+      let max = 0;
+      for (const v of Object.values(next)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > max) max = n;
+      }
+      for (const p of currentParticipants()) {
+        if (next[p.id] === undefined) next[p.id] = ++max;
+      }
+      let touched = Object.keys(next).length !== Object.keys(order).length;
+      for (const id of Object.keys(next)) {
+        if (expiredIds.has(id)) {
+          delete next[id];
+          touched = true;
+        }
+      }
+      if (touched) setState("joinOrder", next, true);
     } catch {}
   }
   if (getState("coopMoods") === undefined || getState("coopMoods") === null) {
@@ -7712,7 +8272,7 @@ function renderDisOrDatHostPanel(settings, players) {
         </div>
       </div>
     ` : "";
-    const timedOptionsHtml = DIS_OR_DAT_TIMED_OPTIONS.map(opt => `<option value="${opt}" ${dd.timedSeconds === opt ? "selected" : ""}>${opt} seconds</option>`).join("");
+    const timedOptionsHtml = DIS_OR_DAT_TIMED_OPTIONS.map(opt => `<option value="${opt}" ${Number(dd.timedSeconds) === opt ? "selected" : ""}>${opt === 0 ? "No timer" : `${opt} seconds`}</option>`).join("");
     return `
       <section class="card host-panel bingo-host-panel">
         <h2>Dis or Dat Setup</h2>
@@ -7820,7 +8380,7 @@ function renderDisOrDatHostPanel(settings, players) {
     <section class="card host-panel bingo-host-panel">
       <h2>Dis or Dat — Active</h2>
       <p class="muted">Mode: <strong>${modeLabel}</strong>${activeLabel ? ` — ${activeLabel}` : ""}</p>
-      ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></p>` : ""}
+      ${isTimed ? `<p style="font-size:1.05rem">Time left: <strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></p>` : ""}
       ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}` : ""}
       ${isTimed ? thingsList : ""}
       <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
@@ -7923,7 +8483,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
   } else {
     body = `
       ${isTimed
-        ? `<div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+        ? `<div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></div>
            ${answeredAll && !revealShowing ? "" : `<p class="muted">${getSnark("player.disdat.questionTimed", `Question ${currentQ + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. Answer before the timer ends.`, { current: currentQ + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>${renderDisOrDatQuestionText(dd, currentQ)}`}`
         : `<p class="muted">${getSnark("player.disdat.questionHostPaced", `Question ${dd.currentQuestion + 1} of ${DIS_OR_DAT_QUESTION_COUNT}. The host advances when ready.`, { current: dd.currentQuestion + 1, total: DIS_OR_DAT_QUESTION_COUNT })}</p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}`}
       <div class="disordat-diamond-wrap">${diamond}</div>
@@ -8009,7 +8569,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
     const revealShowing = answeredCount > 0 && now() < disOrDatRevealUntil;
     const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
     return `<section class="card player-card disordat-player-card">${head}
-      <p class="muted">${escapeHtml(getCoopSlotName(deviceId, slot))} is playing — <span data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</span> left</p>
+      <p class="muted">${escapeHtml(getCoopSlotName(deviceId, slot))} is playing — <span data-disordat-time-left>${formatDisOrDatCs(dd)}</span> left</p>
       <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : ""}</div>
       ${answeredAll && !revealShowing ? `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>` : ""}</section>`;
   }
@@ -8057,7 +8617,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
       <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>`}</div></div>`);
   }
   return `<section class="card player-card disordat-player-card">${head}
-    <div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></div>
+    <div class="disordat-timer">${getSnark("player.disdat.timeLeftLabel", "Time left")}: <strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></div>
     <div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div></section>`;
 }
 
@@ -8117,7 +8677,7 @@ function renderDisOrDatAudienceDisplay(settings, players) {
   }).join("");
 
   const timerHtml = isTimed && dd.phase === "playing"
-    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.disdat.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-disordat-time-left>${formatSeconds(getDisOrDatTimeLeftCs(dd))}s</strong></span></div>`
+    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.disdat.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-disordat-time-left>${formatDisOrDatCs(dd)}</strong></span></div>`
     : "";
   // Timed modes previously hid the question — projection needs it visible.
   const questionHtml = dd.phase === "playing"
@@ -8154,7 +8714,7 @@ function renderQuixortHostPanel(settings, players) {
   const participants = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const multOpts = Array.from({ length: QUIXORT_MAX_MULT }, (_, i) => i + 1).map((m) => `<option value="${m}" ${normalizeQuixortMultiplier(qx.multiplier) === m ? "selected" : ""}>${m}x</option>`).join("");
-  const blockOpts = QUIXORT_BLOCK_SECONDS_OPTIONS.map((s) => `<option value="${s}" ${normalizeQuixortBlockSec(qx.blockSec) === s ? "selected" : ""}>${s}s</option>`).join("");
+  const blockOpts = QUIXORT_BLOCK_SECONDS_OPTIONS.map((s) => `<option value="${s}" ${normalizeQuixortBlockSec(qx.blockSec) === s ? "selected" : ""}>${s === 0 ? "No timer" : `${s}s`}</option>`).join("");
   if (!qx.active) {
     const items = Array.from({ length: QUIXORT_MAX_ITEMS }, (_, i) => String(qx.items?.[i] ?? ""));
     const trash = Array.from({ length: QUIXORT_MAX_TRASH }, (_, i) => String(qx.trash?.[i] ?? ""));
@@ -8162,7 +8722,8 @@ function renderQuixortHostPanel(settings, players) {
     const filledTrash = trash.map((s) => String(s || "").trim()).filter(Boolean);
     const setupError = validateQuixortSetup({ ...qx, items, trash });
     const deckLen = filledItems.length + filledTrash.length;
-    const estimate = formatQuixortEstimate(deckLen * normalizeQuixortBlockSec(qx.blockSec));
+    const setupBlockSec = normalizeQuixortBlockSec(qx.blockSec);
+    const estimate = setupBlockSec > 0 ? formatQuixortEstimate(deckLen * setupBlockSec) : getSnark("player.quixort.noTimerEstimate", "untimed");
     const itemInputs = items.map((val, i) => `
       <label class="quixort-entry-label">${i + 1} (correct order)
         <input type="text" id="quixort-item-${i}" data-quixort-item="${i}" maxlength="${QUIXORT_MAX_TEXT}" value="${escapeHtml(val)}" placeholder="Item ${i + 1}" />
@@ -8191,7 +8752,7 @@ function renderQuixortHostPanel(settings, players) {
           </label>
           <label>Seconds per block
             <select id="quixort-block-sec">${blockOpts}</select>
-            <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn.</p>
+            <p class="setting-helper">Each team gets this long per block; expiry voids the block and passes the turn. No timer never expires.</p>
           </label>
           <label>Audience sees live rows
             <div class="toggle-switch">
@@ -8205,7 +8766,7 @@ function renderQuixortHostPanel(settings, players) {
         <div class="quixort-setup-list">${itemInputs}</div>
         <h3 style="font-size:0.9rem;margin:0.8rem 0 0.4rem;color:var(--muted)">Trash answers (${filledTrash.length}/${QUIXORT_MAX_TRASH}, optional)</h3>
         <div class="quixort-setup-list">${trashInputs}</div>
-        <p class="muted">Estimated time to complete: <strong>${estimate}</strong> per team (all play at once, ${normalizeQuixortBlockSec(qx.blockSec)}s x ${deckLen} blocks).</p>
+        <p class="muted">Estimated time to complete: <strong>${estimate}</strong> per team (all play at once${setupBlockSec > 0 ? `, ${setupBlockSec}s x ${deckLen} blocks` : ", no timer"}).</p>
         <div class="host-actions" style="margin-top:0.9rem">
           <button type="button" class="primary-action" data-quixort-start ${setupError || eligible.length === 0 ? "disabled" : ""}>Start Quixort (${eligible.length} playing)</button>
         </div>
@@ -8240,7 +8801,8 @@ function renderQuixortHostPanel(settings, players) {
     return row.map((e) => `<span class="quixort-row-block quixort-live-block">${escapeHtml(getQuixortBlockText(qx, e))}</span>`).join(`<span class="quixort-row-sep">→</span>`);
   };
   const rowsHtml = trackRows.map(({ track, run, deckLen, turnName, scored }, idx) => {
-    const timeLeft = run.finished ? "done" : `${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s`;
+    const blockCs = run.finished ? null : getQuixortRunTimeLeftCs(run, qx);
+    const timeLeft = run.finished ? "done" : (blockCs === null || blockCs === undefined ? getSnark("player.quixort.noTimerLabel", "No timer") : `${formatSeconds(blockCs)}s`);
     if (scored) {
       const perfectPill = scored.clean ? ` <span class="quixort-pill quixort-pill-perfect">${getSnark("player.quixort.perfectPill", "Perfect run")}</span>` : "";
       const bonusPill = !scored.clean && scored.bonus ? ` <span class="quixort-pill">+${scored.bonus}</span>` : "";
@@ -8266,7 +8828,7 @@ function renderQuixortHostPanel(settings, players) {
   return `
     <section class="card host-panel bingo-host-panel">
       <h2>Quixort — Playing</h2>
-      <p class="muted">All tracks sort at once. Estimated remaining: <strong>${formatQuixortEstimate(remainingMax * normalizeQuixortBlockSec(qx.blockSec))}</strong> (slowest track). Multiplier ${normalizeQuixortMultiplier(qx.multiplier)}x, ${normalizeQuixortBlockSec(qx.blockSec)}s per block.</p>
+      <p class="muted">All tracks sort at once. Estimated remaining: <strong>${normalizeQuixortBlockSec(qx.blockSec) > 0 ? formatQuixortEstimate(remainingMax * normalizeQuixortBlockSec(qx.blockSec)) : getSnark("player.quixort.noTimerEstimate", "untimed")}</strong> (slowest track). Multiplier ${normalizeQuixortMultiplier(qx.multiplier)}x${normalizeQuixortBlockSec(qx.blockSec) > 0 ? `, ${normalizeQuixortBlockSec(qx.blockSec)}s per block` : ", no timer"}.</p>
       <ul class="bingo-standings">${rowsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul>
       <div class="host-actions">
         <button type="button" class="primary-action" data-quixort-end>End &amp; Award</button>
@@ -8360,7 +8922,7 @@ function renderQuixortPlayerPanel(settings, mePlayer) {
     <section class="card player-card">
       <h2>Quixort ${teamPill}</h2>
       ${turnBanner}
-      <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${formatSeconds(getQuixortRunTimeLeftCs(run, qx))}s</strong></div>
+      <div class="quixort-timer">${getSnark("player.quixort.timeLeftLabel", "Time left")}: <strong data-quixort-time-left data-quixort-track="${escapeHtml(trackKey)}">${(() => { const cs = getQuixortRunTimeLeftCs(run, qx); return cs === null || cs === undefined ? getSnark("player.quixort.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })()}</strong></div>
       <div class="quixort-progress" aria-hidden="true"><div class="quixort-progress-fill" style="width:${progressPct}%"></div></div>
       <div class="quixort-block-card"><span class="muted">Sort this:</span><strong>${blockText}</strong></div>
       <div class="quixort-row-wrap quixort-row-gaps">${rowSegs.join("") || `<span class="muted">${getSnark("player.quixort.emptyRow", "Your row is empty — place the first block.")}</span>`}</div>
@@ -8431,8 +8993,8 @@ function renderFibbageHostPanel(settings, players) {
   const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
   const eligibleTracks = getEligibleFibbageTrackKeys();
   const liesCount = Object.keys(fb.lies || {}).length;
-  const timeOpts = FIBBAGE_LIE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t}s</option>`).join("");
-  const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t}s</option>`).join("");
+  const timeOpts = FIBBAGE_LIE_TIMES.map((t) => `<option value="${t}" ${Number(fb.lieTimeSec)===t?"selected":""}>${t === 0 ? "No timer" : `${t}s`}</option>`).join("");
+  const voteTimeOpts = FIBBAGE_TIMES.map((t) => `<option value="${t}" ${Number(fb.voteTimeSec)===t?"selected":""}>${t === 0 ? "No timer" : `${t}s`}</option>`).join("");
   const multOpts = Array.from({length:FIBBAGE_MAX_MULT},(_,i)=>i+1).map((m)=>`<option value="${m}" ${Number(fb.multiplier)===m?"selected":""}>${m}x</option>`).join("");
   if (!fb.active) {
     return `
@@ -8463,7 +9025,8 @@ function renderFibbageHostPanel(settings, players) {
       </section>`;
   }
   if (fb.phase === "lying") {
-    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const lieCs = getFibbageLieTimeLeftCs(fb);
+    const timeLeft = lieCs === null || lieCs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(lieCs)}s`;
     const lieRows = eligibleTracks.map((trackKey)=>{
       const raw = fb.lies[trackKey] || "";
       const isBlocked = !!fb.blocked[trackKey];
@@ -8480,9 +9043,9 @@ function renderFibbageHostPanel(settings, players) {
     }).join("") || '<p class="muted">No eligible tracks.</p>';
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
-        <h2>Fibbage — Lying (${timeLeft}s left)</h2>
+        <h2>Fibbage — Lying (${timeLeft}${lieCs === null || lieCs === undefined ? "" : " left"})</h2>
         <p class="muted">Players are submitting lies. Block bad ones — truth is locked from before lying started.</p>
-        <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${liesCount}/${eligibleTracks.length} lies</p>
+        <p>Time left: <strong data-fibbage-time-left>${timeLeft}</strong> — ${liesCount}/${eligibleTracks.length} lies</p>
         <p>Truth: <strong>"${escapeHtml(fb.truth)}"</strong></p>
         <div class="fibbage-lie-list">${lieRows}</div>
         <div class="host-actions">
@@ -8519,7 +9082,7 @@ function renderFibbageHostPanel(settings, players) {
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
         <h2>Fibbage — Responses Ready</h2>
-        <p class="muted">Choices shuffled. Press Start Timer to let players vote (${fb.voteTimeSec}s, ends early if all vote).</p>
+        <p class="muted">Choices shuffled. Press Start Timer to let players vote (${Number(fb.voteTimeSec) === 0 ? "no timer" : `${fb.voteTimeSec}s`}, ends early if all vote).</p>
         <ul class="fibbage-choices-list">${choicesHtml}</ul>
         <div class="host-actions">
           <button type="button" class="primary-action" data-fibbage-start-vote>Start Timer</button>
@@ -8528,7 +9091,8 @@ function renderFibbageHostPanel(settings, players) {
       </section>`;
   }
   if (fb.phase === "voting") {
-    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const voteCs = getFibbageVoteTimeLeftCs(fb);
+    const timeLeft = voteCs === null || voteCs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(voteCs)}s`;
     const votedCount = Object.keys(fb.votes||{}).length;
     const choices = fb.choices||[];
     const voteMap = {};
@@ -8539,8 +9103,8 @@ function renderFibbageHostPanel(settings, players) {
     }).join("");
     return `
       <section class="card host-panel bingo-host-panel" data-fibbage-active="true">
-        <h2>Fibbage — Voting (${timeLeft}s)</h2>
-        <p>Time left: <strong data-fibbage-time-left>${timeLeft}s</strong> — ${votedCount}/${eligibleTracks.length} voted</p>
+        <h2>Fibbage — Voting (${timeLeft})</h2>
+        <p>Time left: <strong data-fibbage-time-left>${timeLeft}</strong> — ${votedCount}/${eligibleTracks.length} voted</p>
         <ul class="fibbage-choices-list">${rows}</ul>
         <p class="muted">Votes hidden until reveal. After voting ends, use Show All or Spotlight to reveal.</p>
         <div class="host-actions"><button type="button" data-fibbage-exit>Return to buzzer mode</button></div>
@@ -8622,13 +9186,13 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
     const already = fb.lies[trackKey] !== undefined;
     const blocked = !!fb.blocked[trackKey];
     const err = fb.lieErrors[trackKey] || "";
-    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageLieTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     if (blocked) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Your lie was blocked by the host.</p></section>`;
-    if (already) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Lie submitted: "${escapeHtml(fb.lies[trackKey])}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>${notice?`<p class="muted">${notice}</p>`:""}</section>`;
+    if (already) return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">Lie submitted: "${escapeHtml(fb.lies[trackKey])}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p>${notice?`<p class="muted">${notice}</p>`:""}</section>`;
     return `
       <section class="card player-card">
         <h2>Fibbage ${teamPill}</h2>
-        <p class="muted">Write a lie to fool other players. Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>
+        <p class="muted">Write a lie to fool other players. Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p>
         ${err?`<p class="error-text">${escapeHtml(err)}</p>`:""}
         ${notice?`<p class="muted">${notice}</p>`:""}
         <div class="text-entry">
@@ -8642,11 +9206,11 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
   }
   if (fb.phase === "voting") {
     const alreadyVoted = fb.votes[trackKey] !== undefined;
-    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageVoteTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     if (alreadyVoted) {
       const idx = fb.votes[trackKey];
       const choice = (fb.choices||[])[Number(idx)];
-      return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">You voted for "${escapeHtml(choice?choice.text:"")}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p></section>`;
+      return `<section class="card player-card"><h2>Fibbage ${teamPill}</h2><p class="muted">You voted for "${escapeHtml(choice?choice.text:"")}"</p><p class="muted">Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p></section>`;
     }
     const choices = fb.choices||[];
     const buttons = choices.map((c,i)=>{
@@ -8656,7 +9220,7 @@ function renderFibbagePlayerPanel(settings, mePlayer) {
     return `
       <section class="card player-card">
         <h2>Fibbage — Vote ${teamPill}</h2>
-        <p class="muted">Pick the truth. You cannot pick your own lie. Time left: <strong data-fibbage-time-left>${timeLeft}s</strong></p>
+        <p class="muted">Pick the truth. You cannot pick your own lie. Time left: <strong data-fibbage-time-left>${timeLeft}</strong></p>
         ${notice?`<p class="muted">${notice}</p>`:""}
         <div class="fibbage-vote-list">${buttons}</div>
       </section>`;
@@ -8701,12 +9265,12 @@ function renderFibbageAudienceDisplay(settings, players) {
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="idle"><header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Waiting for the game to start...</p></div></header></main>`;
   }
   if (fb.phase === "lying") {
-    const timeLeft = formatSeconds(getFibbageLieTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageLieTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     const eligible = getEligibleFibbageTrackKeys();
     const submitted = Object.keys(fb.lies||{}).length;
     const pct = eligible.length ? Math.min(100, Math.round((submitted / eligible.length) * 100)) : 0;
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Lying</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${submitted}/${eligible.length} lies</span></div></header>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Lying</span></p><h1 class="audience-title">Fibbage</h1><p class="muted">Players are writing lies</p></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}</span><span>${submitted}/${eligible.length} lies</span></div></header>
       <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Lies submitted</h2><span class="audience-standings-mode">${submitted}/${eligible.length}</span></div><p class="muted">Waiting for host to block/review.</p><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
     </main>`;
   }
@@ -8722,7 +9286,7 @@ function renderFibbageAudienceDisplay(settings, players) {
     </main>`;
   }
   if (fb.phase === "voting") {
-    const timeLeft = formatSeconds(getFibbageVoteTimeLeftCs(fb));
+    const timeLeft = (() => { const cs = getFibbageVoteTimeLeftCs(fb); return cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`; })();
     const choices = fb.choices||[];
     const votes = fb.votes || {};
     const totalVotes = Object.keys(votes).length;
@@ -8732,7 +9296,7 @@ function renderFibbageAudienceDisplay(settings, players) {
     Object.values(votes).forEach((idx) => { const n = Number(idx); voteCounts[n] = (voteCounts[n] || 0) + 1; });
     const list = choices.map((c,i)=>`<li>"${escapeHtml(c.text)}" <span class="muted">· ${voteCounts[i] || 0} ${getSnark("audience.fibbage.votesLabel", "votes", {})}</span></li>`).join("");
     return `<main class="layout audience-layout" data-fibbage-active="true" data-round-status="open">
-      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Voting</span></p><h1 class="audience-title">Fibbage</h1></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}s</span><span>${totalVotes}/${eligibleN} voted</span></div></header>
+      <header class="hero audience-hero"><div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Fibbage — Voting</span></p><h1 class="audience-title">Fibbage</h1></div><div class="hero-meta"><span class="audience-timer" data-fibbage-time-left>${timeLeft}</span><span>${totalVotes}/${eligibleN} voted</span></div></header>
       <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>Choices</h2><span class="audience-standings-mode">${totalVotes}/${eligibleN} voted</span></div><ul class="fibbage-choices-list audience-standings-big">${list}</ul><div class="audience-progress" aria-hidden="true"><span style="width:${pct}%"></span></div></section>
     </main>`;
   }
@@ -9143,7 +9707,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
   const deviceId = mePlayer.id;
   const count = getCoopSlotCount(deviceId);
   const group = getCoopGroupName(deviceId, getPlayerName(mePlayer));
-  const timeText = formatSeconds(timeLeftCs);
+  const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const editBtn = settings.coopAllowEdit
     ? `<div class="host-actions"><button type="button" data-coop-edit>${getSnark("player.coop.editGroupButton", "Edit group")}</button></div>`
     : "";
@@ -9180,7 +9744,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
       <section class="card player-card coop-player-card">
         <h2>${escapeHtml(group)}</h2>
         <p class="muted">${helper}</p>
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${tabs}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
@@ -9195,7 +9759,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
   return `
     <section class="card player-card coop-player-card">
       <h2>${escapeHtml(group)}</h2>
-      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
       ${renderCoopGroupBuzzer(settings, round, deviceId, count)}
       ${renderCoopStrip(settings, round, deviceId, count)}
       ${editBtn}
@@ -9293,53 +9857,105 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return renderRoulettePanel(settings, round, mePlayer);
   }
 
-  // Show screw player selection UI if screw is active but screwee not yet selected
-  if (round.screw?.active && !round.screw?.screweeId && mePlayer.id === round.screw?.screwerId) {
-    const nonHostPlayers = currentParticipants().filter(
-      (p) => p.id !== getControllerId() && p.id !== mePlayer.id
-    );
-    const playerButtons = nonHostPlayers
+  // Show screw player selection UI if INDIVIDUAL screw is active but screwee not yet selected
+  if (isVictimScrewActive(round) && !round.screw?.screweeId && mePlayer.id === round.screw?.screwerId) {
+    const targets = getScrewEligibleVictims(mePlayer.id, { settings, assignments: teamAssignments });
+    const playerButtons = targets
       .map((p) => `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`)
-      .join("");
+      .join("") || `<p class="muted">No eligible targets.</p>`;
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.screw.selectTitle", "Select Who to Screw")}</h2>
         <p class="muted">${getSnark("player.screw.selectPrompt", "Choose another player to screw over:")}</p>
         <div class="screw-player-list">${playerButtons}</div>
+        <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
       </section>
     `;
   }
 
-  // Show "hold up, a screw is getting used" message for other players during screw
-  if (round.screw?.active && mePlayer.id !== round.screw?.screwerId && mePlayer.id !== round.screw?.screweeId) {
+  // Show "hold up, a screw is getting used" message for other players during INDIVIDUAL screw
+  if (isVictimScrewActive(round) && mePlayer.id !== round.screw?.screwerId && mePlayer.id !== round.screw?.screweeId) {
     const timeText = getScrewTimerMs(round) !== null
       ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10))
       : getSnark("player.screw.pending", "pending");
+    const screweeName = getScrewScreweeName(round.screw);
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.screw.holdUp", "Hold Up!")}</h2>
-        <p class="muted">${getSnark("player.screw.inUseOn", `A screw is being used by <strong>${round.screw.screwerName}</strong> on <strong>${round.screw.screeeName}</strong>.`, { screwer: `<strong>${round.screw.screwerName}</strong>`, screwee: `<strong>${round.screw.screeeName}</strong>` })}</p>
+        <p class="muted">${screweeName
+          ? getSnark("player.screw.inUseOn", `A screw is being used by ${round.screw.screwerName} on ${screweeName}.`, { screwer: round.screw.screwerName, screwee: screweeName })
+          : getSnark("player.screw.selecting", `${round.screw.screwerName} is selecting a target...`, { screwer: round.screw.screwerName })}</p>
         <p class="muted">${getSnark("player.screw.timeLabel", "Time")}: <strong>${timeText}s</strong></p>
       </section>
     `;
   }
 
-  // Show screw timer UI for the screwee
-  if (round.screw?.active && mePlayer.id === round.screw?.screweeId) {
+  // Show screw timer UI for the screwee (INDIVIDUAL screw only, all input modes)
+  if (isVictimScrewActive(round) && mePlayer.id === round.screw?.screweeId) {
+    // Post-buzz: answer locked in, waiting for the host's ruling — don't
+    // leave dead buzzers up.
+    const pendingId = getSafeState("pendingLogId", null);
+    let pendingEntry = null;
+    try { pendingEntry = (getLog() || []).find((e) => e && e.id === pendingId) || null; } catch {}
+    const iBuzzed = Array.isArray(round.buzzedPlayerIds) && round.buzzedPlayerIds.includes(mePlayer.id);
+    if ((pendingEntry && pendingEntry.playerId === mePlayer.id) || (iBuzzed && round.status === ROUND_STATUSES.LOCKED)) {
+      const answerBits = pendingEntry
+        ? pendingEntry.answerText
+          ? `&ldquo;${escapeHtml(String(pendingEntry.answerText).slice(0, 80))}&rdquo;`
+          : (pendingEntry.option !== null && pendingEntry.option !== undefined ? `Option ${escapeHtml(String(pendingEntry.option))}` : "")
+        : "";
+      return `
+        <section class="card player-card">
+          <h2>${getSnark("player.screw.answerSubmitted", "Answer submitted!")}</h2>
+          ${answerBits ? `<p class="muted">${answerBits}</p>` : ""}
+          <p class="muted">${getSnark("player.screw.waitingRuling", "Waiting for the host's ruling.")}</p>
+        </section>
+      `;
+    }
     const timeText = getScrewTimerMs(round) !== null
       ? formatSeconds(Math.ceil(getScrewTimerMs(round) / 10))
       : getSnark("player.screw.waiting", "waiting");
     const buzzerDisabled = getScrewTimerMs(round) === null || getScrewTimerMs(round) <= 0;
+    const disabledAttr = buzzerDisabled ? "disabled" : "";
+    const screweeHead = `
+          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
+          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
+          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>`;
+    if (settings.inputMode === "text") {
+      return `
+        <section class="card player-card">
+          ${screweeHead}
+          <div class="text-entry">
+            <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
+            <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>${getSnark("player.buzzer.submitAnswerButton", "Submit Answer")}</button>
+          </div>
+        </section>
+      `;
+    }
     
     if (settings.optionCount === 1) {
       return `
         <section class="card player-card">
-          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
-          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
-          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
-          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${buzzerDisabled ? "disabled" : ""}>${singleBuzzerContent()}</button>
+          ${screweeHead}
+          <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>${singleBuzzerContent()}</button>
+        </section>
+      `;
+    }
+
+    if (settings.optionCount === 6 || settings.optionCount === 8) {
+      const count = settings.optionCount;
+      const buttons = Array.from({ length: count }, (_, i) => i + 1)
+        .map((opt) => {
+          const optDisabled = disabledAttr || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
+          return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${optDisabled}>${buzzerButtonContent(opt)}</button>`;
+        })
+        .join("");
+      return `
+        <section class="card player-card">
+          ${screweeHead}
+          <div class="${count === 6 ? "six-grid" : "eight-grid"}">${buttons}</div>
         </section>
       `;
     }
@@ -9349,7 +9965,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       const button = (opt, cls) => {
         const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
         const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
-        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${buzzerDisabled ? "disabled" : ""}>${buzzerButtonContent(opt)}</button>`;
+        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       };
       const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
       const roundLabel = showValue
@@ -9359,13 +9975,21 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         : "";
       return `
         <section class="card player-card">
-          <h2>${getSnark("player.screw.youreScrewed", "You're Being Screwed!")}</h2>
-          <p class="muted">${getSnark("player.screw.timerLabel", "Screw timer")}: <strong data-screw-timer>${timeText}s</strong></p>
-          <p class="muted">${getSnark("player.screw.answerQuickly", "Answer quickly!")}</p>
+          ${screweeHead}
           ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [2, "pos-x"], [3, "pos-b"], [1, "pos-a"]], button, roundLabel)}
         </section>
       `;
     }
+    // Fallback for any other option count: generic grid.
+    const fallbackButtons = Array.from({ length: settings.optionCount || 4 }, (_, i) => i + 1)
+      .map((opt) => `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`)
+      .join("");
+    return `
+      <section class="card player-card">
+        ${screweeHead}
+        <div class="six-grid">${fallbackButtons}</div>
+      </section>
+    `;
   }
 
   const disabled = round.status !== ROUND_STATUSES.OPEN;
@@ -9375,7 +9999,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     ? getAllBuzzedTeamMemberIds(mePlayer.id, currentParticipants(), teamAssignments).some((id) => round.buzzedPlayerIds.includes(id))
     : false;
   const playerDisabled = !isPlayerBuzzerEnabled(settings, mePlayer.id);
-  const screwInProgress = round.screw?.active;
+  const screwInProgress = isVictimScrewActive(round);
   const screwUsedByMe = round.screwsUsedBy?.includes(mePlayer.id);
   const screwBlockedMe = isScrewBlocked(mePlayer.id, settings);
   const screwAvailable = settings.allowScrewing && !screwUsedByMe && !screwBlockedMe && !screwInProgress;
@@ -9392,8 +10016,16 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       ? getSnark("player.buzzer.screwInProgress", "A screw is in progress.")
       : getSnark("player.buzzer.buzzNow", "Buzz now.");
   const notice = getRecentBuzzNotice();
-  const timeText = formatSeconds(timeLeftCs);
+  const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const usingTextEntry = settings.inputMode === "text";
+
+  // Option display order (scrambled in all-screw mode)
+  const optionOrder = getPlayerOptionOrder(settings, round, mePlayer.id);
+
+  // All-screw status for renderScrewAction
+  const isAllScrewMode = isAllScrewActive(round);
+  const allScrewGranted = isAllScrewMode && (round.screw?.grantedPlayerIds || []).includes(mePlayer.id);
+  const allScrewUsed = isAllScrewMode && (round.screwsUsedBy || []).includes(mePlayer.id);
 
   
 // If you came here just to find this, I am both impressed and disappointed.
@@ -9433,12 +10065,13 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         <h2>${getSnark("player.buzzer.yourAnswerTitle", "Your Answer")}</h2>
         <p class="muted">${textHelper}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
           <button class="${appendTeamButtonClass()}" data-answer-submit ${disabledAttr}>${getSnark("player.buzzer.submitAnswerButton", "Submit Answer")}</button>
         </div>
+        ${renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew: isAllScrewMode, allScrewGranted, allScrewUsed })}
       </section>
     `;
   }
@@ -9446,24 +10079,14 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (settings.optionCount === 1) {
     const optionDisabled = !isOptionEnabled(settings, 1) || isPlayerAtOptionLimit(round, settings, mePlayer.id, 1);
     const disabledAttr = globalDisabled || optionDisabled ? "disabled" : "";
-const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew: isAllScrewMode, allScrewGranted, allScrewUsed });
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${optionDisabled ? getSnark("player.buzzer.singleBuzzerDisabled", "This buzzer is disabled by the Host.") : helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>${singleBuzzerContent()}</button>
         ${screwBtn}
@@ -9472,30 +10095,21 @@ const screwBtn = settings.allowScrewing
   }
 
   if (settings.optionCount === 6) {
-    const buttons = [1, 2, 3, 4, 5, 6]
+    const buttons = optionOrder
+      .filter(opt => opt <= 6)
       .map((opt) => {
         const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
         return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       })
       .join("");
-const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew: isAllScrewMode, allScrewGranted, allScrewUsed });
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="six-grid">${buttons}</div>
         ${screwBtn}
@@ -9504,30 +10118,21 @@ const screwBtn = settings.allowScrewing
   }
 
   if (settings.optionCount === 8) {
-    const buttons = [1, 2, 3, 4, 5, 6, 7, 8]
+    const buttons = optionOrder
+      .filter(opt => opt <= 8)
       .map((opt) => {
         const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
         return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
       })
       .join("");
-const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW EM'</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew: isAllScrewMode, allScrewGranted, allScrewUsed });
     
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
         <div class="eight-grid">${buttons}</div>
         ${screwBtn}
@@ -9537,17 +10142,14 @@ const screwBtn = settings.allowScrewing
 
   if (settings.optionCount === 4) {
     const defaultBuzzerClass = teamButtonClass ? "" : ["", "buzzer-a", "buzzer-b", "buzzer-x", "buzzer-y"];
+    // Create button factory that uses the scrambled order position for placement
     const button = (opt, cls) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
       const extraClass = defaultBuzzerClass ? defaultBuzzerClass[opt] : "";
       const fullClass = [appendTeamButtonClass(cls), extraClass].filter(Boolean).join(" ");
-        return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
+      return `<button type="button" class="${fullClass}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
     };
-    const screwBtn = screwBlockedMe
-      ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-      : screwAvailable && !disabled && !playerDisabled
-      ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
-      : "";
+    const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew: isAllScrewMode, allScrewGranted, allScrewUsed });
 
     const showValue = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.LOCKED;
     const roundLabel = showValue
@@ -9556,45 +10158,43 @@ const screwBtn = settings.allowScrewing
         : `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
       : "";
 
+    // Map optionOrder to diamond positions: pos-a=1, pos-b=2, pos-x=3, pos-y=4
+    // The renderChoiceLayout4 uses [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]]
+    // We need to map the scrambled order to these positions
+    const scrambledPlacements = optionOrder.map((opt, idx) => {
+      const positions = [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]];
+      return [opt, positions[idx][1]];
+    });
+
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         <p class="muted">${helperText}</p>
         ${myScoreLine}
-        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+        <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
         ${notice ? `<p class="muted">${notice}</p>` : ""}
-        ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]], button, roundLabel)}
+        ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), scrambledPlacements, button, roundLabel)}
         ${screwBtn}
       </section>
     `;
   }
 
   const max = settings.optionCount;
-  const buttons = [1, 2, 3, 4]
+  const buttons = optionOrder
     .filter((opt) => opt <= max)
     .map((opt) => {
       const disabledAttr = globalDisabled || !isOptionEnabled(settings, opt) || isPlayerAtOptionLimit(round, settings, mePlayer.id, opt) ? "disabled" : "";
       return `<button type="button" class="${appendTeamButtonClass()}" data-buzz="${opt}" ${disabledAttr}>${buzzerButtonContent(opt)}</button>`;
     })
     .join("");
-  const screwBtn = settings.allowScrewing
-    ? (screwBlockedMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.blockedByHost", "Your screw is blocked by the host.")}</p>`
-        : screwUsedByMe
-        ? `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.usedByMe", "Your screw has been used.")}</p>`
-        : screwInProgress
-            ? ""
-            : screwAvailable && !disabled && !playerDisabled
-                ? `<button type="button" class="screw-btn" data-screw>SCREW</button>`
-                : `<p class="muted" style="margin-top:0.5rem">${getSnark("player.screw.available", "Screw available.")}</p>`)
-    : "";
+  const screwBtn = renderScrewAction({ settings, screwBlockedMe, screwUsedByMe, screwInProgress, screwAvailable, disabled, playerDisabled, isAllScrew: isAllScrewMode, allScrewGranted, allScrewUsed });
 
   return `
     <section class="card player-card">
       <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
         ${myScoreLine}
       <p class="muted">${helperText}</p>
-      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}s</strong></p>
+      <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
       ${notice ? `<p class="muted">${notice}</p>` : ""}
       <div class="abxy">${buttons}</div>
       ${screwBtn}
@@ -9698,6 +10298,9 @@ function renderAudienceBuzzPanel(settings, round, players, timeLeftCs) {
   } else if (isScrewActive) {
     timerCs = null;
     timerDisplay = "SCREW";
+  } else if (timeLeftCs === null || timeLeftCs === undefined) {
+    timerCs = null;
+    timerDisplay = getSnark("audience.buzzer.noTimerLabel", "No timer");
   } else {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
@@ -9825,12 +10428,32 @@ function renderAudienceScrewPanel(round) {
     `;
   }
 
+  // All-screw mode
+  if (screw.kind === "all") {
+    const otherCount = currentParticipants().filter(p =>
+      p.id !== screw.screwerId &&
+      p.id !== getControllerId() &&
+      !(Array.isArray(getSafeState("producerIds", [])) && getSafeState("producerIds", []).includes(p.id)) &&
+      !(Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(p.id)) &&
+      !isPlayerKicked(p.id, settings)
+    ).length;
+    return `
+      <section class="card audience-card audience-screw-card">
+        <p class="prejoin-kicker">Screws</p>
+        <h2>All Screw Active</h2>
+        <p><strong>${escapeHtml(screw.screwerName || "A player")}</strong> used an All Screw!</p>
+        <p class="muted">${otherCount} other player${otherCount !== 1 ? "s" : ""} have scrambled answers.</p>
+        <p class="muted">Screwer gains ${ALL_SCREW_WRONG_BONUS} per wrong answer.</p>
+      </section>
+    `;
+  }
+
   if (!screw.screweeId) {
     return `
       <section class="card audience-card audience-screw-card">
         <p class="prejoin-kicker">Screws</p>
         <h2>${getSnark("audience.screw.audienceTargetChoosing", "Target being chosen")}</h2>
-        <p>${getSnark("audience.screw.audienceSelectingWho", `<strong>${escapeHtml(screw.screwerName || "A player")}</strong> is selecting who to screw.`, { screwer: `<strong>${escapeHtml(screw.screwerName || "A player")}</strong>` })}</p>
+        <p>${getSnark("audience.screw.audienceSelectingWho", `${screw.screwerName || "A player"} is selecting who to screw.`, { screwer: screw.screwerName || "A player" })}</p>
       </section>
     `;
   }
@@ -9839,7 +10462,7 @@ function renderAudienceScrewPanel(round) {
     <section class="card audience-card audience-screw-card">
       <p class="prejoin-kicker">Screws</p>
       <h2>${getSnark("audience.screw.audienceActiveTitle", "Active screw")}</h2>
-      <p>${getSnark("audience.screw.audienceActiveOver", `<strong>${escapeHtml(screw.screwerName || "A player")}</strong> is screwing over <strong>${escapeHtml(screw.screeeName || "another player")}</strong>.`, { screwer: `<strong>${escapeHtml(screw.screwerName || "A player")}</strong>`, screwee: `<strong>${escapeHtml(screw.screeeName || "another player")}</strong>` })}</p>
+      <p>${getSnark("audience.screw.audienceActiveOver", `${screw.screwerName || "A player"} is screwing over ${getScrewScreweeName(screw) || "another player"}.`, { screwer: screw.screwerName || "A player", screwee: getScrewScreweeName(screw) || "another player" })}</p>
       <p class="muted">${getSnark("audience.screw.audienceTimerLabel", "Timer")}: <strong>${timeText}s</strong></p>
     </section>
   `;
@@ -9880,12 +10503,14 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     if (fb.phase === "lying") {
       const cs = getFibbageLieTimeLeftCs(fb);
       const flash = isTabletTimerFlashing(cs);
-      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
+      const label = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${label}</div><div class="tablet-timer-players">Fibbage — Lie</div></div></main>`;
     }
     if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
       const flash = isTabletTimerFlashing(cs);
-      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${formatSeconds(cs)}s</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
+      const label = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
+      return `<main class="tablet-timer-layout"${flash?' data-flash="true"':""}><div class="tablet-timer-container"><div class="tablet-timer-value" data-tablet-time-left data-fibbage-time-left>${label}</div><div class="tablet-timer-players">Fibbage — Vote</div></div></main>`;
     }
     return renderTabletTimerNotUseful();
   }
@@ -9896,10 +10521,11 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     if (isTimed && dd.active && dd.phase === "playing") {
       const ddCs = getDisOrDatTimeLeftCs(dd);
       const flash = isTabletTimerFlashing(ddCs);
+      const label = ddCs === null || ddCs === undefined ? getSnark("player.disdat.noTimerLabel", "No timer") : `${formatSeconds(ddCs)}s`;
       return `
         <main class="tablet-timer-layout"${flash ? ' data-flash="true"' : ""}>
           <div class="tablet-timer-container">
-            <div class="tablet-timer-value" data-tablet-time-left data-disordat-time-left>${formatSeconds(ddCs)}s</div>
+            <div class="tablet-timer-value" data-tablet-time-left data-disordat-time-left>${label}</div>
             <div class="tablet-timer-players">Dis or Dat</div>
           </div>
         </main>
@@ -9927,22 +10553,27 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
 
   const buzzedCount = (round.buzzedPlayerIds || []).length;
   const totalPlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && isPlayerBuzzerEnabled(settings, player.id)).length;
-  const isScrewActive = round.screw?.active;
+  const isVictimScrew = isVictimScrewActive(round);
+  const isAllScrew = isAllScrewActive(round);
+  const isScrewActive = isVictimScrew || isAllScrew;
   const screwTimerMs = getScrewTimerMs(round);
 
   let timerDisplay;
   let timerCs;
-  if (isScrewActive && screwTimerMs !== null) {
+  if (isVictimScrew && screwTimerMs !== null) {
     timerCs = Math.ceil(screwTimerMs / 10);
     timerDisplay = `${formatSeconds(timerCs)}s`;
-  } else if (isScrewActive) {
+  } else if (isVictimScrew) {
     timerCs = 0;
     timerDisplay = "SCREW";
+  } else if (timeLeftCs === null || timeLeftCs === undefined) {
+    timerCs = null;
+    timerDisplay = getSnark("tablet.misc.noTimerLabel", "No timer");
   } else {
     timerCs = timeLeftCs;
     timerDisplay = `${formatSeconds(timeLeftCs)}s`;
   }
-  const flash = !isScrewActive && isTabletTimerFlashing(timerCs);
+  const flash = !isVictimScrew && isTabletTimerFlashing(timerCs);
 
   return `
     <main class="tablet-timer-layout"${isScrewActive ? ' data-screw-active="true"' : ""}${flash ? ' data-flash="true"' : ""} data-round-status="${escapeHtml(round.status || "idle")}">
@@ -10237,17 +10868,23 @@ function harvestIntoDraft() {
 function refreshCreator() { renderPrejoinScreen("creator"); }
 // Patch the host form's cloud row without re-rendering (a re-render would
 // wipe the typed host name). Top-level: probeEpisodeCloud calls it.
-// No-ops when the host form isn't showing.
+// Also patches the in-game loader's cloud row. No-ops when forms aren't showing.
   function refreshAttachCloudRow() {
     try {
+      // Prejoin form
       const input = document.querySelector("#ep-attach-code");
       const btn = document.querySelector("[data-ep-attach-cloud]");
       const hint = document.querySelector("#ep-attach-cloud-hint");
       if (input) input.disabled = !episodeCloudEnabled;
       if (btn) btn.disabled = !episodeCloudEnabled;
-      // Static strings only (no user data) — innerHTML is safe here, and the
-      // delegated Retry handler survives the swap.
       if (hint) hint.innerHTML = episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-attach-cloud-retry type="button">Retry</button>`;
+      // In-game loader card
+      const loadInput = document.querySelector("#ep-load-code");
+      const loadBtn = document.querySelector("[data-ep-load-cloud]");
+      const loadHint = document.querySelector("#ep-load-cloud-hint");
+      if (loadInput) loadInput.disabled = !episodeCloudEnabled;
+      if (loadBtn) loadBtn.disabled = !episodeCloudEnabled;
+      if (loadHint) loadHint.innerHTML = episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-load-cloud-retry type="button">Retry</button>`;
     } catch {}
   }
 function downloadEpisodeJson() {
@@ -10847,12 +11484,18 @@ function applyEpisodeSettings(source) {
       if (settings[key] === value) return;
       setHostSetting(key, value);
     };
+    if (source.timeOpen !== undefined) {
+      const t = Number(source.timeOpen);
+      if (Number.isFinite(t) && t !== settings.timeOpen) setHostSetting("timeOpen", t);
+    }
+    // JACK needs a timer: skip it when the round is untimed after the
+    // timeOpen apply above (same silent-skip as the coop gate).
+    const untimedNow = Number(getSettings().timeOpen) <= 0;
     if (source.scoringMode !== undefined && source.scoringMode !== settings.scoringMode) {
-      if (!(coop && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
+      if (!(coop && source.scoringMode === "jack") && !(untimedNow && source.scoringMode === "jack")) setHostSetting("scoringMode", source.scoringMode);
     }
     setIfDiff("uniformPoints", source.uniformPoints !== undefined ? Number(source.uniformPoints) : undefined);
     setIfDiff("jackMultiplier", source.jackMultiplier !== undefined ? Number(source.jackMultiplier) : undefined);
-    setIfDiff("timeOpen", source.timeOpen !== undefined ? Number(source.timeOpen) : undefined);
     setIfDiff("maxBuzzesPerOption", source.maxBuzzesPerOption !== undefined ? Number(source.maxBuzzesPerOption) : undefined);
     setIfDiff("choiceLayout", source.choiceLayout);
     setIfDiff("lockAfterBuzz", source.lockAfterBuzz);
@@ -10883,9 +11526,16 @@ function attachEpisode(episode) {
   episodeLetterIndex = 0;
   episodeLockedKeys = [];
   try { setState("episodePrompt", null, true); } catch {}
-  // Apply episode defaults immediately on explicit attach (same merge as the
-  // pre-launch path in ensureHostInit).
-  applyEpisodeSettings(episode.defaults);
+  // Apply episode defaults only when the round is not live (IDLE or CLOSED).
+  // During a live round, loading a question is blocked anyway (see episodeRunLoad),
+  // and the first load will apply effective settings then. This avoids shifting
+  // scoring/timers mid-round.
+  const liveRound = getRound();
+  if (liveRound.status === ROUND_STATUSES.IDLE || liveRound.status === ROUND_STATUSES.CLOSED) {
+    applyEpisodeSettings(episode.defaults);
+  } else {
+    setBuzzNotice("Episode attached — its settings apply when you load a question.");
+  }
   render();
   return { ok: true };
 }
@@ -10916,15 +11566,14 @@ function episodeRunLoad(index) {
   }
   if (liveRound.status === ROUND_STATUSES.CLOSED) {
     const settingsNow = getSettings();
-    const rawTimeOpenNow = Number(settingsNow.timeOpen);
-    const safeTimeOpenNow = Number.isFinite(rawTimeOpenNow) && rawTimeOpenNow > 0 ? Math.min(rawTimeOpenNow, 120) : 20;
+    const safeTimeOpenNow = normalizeTimeOpen(settingsNow.timeOpen);
     setState(
       "round",
       {
         status: ROUND_STATUSES.IDLE,
         opensAt: null,
         closesAt: null,
-        remainingCs: safeTimeOpenNow * 100,
+        remainingCs: safeTimeOpenNow > 0 ? safeTimeOpenNow * 100 : null,
         roundNumber: Number.isFinite(Number(liveRound.roundNumber)) ? Math.trunc(Number(liveRound.roundNumber)) : 0,
         pausedFrom: null,
         winnerId: null,
@@ -10952,17 +11601,7 @@ function episodeRunLoad(index) {
           finalValue: liveRound.roulette?.finalValue ?? null,
           finishedAt: null,
         },
-        screw: {
-          active: false,
-          screwerId: null,
-          screwerName: null,
-          screweeId: null,
-          screeeName: null,
-          screwTimerMs: null,
-          frozenCs: null,
-          frozenPoints: null,
-          activatedAt: null,
-        },
+        screw: makeIdleScrew(),
         screwsUsedBy: [],
       },
       true,
@@ -11164,7 +11803,7 @@ function episodeRunEnd() {
 function renderEpisodeRunnerCard() {
   const ep = activeEpisode;
   if (!ep || !Array.isArray(ep.items) || !ep.items.length) return "";
-  if (!hasHostPrivileges()) return "";
+  if (!isHost()) return "";
   const item = ep.items[episodeIndex] || ep.items[0];
   const idx = ep.items.indexOf(item);
   const round = getRound();
@@ -11190,6 +11829,33 @@ function renderEpisodeRunnerCard() {
         <button type="button" data-ep-run-letter="1" ${episodeLetterIndex >= rounds.length - 1 ? "disabled" : ""}>Letter →</button>
       </div>` : ""}
     </section>`;
+}
+
+function renderEpisodeLoadCard() {
+  if (!isHost()) return "";
+  if (activeEpisode) return "";
+  return `
+    <section class="card ep-load">
+      <div class="ep-edit-head">
+        <h2>Load an episode</h2>
+      </div>
+      <div class="ep-attach-options">
+        <div class="ep-attach-actions">
+          <button class="secondary-action" data-ep-load-file type="button">Attach JSON file</button>
+          <input type="file" id="ep-load-file" accept="application/json,.json" hidden />
+          <button class="secondary-action" data-ep-load-draft type="button">Use creator draft</button>
+        </div>
+        <div class="ep-attach-actions">
+          <input id="ep-load-code" type="text" maxlength="12" placeholder="Cloud code (ABC123)" ${episodeCloudEnabled ? "" : "disabled"} />
+          <button class="secondary-action" data-ep-load-cloud type="button" ${episodeCloudEnabled ? "" : "disabled"}>Load by code</button>
+        </div>
+        <p class="muted" id="ep-load-cloud-hint">${episodeCloudEnabled ? "" : `Cloud codes need the episode server — file or draft still work. <button class="secondary-action" data-ep-load-cloud-retry type="button">Retry</button>`}</p>
+      </div>
+    </section>`;
+}
+
+function renderEpisodeHostCard() {
+  return renderEpisodeRunnerCard() || renderEpisodeLoadCard();
 }
 
 function renderBroadcastHostCard() {
@@ -11566,6 +12232,8 @@ function renderPerPlayerHostControls(settings, players, controllerId) {
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
   const round = getRound();
   const customNames = getCustomNames();
+  const isAllScrew = settings.allowScrewing && settings.screwMode === "all" && !isCoopMode(settings);
+  const grantedIds = isAllScrew ? (round.screw?.grantedPlayerIds || []) : [];
   const body = rows
     .map((player) => {
       const pid = player.id;
@@ -11578,6 +12246,9 @@ function renderPerPlayerHostControls(settings, players, controllerId) {
       const isSharedTeam = Boolean(settings.teamModeEnabled && settings.teamScoringMode === "shared" && getPlayerTeamColor(pid, assignments));
       const scoreNote = isSharedTeam ? " (team)" : isCoopMode(settings) && getCoopSlotCount(pid) > 1 ? " (group)" : "";
       const custom = customNames?.[pid] || "";
+      const hasGrant = grantedIds.includes(pid);
+      const isScrewer = isAllScrew && round.screw?.active && round.screw?.screwerId === pid;
+      const canGrant = isAllScrew && !kicked && !screwBlocked && !screwUsed && !hasGrant && !isScrewer && round.status === ROUND_STATUSES.OPEN;
       return `
         <div class="team-assignment-row per-player-row" data-per-player="${escapeHtml(pid)}">
           <strong>${escapeHtml(name)}</strong>
@@ -11598,8 +12269,17 @@ function renderPerPlayerHostControls(settings, players, controllerId) {
           </div>
           ${isCoopMode(settings) ? "" : `
           <div class="per-player-controls">
-            <button type="button" class="toggle-chip ${screwBlocked ? "is-off" : "is-on"}" data-screw-block="${escapeHtml(pid)}">Screw ${screwBlocked ? "blocked" : "allowed"}</button>
-            ${screwUsed ? `<button type="button" data-screw-refund="${escapeHtml(pid)}">Refund screw</button>` : ""}
+            ${isAllScrew
+              ? (hasGrant && !screwUsed
+                  ? `<button type="button" class="toggle-chip is-off" data-screw-revoke="${escapeHtml(pid)}">Revoke screw</button>`
+                  : screwUsed
+                    ? `<button type="button" data-screw-refund="${escapeHtml(pid)}">Refund screw</button>`
+                    : canGrant
+                      ? `<button type="button" class="screw-btn" data-screw-grant="${escapeHtml(pid)}">Give screw</button>`
+                      : `<span class="muted">${screwBlocked ? "Screw blocked" : kicked ? "Removed" : isScrewer ? "Screw in use" : "No screw"}</span>`
+                )
+              : `<button type="button" class="toggle-chip ${screwBlocked ? "is-off" : "is-on"}" data-screw-block="${escapeHtml(pid)}">Screw ${screwBlocked ? "blocked" : "allowed"}</button>
+                 ${screwUsed ? `<button type="button" data-screw-refund="${escapeHtml(pid)}">Refund screw</button>` : ""}`}
           </div>`}
         </div>
       `;
@@ -11780,8 +12460,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <div class="control-grid">
               <label>
                 Time open
-                <input type="number" min="1" max="120" step="1" value="${settings.timeOpen}" data-setting="timeOpen" ${settingDisabledAttr} ${episodeLockAttr("timeOpen")} />
-                <p class="setting-helper">How many seconds buzzers stay open each round.</p>
+                <select data-setting="timeOpen" ${settingDisabledAttr} ${episodeLockAttr("timeOpen")}>
+                  ${TIME_OPEN_OPTIONS.map((s) => `<option value="${s}" ${normalizeTimeOpen(settings.timeOpen) === s ? "selected" : ""}>${s === 0 ? "No timer" : `${s}s`}</option>`).join("")}
+                </select>
+                <p class="setting-helper">How many seconds buzzers stay open each round. No timer stays open until you pause or close it.</p>
               </label>
               <label>
                 Lock after buzz
@@ -11877,10 +12559,10 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 Scoring mode
                 <select data-setting="scoringMode" ${settingDisabledAttr} ${episodeLockAttr("scoringMode")}>
                   <option value="uniform" ${settings.scoringMode === "uniform" ? "selected" : ""}>Uniform (fixed points)</option>
-                  ${isCoopMode(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
+                  ${isCoopMode(settings) || !isMainTimerEnabled(settings) ? "" : `<option value="jack" ${settings.scoringMode === "jack" ? "selected" : ""}>JACK (time-based)</option>`}
                   <option value="roulette" ${settings.scoringMode === "roulette" ? "selected" : ""}>Pick-a-value (player-determined)</option>
                 </select>
-                <p class="setting-helper">How each buzz is valued.${isCoopMode(settings) ? " JACK is disabled in coopertition mode." : ""}</p>
+                <p class="setting-helper">How each buzz is valued.${isCoopMode(settings) ? " JACK is disabled in coopertition mode." : !isMainTimerEnabled(settings) ? " JACK needs a timer — pick a buzz time to enable it." : ""}</p>
               </label>
               ${
                 settings.scoringMode === "uniform"
@@ -12014,15 +12696,47 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 ${isCoopMode(settings)
                   ? `<p class="setting-helper">Off — screws are disabled in coopertition mode.</p>`
                   : toggleSwitch("allowScrewing", settings.allowScrewing)}
-                ${isCoopMode(settings) ? "" : `<p class="setting-helper">Players can force another player to answer under a 5s timer. Screwer gains 1000 if screwee gets it wrong, loses 1000 if they get it right.</p>`}
+                ${isCoopMode(settings) ? "" : `<p class="setting-helper">Players can force another player to answer under a ${getScrewTimerSec(settings)}s timer. Screwer gains ${getScrewBonus(settings)} if screwee gets it wrong, loses ${getScrewBonus(settings)} if they get it right.</p>`}
               </label>
               ${
-                settings.allowScrewing
+                settings.allowScrewing && !isCoopMode(settings)
                   ? `<label>
-                      Reopen buzzers after screw
-                      ${toggleSwitch("reopenBuzzersAfterScrew", settings.reopenBuzzersAfterScrew)}
-                      <p class="setting-helper">Instead of closing the round, reopen buzzers with the remaining time after a screw is ruled.</p>
-                    </label>`
+                       Screw mode
+                       <select data-setting="screwMode" ${settingDisabledAttr}>
+                         <option value="individual" ${settings.screwMode === "individual" ? "selected" : ""}>Individual (pick a victim)</option>
+                         <option value="all" ${settings.screwMode === "all" ? "selected" : ""}>All screw (host hands out)</option>
+                       </select>
+                       <p class="setting-helper">Individual: pick one victim. All screw: hand out single-use screws; using one scrambles everyone else's answers, screwer gains 300 per wrong answer.</p>
+                     </label>`
+                  : ""
+              }
+              ${
+                settings.allowScrewing && settings.screwMode === "individual"
+                  ? `<label>
+                       Reopen buzzers after screw
+                       ${toggleSwitch("reopenBuzzersAfterScrew", settings.reopenBuzzersAfterScrew)}
+                       <p class="setting-helper">Instead of closing the round, reopen buzzers with the remaining time after a screw is ruled.</p>
+                     </label>
+                     <label>
+                       Auto-start screw timer
+                       ${toggleSwitch("screwAutoStart", getScrewAutoStart(settings))}
+                       <p class="setting-helper">Start the countdown as soon as a victim is picked. Off = host presses Start Timer.</p>
+                     </label>
+                     <label>
+                       Screw timer (sec)
+                       <input type="number" min="3" max="30" step="1" value="${getScrewTimerSec(settings)}" data-setting="screwTimerSec" ${settingDisabledAttr} />
+                       <p class="setting-helper">How long the screwed player has to answer (3–30s).</p>
+                     </label>
+                     <label>
+                       Screw bonus
+                       <input type="number" min="0" max="5000" step="100" value="${getScrewBonus(settings)}" data-setting="screwBonus" ${settingDisabledAttr} />
+                       <p class="setting-helper">Mirror swing: screwer gains this on a screwee miss, loses it on a screwee hit (0–5000).</p>
+                     </label>`
+                  : ""
+              }
+              ${
+                settings.allowScrewing && settings.screwMode === "all" && settings.inputMode === "text"
+                  ? `<p class="setting-helper" style="color:#eb3d30">All screw is unavailable in text entry mode.</p>`
                   : ""
               }
               <label>
@@ -12085,7 +12799,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </div>
               <div>
                 <button type="button" data-set-mode="disordat" ${settingDisabledAttr} ${settings.inputMode === "disordat" || isCoopMode(settings) ? "disabled" : ""}>Dis or Dat</button>
-                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${settings.disOrDatTimedSeconds || 30}-second race (30-second games carry a finish-fast bonus; longer timed games score no time bonus); Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
+                <p class="setting-helper">The YDKJ classic itself! You read 7 things aloud; players answer Dis, Dat, or Both on their devices. Set the correct answer for each question first, then pick a mode. Timed (One Play or All Play) is a ${Number(settings.disOrDatTimedSeconds ?? 30) === 0 ? "no-timer" : `${settings.disOrDatTimedSeconds || 30}-second`} race (30-second games carry a finish-fast bonus; longer timed games score no time bonus); Host Paced advances each question manually. (in every JACK game, One play recommended for small games, All play recommended for large games, may not be as enjoyable in team mode, but hey, im not your parental figure)${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
               <div>
                 <button type="button" data-set-mode="fibbage" ${settingDisabledAttr} ${settings.inputMode === "fibbage" || isCoopMode(settings) ? "disabled" : ""}>Fibbage</button>
@@ -12129,7 +12843,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
             <button type="button" data-host-action="pause" ${round.status !== ROUND_STATUSES.OPEN ? "disabled" : ""} ${round.status === ROUND_STATUSES.LOCKED ? `title="Timer is already paused for the ruling"` : ""}>Pause Timer</button>
             <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === "open" || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
             <button type="button" data-host-action="reset">Next Round</button>
-            ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings)
+            ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings) && settings.screwMode === "individual"
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
               : ""}
             <button type="button" data-host-action="reset-screws">Refund Screws</button>
@@ -12140,17 +12854,33 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
         ${settings.allowScrewing && settings.inputMode !== "bingo" && settings.inputMode !== "wendithapn" && settings.inputMode !== "disordat" && players.length > 0
           ? `<div class="screw-status" style="margin-top:0.4rem;font-size:0.82rem">
               <span class="muted">Screw status:</span>
-              ${players
-                .filter(p => p.id !== controllerId)
-                .map(p => `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:${round.screwsUsedBy?.includes(p.id) ? "rgba(235,61,48,0.2)" : "rgba(29,185,84,0.2)"}">${escapeHtml(getPlayerName(p))}</span>`)
-                .join("")}
+              ${settings.screwMode === "all"
+                ? (() => {
+                    const round = getRound();
+                    const granted = round.screw?.grantedPlayerIds || [];
+                    const used = round.screwsUsedBy || [];
+                    return players
+                      .filter(p => p.id !== controllerId)
+                      .map(p => {
+                        const pid = p.id;
+                        const name = getPlayerName(p);
+                        if (used.includes(pid)) return `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:rgba(235,61,48,0.2)">${escapeHtml(name)} (used)</span>`;
+                        if (granted.includes(pid)) return `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:rgba(255,193,7,0.2)">${escapeHtml(name)} (granted)</span>`;
+                        return `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:rgba(29,185,84,0.2)">${escapeHtml(name)}</span>`;
+                      })
+                      .join("");
+                  })()
+                : players
+                  .filter(p => p.id !== controllerId)
+                  .map(p => `<span style="display:inline-block;margin:0 0.3rem 0.2rem 0;padding:0.1rem 0.4rem;border-radius:4px;background:${round.screwsUsedBy?.includes(p.id) ? "rgba(235,61,48,0.2)" : "rgba(29,185,84,0.2)"}">${escapeHtml(getPlayerName(p))}</span>`)
+                  .join("")}
             </div>`
           : ""}
       </div>
 
       <div class="status-strip">
         <span>Status: <strong>${statusText}</strong></span>
-        <span>Time left: <strong data-live-time-left>${formatSeconds(timeLeftCs)}s</strong></span>
+        <span>Time left: <strong data-live-time-left>${timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`}</strong></span>
         ${settings.scoringMode === "roulette" && round.roulette?.finalValue !== null && round.roulette?.finalValue !== undefined
           ? `<span>Final value: <strong>${round.roulette.finalValue}</strong></span>`
           : ""}
@@ -12177,41 +12907,66 @@ function renderScrewNotice(round) {
   if (!hasHostPrivileges() || !round.screw?.active) {
     return "";
   }
+  const settings = getSettings();
+  const timerSec = getScrewTimerSec(settings);
 
-  // Screw is active but screwee not selected yet
+  // All-screw mode: no victim selection, no timer
+  if (round.screw.kind === "all") {
+    const screwerName = round.screw.screwerName || "A player";
+    const otherCount = currentParticipants().filter(p =>
+      p.id !== round.screw.screwerId &&
+      p.id !== getControllerId() &&
+      !(Array.isArray(getSafeState("producerIds", [])) && getSafeState("producerIds", []).includes(p.id)) &&
+      !(Array.isArray(settings.disabledPlayerIds) && settings.disabledPlayerIds.includes(p.id)) &&
+      !isPlayerKicked(p.id, settings)
+    ).length;
+    return `
+      <section class="card screw-card">
+        <h3>All Screw Active</h3>
+        <p><strong>${escapeHtml(screwerName)}</strong> used an All Screw!</p>
+        <p class="muted">${otherCount} other player${otherCount !== 1 ? "s" : ""} have scrambled answers.</p>
+        <p class="muted">Screwer gains ${ALL_SCREW_WRONG_BONUS} per wrong answer.</p>
+        <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel All Screw</button></div>
+      </section>
+    `;
+  }
+
+  // Screw is active but screwee not selected yet (individual mode)
   if (!round.screw?.screweeId) {
+    // ... existing code
     const isScrewer = round.screw?.screwerId === me()?.id;
-    if (isScrewer) {
-      const controllerId = getControllerId();
-      const producerIds = getSafeState("producerIds", []);
-      const targets = currentParticipants()
-        .filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)) && p.id !== round.screw?.screwerId);
+    if (isScrewer || isHost()) {
+      const targets = getScrewEligibleVictims(round.screw?.screwerId, { settings });
       const targetButtons = targets.map(p =>
         `<button type="button" data-screw-player="${p.id}">${escapeHtml(getPlayerName(p))}</button>`
-      ).join("");
+      ).join("") || `<p class="muted">No eligible targets.</p>`;
       return `
         <section class="card screw-card">
           <h3>Select a Target</h3>
           <p>Choose a player to screw:</p>
           <div class="screw-player-list">${targetButtons}</div>
+          <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
         </section>
       `;
     }
     return `
       <section class="card screw-card">
         <h3>Screw In Progress</h3>
-        <p><strong>${round.screw.screwerName}</strong> is selecting a target...</p>
+        <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is selecting a target...</p>
+        <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
       </section>
     `;
   }
 
   // Screwee selected but timer not started yet
   if (round.screw.screwTimerMs === null) {
+    const screweeName = getScrewScreweeName(round.screw);
     return `
       <section class="card screw-card">
         <h3>Screw Status</h3>
-        <p><strong>${round.screw.screwerName}</strong> is screwing over <strong>${round.screw.screeeName}</strong>!</p>
-        <button type="button" class="green" data-screw-start-timer>Start Timer (5s)</button>
+        <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(screweeName)}</strong>!</p>
+        <button type="button" class="green" data-screw-start-timer>Start Timer (${timerSec}s)</button>
+        <button type="button" data-screw-cancel>Cancel</button>
       </section>
     `;
   }
@@ -12221,8 +12976,9 @@ function renderScrewNotice(round) {
   return `
     <section class="card screw-card">
       <h3>Screw Timer</h3>
-      <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(round.screw.screeeName)}</strong>.</p>
+      <p><strong>${escapeHtml(round.screw.screwerName)}</strong> is screwing over <strong>${escapeHtml(getScrewScreweeName(round.screw))}</strong>.</p>
       <p>Time left: <strong data-screw-timer>${timeText}s</strong></p>
+      <div style="margin-top:0.5rem"><button type="button" data-screw-cancel>Cancel screw</button></div>
     </section>
   `;
 }
@@ -12415,6 +13171,109 @@ function renderScores(players, scores, extraClass = "") {
   `;
 }
 
+// Alliance teammate strip — player screens only, shown instead of the hidden
+// panel when the global scoreboard is off. Lists just the viewer's own
+// alliance (individual scores + alliance total). Teams of 3 or fewer get the
+// coop face avatars in a horizontal strip (animated buzz/correct/wrong via
+// the shared face pipeline); larger teams fall back to rank badges in a
+// vertical list. Face seats follow join order — earliest-joined teammate
+// skates as 1, then 2, 3. Member rows carry
+// data-score-key/data-score-value so score-delta pills animate.
+function renderAllianceTeammateCard(players, scores) {
+  try {
+    if (hasHostPrivileges()) return "";
+    if (isAudienceDisplayClient()) return "";
+    const settings = getSettings();
+    if (!isAllianceTeammatesMode(settings)) return "";
+    if (settings.showScoresToPlayers) return "";
+    const mePlayer = me();
+    if (!mePlayer || mePlayer.id === getControllerId()) return "";
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), players, getControllerId());
+    const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+    if (!myTeamColor) return "";
+    const members = getTeamMembers(myTeamColor, players, assignments);
+    if (members.length === 0) return "";
+    const round = getRound();
+    // Face seats follow join order: earliest-joined teammate skates as 1,
+    // then 2, 3. Larger teams keep the score-sorted leaderboard below.
+    const useFaces = members.length <= 3;
+    const rows = members
+      .map((m) => ({ m, value: Number(scores[m.id] || 0) }))
+      .sort((a, b) => (useFaces ? compareJoinOrder(a.m.id, b.m.id) : b.value - a.value))
+      .map(({ m, value }, index) => {
+        let badge = "";
+        if (useFaces) {
+          badge = getCoopCharHtml(index, getCoopCharMoodForKey(m.id, round), "", m.id);
+        }
+        if (!badge) badge = getRankBadgeHtml(index + 1);
+        const you = m.id === mePlayer.id ? ` <small>(${getSnark("shared.scores.teammatesYou", "you")})</small>` : "";
+        return `<li data-score-key="${escapeHtml(m.id)}"><span class="teammate-line">${badge}<span class="teammate-name">${escapeHtml(getPlayerName(m))}${you}</span></span><strong data-score-value>${value}</strong></li>`;
+      })
+      .join("");
+    const total = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
+    return `
+    <section class="card score-card alliance-teammates" data-alliance-teammates="${escapeHtml(myTeamColor)}">
+      <h2>${getSnark("shared.scores.teammatesTitle", "Your alliance")} <span class="team-pill team-${myTeamColor}">${myTeamColor}</span></h2>
+      <ul${useFaces ? ` class="teammate-faces"` : ""}>${rows}</ul>
+      <p class="muted">${getSnark("shared.scores.teammatesTotal", "Alliance total")}: <strong data-score-value>${total}</strong></p>
+    </section>
+    `;
+  } catch { return ""; }
+}
+
+// Roster flash: brief background wash when the viewer's own team changes.
+// Local-only (module vars, never shared) — host/producer/audience/tablet
+// clients carry no team, so only player screens ever flash. The persistent
+// #roster-flash layer (created at boot, outside #app) survives full
+// innerHTML re-renders mid-fade.
+let lastRosterFlashKey = null;
+let rosterFlashCount = 0; // test-seam counter (the DOM layer is stubbed out in tests)
+let rosterFlashTimeout = null;
+// The viewer's own team color, or null when this screen has no team context
+// (host/producer/audience/controller) — those screens never flash.
+function myRosterFlashKey() {
+  try {
+    const self = me();
+    if (!self?.id || self.id === getControllerId()) return null;
+    if (isAudienceDisplayClient()) return null;
+    if (hasHostPrivileges()) return null;
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+    return String(getPlayerTeamColor(self.id, assignments) || "");
+  } catch { return null; }
+}
+function ensureRosterFlashLayer() {
+  try {
+    let layer = document.getElementById("roster-flash");
+    if (layer) return layer;
+    layer = document.createElement("div");
+    layer.id = "roster-flash";
+    document.body.appendChild(layer);
+    return layer;
+  } catch { return null; }
+}
+function flashRosterBackground() {
+  try {
+    rosterFlashCount++;
+    const layer = ensureRosterFlashLayer();
+    if (!layer || !layer.classList) return;
+    layer.classList.remove("is-flashing");
+    void layer.offsetWidth;
+    layer.classList.add("is-flashing");
+    clearTimeout(rosterFlashTimeout);
+    rosterFlashTimeout = setTimeout(() => { try { layer.classList.remove("is-flashing"); } catch {} }, 950);
+  } catch {}
+}
+function maybeFlashRosterBackground() {
+  try {
+    const key = myRosterFlashKey();
+    // No team context (host/audience/etc.): sit out without disturbing the
+    // last-seen key — each client only ever renders its own view.
+    if (key === null) return;
+    if (lastRosterFlashKey !== null && key !== lastRosterFlashKey && gameLaunched) flashRosterBackground();
+    lastRosterFlashKey = key;
+  } catch {}
+}
+
 // =============================================================================
 // Game log — reverse-chronological list of every buzz, editable by host
 // =============================================================================
@@ -12548,7 +13407,7 @@ function render() {
   let scoreDeltas = null;
   try { if (!isAudienceDisplayClient()) scoreDeltas = trackScoreSnapshot(scores); } catch {}
   const gameLog = getLog();
-  const timeLeftCs = round.screw?.active && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
+  const timeLeftCs = isVictimScrewActive(round) && round.screw.frozenCs != null ? round.screw.frozenCs : getTimeLeftCs(round, settings);
   const pendingLogId = getSafeState("pendingLogId", null);
   const pendingEntry = gameLog.find((entry) => entry.id === pendingLogId) || null;
   const controller = getController();
@@ -12566,6 +13425,8 @@ function render() {
   } else {
     document.body.dataset.uiAnims = "off";
   }
+  // Background wash when the viewer's own team changed since last render.
+  try { maybeFlashRosterBackground(); } catch {}
 
   if (isAudienceDisplayClient()) {
     const buzzedCount = (round.buzzedPlayerIds || []).length;
@@ -12598,7 +13459,7 @@ function render() {
     const tsBody = showAdminData ? `
       ${renderTeamSelectHostPanel(settings, round, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -12636,7 +13497,7 @@ function render() {
     const bingoBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -12644,7 +13505,7 @@ function render() {
       <section class="grid grid-single">
         ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+        ${showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")))}
       </section>` ;
     const _html_bingo = `
       <main class="layout" data-bingo-active="true">
@@ -12672,7 +13533,7 @@ function render() {
     const ddBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${renderScores(players, scores, "score-card-host")}
       </section>
@@ -12680,7 +13541,7 @@ function render() {
       <section class="grid grid-single">
         ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
-        ${showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))}
+        ${showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")))}
       </section>` ;
     const _html_disordat = `
       <main class="layout" data-disordat-active="true">
@@ -12707,11 +13568,11 @@ function render() {
   if (isFibbageMode()) {
     const hideScores = shouldHideFibbageScores();
     const fibScoresHost = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : renderScores(players, scores, "score-card-host");
-    const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
+    const fibScoresPlayer = hideScores ? renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), "Scores hidden during Fibbage round.") : (showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."))));
     const fibBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${fibScoresHost}
       </section>
@@ -12745,11 +13606,11 @@ function render() {
 
   if (isQuixortMode()) {
     const qxScoresHost = renderScores(players, scores, "score-card-host");
-    const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now."));
+    const qxScoresPlayer = showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")));
     const qxBody = showAdminData ? `
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid">
         ${qxScoresHost}
       </section>
@@ -12799,13 +13660,13 @@ function render() {
       
       ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
       ${renderBroadcastHostCard()}
-      ${renderEpisodeRunnerCard()}
+      ${renderEpisodeHostCard()}
       <section class="grid ${showAdminData ? "" : "grid-single"}">
         ${renderEpisodePromptBanner()}
         ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
         ${(showAdminData || showScoresToPlayers)
           ? renderScores(players, scores, showAdminData ? "score-card-host" : "")
-          : renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable."))}
+          : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHiddenLong", "Only the Host can view scores right now, if you want to see them, ask the Host to enable.")))}
       </section>
 
       ${showAdminData ? renderAnalyticsCard(false) : ""}
@@ -12945,7 +13806,7 @@ function bindEvents() {
   const requireHost = (fn) => (e, target) => { if (!hasHostPrivileges()) return; fn(e, target); };
   delegate("change", "[data-setting]", requireHost((e, input) => {
     const setting = input.dataset.setting;
-    if (setting === "timeOpen") { setHostSetting("timeOpen", clamp(parseInt(input.value, 10) || 20, 1, 120)); return; }
+    if (setting === "timeOpen") { setHostSetting("timeOpen", normalizeTimeOpen(input.value)); return; }
     if (setting === "inputMode") { setHostSetting("inputMode", input.value); return; }
     if (setting === "optionCount") { setHostSetting("optionCount", Number(input.value)); return; }
     if (setting === "scoringMode") { setHostSetting("scoringMode", input.value === "jack" ? "jack" : input.value === "roulette" ? "roulette" : "uniform"); return; }
@@ -12958,6 +13819,8 @@ function bindEvents() {
     if (setting === "snarkMode") { setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off"); return; }
     if (setting === "choiceLayout") { setHostSetting("choiceLayout", normalizeChoiceLayout(input.value)); return; }
     if (setting === "maxBuzzesPerOption") { setHostSetting("maxBuzzesPerOption", clamp(parseInt(input.value, 10) || 1, 1, 50)); return; }
+    if (setting === "screwTimerSec") { setHostSetting("screwTimerSec", normalizeScrewTimerSec(input.value)); return; }
+    if (setting === "screwBonus") { setHostSetting("screwBonus", normalizeScrewBonus(input.value)); return; }
   }));
   delegate("click", "[data-toggle-setting]", requireHost((e, btn) => {
     const setting = btn.dataset.toggleSetting;
@@ -13071,6 +13934,16 @@ function bindEvents() {
     updateScoresForLogEntry(id, btn.dataset.logQuick === "plus" ? entry.basePoints : -entry.basePoints);
   }));
   delegate("click", "[data-screw-start-timer]", requireHost(() => startScrewTimer()));
+  delegate("click", "[data-screw-cancel]", async () => {
+    if (hasHostPrivileges()) { cancelScrew(); return; }
+    const self = me();
+    if (!self) return;
+    try {
+      const result = await RPC.call("screw", { cancel: true }, RPC.Mode.HOST);
+      if (!result?.ok) setBuzzNotice(result?.reason || "Cancel failed.");
+    } catch { setBuzzNotice("Could not cancel screw. Check connection/room."); }
+    scheduleRender(render);
+  });
 
   // Player screw
   delegate("click", "[data-screw]", async () => {
@@ -13430,6 +14303,63 @@ function bindEvents() {
   });
   delegate("click", "[data-ep-run-end]", () => {
     episodeRunEnd();
+  });
+
+  // --- Episode load in-game (host only; live attach) ---
+  delegate("click", "[data-ep-load-file]", () => {
+    try { document.querySelector("#ep-load-file")?.click(); } catch {}
+  });
+  delegate("change", "#ep-load-file", (e, input) => {
+    const file = input?.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = epParseImportText(String(reader.result || ""));
+      if (result.ok && result.episode) {
+        const res = attachEpisode(result.episode);
+        if (res.ok) showToast(`Attached "${result.episode.meta?.title || "episode"}" (${result.episode.items.length} questions).`);
+        else showToast(res.reason || "Attach failed.", { variant: "error" });
+      } else {
+        showToast(result.errorMessage || "Could not attach that file.", { variant: "error" });
+      }
+      try { input.value = ""; } catch {}
+    };
+    reader.onerror = () => showToast("Could not read that file.", { variant: "error" });
+    try { reader.readAsText(file); } catch { showToast("Could not read that file.", { variant: "error" }); }
+  });
+  delegate("click", "[data-ep-load-draft]", () => {
+    const draft = epLoadDraft();
+    const check = epValidateEpisode(draft);
+    if (!check.ok) {
+      showToast(`Creator draft has ${check.errors.length} problem${check.errors.length === 1 ? "" : "s"} — fix it in the creator first.`, { variant: "error" });
+      return;
+    }
+    const res = attachEpisode(draft);
+    if (res.ok) showToast(`Attached "${draft.meta?.title || "Untitled"}".`);
+    else showToast(res.reason || "Attach failed.", { variant: "error" });
+  });
+  delegate("click", "[data-ep-load-cloud-retry]", () => {
+    probeEpisodeCloud(true);
+  });
+  delegate("click", "[data-ep-load-cloud]", async () => {
+    if (!episodeCloudEnabled) return;
+    let code = "";
+    try { code = String(document.querySelector("#ep-load-code")?.value || "").trim().toUpperCase(); } catch {}
+    if (!code) { showToast("Enter a cloud share code first.", { variant: "error" }); return; }
+    try {
+      const { episode } = await epCloudLoad(code);
+      const check = epValidateEpisode(episode);
+      if (!check.ok) throw new Error("That episode failed validation.");
+      const res = attachEpisode(episode);
+      if (res.ok) {
+        try { const input = document.querySelector("#ep-load-code"); if (input) input.value = ""; } catch {}
+        showToast(`Attached "${episode.meta?.title || "episode"}" (${episode.items.length} questions).`);
+      } else {
+        showToast(res.reason || "Attach failed.", { variant: "error" });
+      }
+    } catch (e) {
+      showToast(e?.message || "Load failed.", { variant: "error" });
+    }
   });
 
   // --- Episode attach on the host prejoin form ---
@@ -13926,6 +14856,7 @@ async function submitDisOrDatClaim(q, slot = null) {
   } catch { setBuzzNotice(getSnark("player.disdat.answerSendFailed", "Could not send answer.")); }
   scheduleRender(render);
 }
+
 // =============================================================================
 // Returns true when the user is focused on an input (to ignore space key)
 // =============================================================================
@@ -14480,6 +15411,24 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
       return { ok: false, reason: "Not host" };
     }
     const round = getRound();
+    // Screwer (or producer) cancels their own pending screw.
+    if (payload?.cancel === true) {
+      if (!round.screw?.active) {
+        return { ok: false, reason: getSnark("player.screw.noScrewInProgress", "No screw in progress") };
+      }
+      const producerIds = getSafeState("producerIds", []);
+      const isSenderProducer = Array.isArray(producerIds) && producerIds.includes(senderPlayer?.id);
+      if (senderPlayer?.id !== round.screw?.screwerId && !isSenderProducer) {
+        return { ok: false, reason: "Only the screwer can cancel." };
+      }
+      return cancelScrew();
+    }
+
+    // All-screw initiation
+    if (payload?.all === true) {
+      return initiateAllScrew(senderPlayer.id);
+    }
+
     const screweeId = payload?.screweeId;
 
     // If screweeId is null, player is initiating a screw (first step)
@@ -14536,7 +15485,7 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
   // Producer actions RPC — relays producer UI actions through the host
   const HOST_ACTIONS = {
     openBuzzers, closeBuzzers, pauseBuzzers, resumeBuzzers, resetRound, resetScrews,
-    startRoulettePhase, startScrewTimer, closeScrewMode,
+    startRoulettePhase, startScrewTimer, closeScrewMode, cancelScrew,
     initiateScrew, selectScrewee,
     startBingo, endBingo, setBingoTarget, startBingoCycling, stopBingoCycling,
     setHostSetting, toggleBuzzerOption, togglePlayerBuzzer, toggleCoopSlot,
@@ -14708,6 +15657,7 @@ function boot() {
   renderPrejoinScreen();
   probeRankBadges();
   probeCoopChars();
+  try { ensureRosterFlashLayer(); } catch (e) { console.warn("[boot] roster flash layer failed", e); }
 }
 
 
@@ -14729,8 +15679,24 @@ try {
     },
     pruneGraceTicks: HOST_PRUNE_GRACE_TICKS,
     retainTicks: HOST_RETAIN_TICKS,
+    hostTick,
+    renderNow: () => { render(); },
+    getTimeLeftCs,
+    normalizeTimeOpen,
+    setFibbageLieTime,
+    setFibbageVoteTime,
+    normalizeFibbageLieTime,
+    normalizeFibbageTime,
+    normalizeQuixortBlockSec,
+    getFibbageLieTimeLeftCs,
+    getFibbageVoteTimeLeftCs,
+    getDisOrDatTimeLeftCs,
+    getDisOrDatTimedSeconds,
+    isDisOrDatBonusEligible,
+    getQuixortRunTimeLeftCs,
     getCoopCharMoodForKey,
     getCoopCharHtml,
+    getRosterFlashCount: () => rosterFlashCount,
     getCoopFaceKey,
     isFreshCoopFace,
     resetCoopFaceSeen: () => { coopFaceSeen.clear(); coopFaceHeld.clear(); },

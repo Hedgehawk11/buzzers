@@ -28,9 +28,9 @@ export const EPISODE_LABEL_MAX = 120;
 // Mirrors main.js: optionCount choices, text/fibbage 120ch trims.
 export const EPISODE_OPTION_COUNTS = [1, 2, 4, 6, 8];
 export const EPISODE_TEXT_MAX = 120;
-// Mirrors FIBBAGE_LIE_TIMES / FIBBAGE_TIMES / FIBBAGE_MAX_MULT.
-export const EPISODE_FIBBAGE_LIE_TIMES = [30, 45, 60, 90];
-export const EPISODE_FIBBAGE_VOTE_TIMES = [30, 45, 60];
+// Mirrors FIBBAGE_LIE_TIMES / FIBBAGE_TIMES / FIBBAGE_MAX_MULT (0 = no timer).
+export const EPISODE_FIBBAGE_LIE_TIMES = [0, 30, 45, 60, 90];
+export const EPISODE_FIBBAGE_VOTE_TIMES = [0, 30, 45, 60];
 export const EPISODE_FIBBAGE_MAX_MULT = 5;
 // Mirrors QUIXORT_MIN/MAX_ITEMS, QUIXORT_MAX_TRASH, QUIXORT_MAX_TEXT,
 // QUIXORT_MAX_MULT, QUIXORT_BLOCK_SECONDS_OPTIONS.
@@ -39,7 +39,7 @@ export const EPISODE_QUIXORT_MAX_ITEMS = 9;
 export const EPISODE_QUIXORT_MAX_TRASH = 3;
 export const EPISODE_QUIXORT_TEXT_MAX = 120;
 export const EPISODE_QUIXORT_MAX_MULT = 5;
-export const EPISODE_QUIXORT_BLOCK_SECS = [15, 20, 30, 45, 60];
+export const EPISODE_QUIXORT_BLOCK_SECS = [0, 15, 20, 30, 45, 60];
 // Mirrors DIS_OR_DAT_QUESTION_COUNT.
 export const EPISODE_DISORDAT_COUNT = 7;
 export const EPISODE_DISORDAT_ANSWER_VALUES = ["dis", "dat", "both"];
@@ -422,7 +422,7 @@ function validateSettingsBlock(obj, path, errors) {
   }
   if (obj.timeOpen !== undefined) {
     const t = Number(obj.timeOpen);
-    if (!Number.isFinite(t) || t < 1 || t > 600) errors.push(err(-1, null, `${path}.timeOpen`, "timeOpen must be 1–600 seconds."));
+    if (!Number.isFinite(t) || t < 0 || t > 600) errors.push(err(-1, null, `${path}.timeOpen`, "timeOpen must be 0 (no timer) or 1–600 seconds."));
   }
   if (obj.maxBuzzesPerOption !== undefined) {
     const m = Number(obj.maxBuzzesPerOption);

@@ -477,6 +477,7 @@ if (COOP) {
   check("host screw button hidden in coop", !mount.innerHTML.includes("Screw a Player"), "button present");
 } else {
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["allowScrewing", true] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwMode", "individual"] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
   check("host screw button visible off-coop", mount.innerHTML.includes("Screw a Player"), "button missing");
   const screwRes = await pk._store.rpc.screw({ screweeId: null }, dev1);
@@ -1114,6 +1115,82 @@ check("screw victim hijack rejected", hijack?.ok === false, JSON.stringify(hijac
 check("hijack left no screwee", S().round?.screw?.screweeId == null, JSON.stringify(S().round?.screw?.screweeId));
 const legitPick = await pk._store.rpc.screw({ screweeId: "dev3" }, plain);
 check("screwer picks victim", legitPick?.ok === true, JSON.stringify(legitPick));
+check("auto-start timer on pick", typeof S().round?.screw?.screwTimerEndsAt === "number" && (S().round?.screw?.screwTimerMs || 0) > 0, JSON.stringify(S().round?.screw));
+check("screweeName spelled right", S().round?.screw?.screweeName != null && S().round?.screw?.screeeName === undefined, JSON.stringify(S().round?.screw));
+// --- revamp: cancel path does not consume the use ---
+await pk._store.rpc["producer-action"]({ fn: "cancelScrew", args: [] }, prod);
+check("cancel clears screw", S().round?.screw?.active !== true, JSON.stringify(S().round?.screw));
+check("cancel spares use", !(S().round?.screwsUsedBy || []).includes(plain.id), JSON.stringify(S().round?.screwsUsedBy));
+check("cancel keeps idle shape", S().round?.screw?.screwTimerEndsAt === null && S().round?.screw?.screweeName === null && S().round?.screw?.frozenCs === null, JSON.stringify(S().round?.screw));
+// --- revamp: configurable timer + bonus (clamped) ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwTimerSec", 8] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwBonus", 500] }, prod);
+check("screw timer setting stored", S().settings?.screwTimerSec === 8, JSON.stringify(S().settings?.screwTimerSec));
+check("screw bonus setting stored", S().settings?.screwBonus === 500, JSON.stringify(S().settings?.screwBonus));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwTimerSec", 99] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwBonus", -5] }, prod);
+check("screw timer clamped", S().settings?.screwTimerSec === 30, JSON.stringify(S().settings?.screwTimerSec));
+check("screw bonus clamped", S().settings?.screwBonus === 0, JSON.stringify(S().settings?.screwBonus));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwTimerSec", 8] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwBonus", 500] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.screw({ screweeId: null }, plain);
+await pk._store.rpc.screw({ screweeId: "dev3" }, plain);
+check("custom timer length honored", (S().round?.screw?.screwTimerMs || 0) === 8000, JSON.stringify(S().round?.screw?.screwTimerMs));
+await pk._store.rpc["producer-action"]({ fn: "cancelScrew", args: [] }, prod);
+// --- revamp: manual timer mode (auto-start off) ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwAutoStart", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.screw({ screweeId: null }, plain);
+await pk._store.rpc.screw({ screweeId: "dev3" }, plain);
+check("manual mode waits for start", S().round?.screw?.screwTimerMs === null, JSON.stringify(S().round?.screw?.screwTimerMs));
+await pk._store.rpc["producer-action"]({ fn: "startScrewTimer", args: [] }, prod);
+check("manual start runs timer", (S().round?.screw?.screwTimerMs || 0) > 0, JSON.stringify(S().round?.screw?.screwTimerMs));
+await pk._store.rpc["producer-action"]({ fn: "cancelScrew", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwAutoStart", true] }, prod);
+// --- revamp: victim filter (disabled/kicked cannot be picked) ---
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.screw({ screweeId: null }, plain);
+await pk._store.rpc["producer-action"]({ fn: "togglePlayerBuzzer", args: ["dev3"] }, prod);
+const disabledPick = await pk._store.rpc.screw({ screweeId: "dev3" }, plain);
+check("disabled victim rejected", disabledPick?.ok === false, JSON.stringify(disabledPick));
+await pk._store.rpc["producer-action"]({ fn: "togglePlayerBuzzer", args: ["dev3"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "cancelScrew", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwTimerSec", 5] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["screwBonus", 1000] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.screw({ screweeId: null }, plain);
+check("host cancel offered pre-pick", _mount.innerHTML.includes("data-screw-cancel"), "cancel missing");
+await pk._store.rpc.screw({ screweeId: "dev3" }, plain);
+check("host cancel offered mid-screw", _mount.innerHTML.includes("data-screw-cancel"), "cancel missing mid-screw");
+// screwee view renders + can buzz (buttons, then text) — guards screwee-panel typos
+pk._store.isHost = false;
+pk._store.self = pk._store.participants.dev3;
+clickBtn({}, "[data-f-you-close]");
+await sleep(20);
+check("screwee panel renders", _mount.innerHTML.includes("Being Screwed"), "screwee panel missing");
+check("screwee can buzz", _mount.innerHTML.includes('data-buzz="1"') || _mount.innerHTML.includes("data-buzz"), "screwee buzz missing");
+pk._store.isHost = true;
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc.buzz({ option: 1 }, pk._store.participants.dev3);
+pk._store.isHost = false;
+pk._store.self = pk._store.participants.dev3;
+clickBtn({}, "[data-f-you-close]");
+await sleep(20);
+check("screwee panel closes after buzz", !_mount.innerHTML.includes("Answer quickly!"), "buzz panel stuck open");
+check("screwee sees ruling wait", _mount.innerHTML.includes("ruling") || _mount.innerHTML.includes("submitted"), "wait state missing");
+pk._store.isHost = true;
+pk._store.self = pk._store.participants.host1;
+await pk._store.rpc["producer-action"]({ fn: "cancelScrew", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc.screw({ screweeId: null }, plain);
+const strangerCancel = await pk._store.rpc.screw({ cancel: true }, dev2);
+check("stranger cancel rejected", strangerCancel?.ok === false, JSON.stringify(strangerCancel));
+check("stranger cancel keeps screw", S().round?.screw?.active === true, JSON.stringify(S().round?.screw));
+const selfCancel = await pk._store.rpc.screw({ cancel: true }, plain);
+check("screwer self-cancel ok", selfCancel?.ok === true, JSON.stringify(selfCancel));
+check("self-cancel clears screw", S().round?.screw?.active !== true, JSON.stringify(S().round?.screw));
+check("self-cancel spares use", !(S().round?.screwsUsedBy || []).includes(plain.id), JSON.stringify(S().round?.screwsUsedBy));
 // --- regression: resetRound null-invariant ---
 await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
 check("reset clears coopControl", S().round?.coopControl === null, JSON.stringify(S().round?.coopControl));
@@ -1335,6 +1412,198 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScori
   check("alliance totals above player scores", totalsIdx !== -1 && playerIdx !== -1 && totalsIdx < playerIdx, `totals=${totalsIdx} player=${playerIdx}`);
 }
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "shared"] }, prod);
+// --- alliance teammate strip: teammates see each other when global scores hide ---
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "alliance"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToPlayers", false] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", true] }, prod);
+for (const pid of Object.keys(pk._store.participants)) {
+  if (pid === "host1" || pid === "prod1") continue;
+  const color = pid === "dev1" || pid === "dev2" ? "red" : "blue";
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: [pid, color] }, prod);
+}
+// pin join order deterministically (host assigns first-seen sequence)
+globalThis.__BUZZER_TEST__.ensureHostInit();
+S().scores = { dev1: 100, dev2: 200, dev3: 300 };
+{
+  const T = globalThis.__BUZZER_TEST__;
+  T.setCoopCharArt(1, "base", "/1.png");
+  T.setCoopCharArt(2, "base", "/2.png");
+  T.setCoopCharArt(1, "buzz", "/1-buzz.png", 4);
+  T.setCoopCharArt(2, "buzz", "/2-buzz.png", 4);
+  T.setCoopCharArt(2, "correct", "/2-correct.png", 4);
+  T.setCoopCharArt(1, "wrong", "/1-wrong.png", 4);
+  T.setCoopCharArt(2, "wrong", "/2-wrong.png", 4);
+  T.setCoopCharArt(3, "base", "/3.png");
+}
+const viewAs = (pid, host = false) => {
+  pk._store.self = pk._store.participants[pid];
+  pk._store.isHost = host;
+  globalThis.__BUZZER_TEST__.renderNow();
+};
+viewAs("dev1");
+await sleep(50);
+{
+  const html = _mount.innerHTML;
+  check("teammate strip renders for alliance member", html.includes('data-alliance-teammates="red"'), `html len=${html.length}`);
+  check("teammate sees ally score", html.includes('data-score-key="dev2"') && html.includes(">200<"), "dev2 row missing");
+  check("teammate hides other alliance", !html.includes('data-score-key="dev3"'), "dev3 leaked");
+  check("small alliance uses faces", html.includes("coop-avatar"), "no faces on 2-member strip");
+  check("small alliance lays out horizontally", html.includes("teammate-faces"), "no horizontal face list");
+  const strip = html.slice(html.indexOf("data-alliance-teammates"));
+  check("strip follows join order, not score", strip.indexOf('data-score-key="dev1"') < strip.indexOf('data-score-key="dev2"'), "join order wrong");
+  check("strip faces run 1,2,3", strip.indexOf('"/1.png"') !== -1 && strip.indexOf('"/1.png"') < strip.indexOf('"/2.png"'), "face order wrong");
+  check("strip marks own row", html.includes("(you)"), "you marker missing");
+}
+// third joiner skates last with face 3 (join order, not score)
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+const newf3 = pk.makePlayer("newf1", "NewFace");
+pk._store.participants.newf1 = newf3;
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["newf1", "red"] }, prod);
+globalThis.__BUZZER_TEST__.ensureHostInit();
+viewAs("dev1");
+await sleep(50);
+{
+  const html3 = _mount.innerHTML;
+  const strip3 = html3.slice(html3.indexOf("data-alliance-teammates"));
+  check(
+    "third joiner skates last",
+    strip3.indexOf('data-score-key="dev1"') < strip3.indexOf('data-score-key="dev2"') && strip3.indexOf('data-score-key="dev2"') < strip3.indexOf('data-score-key="newf1"'),
+    "join order wrong",
+  );
+  check("third joiner gets face 3", strip3.indexOf('"/2.png"') !== -1 && strip3.indexOf('"/2.png"') < strip3.indexOf('"/3.png"'), "face 3 mis-seated");
+}
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+delete pk._store.participants.newf1;
+try { delete S().teamAssignments?.newf1; } catch {}
+// buzz + judged faces animate for teammates (same-alliance visibility)
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: [""] }, prod);
+await pk._store.rpc.buzz({ option: 2 }, dev2);
+viewAs("dev1");
+check("ally buzz face visible to teammate", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "buzz", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round));
+const allyEntry = S().gameLog.filter((e) => e.type === "buzz").pop();
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [allyEntry.id, 1000] }, prod);
+check("ally judged face written to pid mood", S().coopMoods?.dev2 === "correct", JSON.stringify(S().coopMoods?.dev2));
+viewAs("dev1");
+check("ally correct face visible to teammate", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "correct", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round));
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await sleep(1600);
+viewAs("dev1");
+check("ally correct self-clears", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round) === "idle", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev2", S().round));
+// wrong holds, reset rewinds
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setCorrectAnswerValue", args: [""] }, prod);
+await pk._store.rpc.buzz({ option: 2 }, dev1);
+const allyWrong = S().gameLog.filter((e) => e.type === "buzz").pop();
+await pk._store.rpc["producer-action"]({ fn: "updateScoresForLogEntry", args: [allyWrong.id, -1000] }, prod);
+viewAs("dev2");
+check("ally wrong face holds", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev1", S().round) === "wrong", globalThis.__BUZZER_TEST__.getCoopCharMoodForKey("dev1", S().round));
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+check("reset rewinds ally wrong", S().coopMoods?.dev1 === "rewind", JSON.stringify(S().coopMoods?.dev1));
+// global-on hides the strip in favor of the full board
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToPlayers", true] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("strip hidden when global scores on", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked");
+check("full board shows all when global on", _mount.innerHTML.includes('data-score-key="dev3"'), "full board missing");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["showScoresToPlayers", false] }, prod);
+// 4+ teammates fall back to no faces
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "red"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["plain1", "red"] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("large alliance drops faces", _mount.innerHTML.includes('data-alliance-teammates="red"') && !_mount.innerHTML.includes("coop-avatar") && !_mount.innerHTML.includes("teammate-faces"), "faces leaked to 4-member strip");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "blue"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["plain1", "blue"] }, prod);
+// unassigned players keep the hidden panel
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", ""] }, prod);
+viewAs("solo1");
+await sleep(50);
+check("unassigned sees no strip", !_mount.innerHTML.includes("data-alliance-teammates") && _mount.innerHTML.includes("Only the Host can view scores"), "strip leaked to unassigned");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["solo1", "blue"] }, prod);
+// host + display never see the strip
+viewAs("host1", true);
+await sleep(50);
+check("host sees no strip", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked to host");
+viewAs("disp1");
+await sleep(50);
+check("display sees no strip", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked to display");
+// coop mode uses the group board, never the strip
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("coop uses group board", !_mount.innerHTML.includes("data-alliance-teammates"), "strip leaked to coop");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
+// team select never shows the strip (picking teams, not tracking scores)
+await pk._store.rpc["producer-action"]({ fn: "openTeamSelect", args: [] }, prod);
+viewAs("dev1");
+await sleep(50);
+check("teamselect hides teammate strip", !_mount.innerHTML.includes("data-alliance-teammates") && _mount.innerHTML.includes("Only the Host can view scores"), "strip leaked to team select");
+pk._store.self = pk._store.participants.host1;
+pk._store.isHost = true;
+await pk._store.rpc["producer-action"]({ fn: "closeTeamSelect", args: [] }, prod);
+{
+  const T = globalThis.__BUZZER_TEST__;
+  for (const n of [1, 2, 3]) for (const st of ["base", "buzz", "correct", "wrong"]) T.setCoopCharArt(n, st, null);
+}
+// roster flash: only the affected player's own screen flashes
+{
+  const T = globalThis.__BUZZER_TEST__;
+  viewAs("dev1"); // primes dev1's key (red team)
+  const flashBefore = T.getRosterFlashCount();
+  // someone else's team change: silent on dev1's screen
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev2", "green"] }, prod);
+  viewAs("dev1");
+  check("other team change stays silent", T.getRosterFlashCount() === flashBefore, `count=${T.getRosterFlashCount()}`);
+  // own team change: flashes
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "blue"] }, prod);
+  viewAs("dev1");
+  check("own team change flashes background", T.getRosterFlashCount() === flashBefore + 1, `count=${T.getRosterFlashCount()}`);
+  // scores/settings: silent
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  viewAs("dev1");
+  check("scores/settings don't flash background", T.getRosterFlashCount() === flashBefore + 1, `count=${T.getRosterFlashCount()}`);
+  // host screen never flashes (no team context)
+  pk._store.self = pk._store.participants.host1;
+  pk._store.isHost = true;
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "green"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  check("host screen stays silent", T.getRosterFlashCount() === flashBefore + 1, `count=${T.getRosterFlashCount()}`);
+  // restore red/red for the suites below
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "red"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev2", "red"] }, prod);
+}
+pk._store.self = pk._store.participants.host1;
 // --- roll credits broadcast: host starts, everyone but tablet watches ---
 pk._store.self = pk._store.participants.host1;
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", false] }, prod);
@@ -1568,6 +1837,21 @@ function validEp() {
   };
 }
 check("episode valid passes", eps.validateEpisode(validEp()).ok === true, JSON.stringify(eps.validateEpisode(validEp()).errors));
+{
+  // No-timer episodes validate: timeOpen 0 in defaults/overrides, 0s
+  // fibbage/quixort timers. Negative buzz time still rejected.
+  const untimed = validEp();
+  untimed.defaults.timeOpen = 0;
+  untimed.items[0].overrides = { timeOpen: 0 };
+  untimed.items[2].lieTimeSec = 0;
+  untimed.items[2].voteTimeSec = 0;
+  untimed.items[4].blockSec = 0;
+  check("episode no-timer passes", eps.validateEpisode(untimed).ok === true, JSON.stringify(eps.validateEpisode(untimed).errors));
+  const negTime = validEp();
+  negTime.defaults.timeOpen = -5;
+  const negRes = eps.validateEpisode(negTime);
+  check("episode negative timeOpen rejected", negRes.ok === false && negRes.errors.some((x) => x.field === "defaults.timeOpen"), JSON.stringify(negRes.errors));
+}
 const badCases = [
   ["empty title", (e) => { e.meta.title = "  "; }, "meta.title"],
   ["bad schema", (e) => { e.schemaVersion = 2; }, "schemaVersion"],
@@ -1833,9 +2117,11 @@ const epui = await import("../src/episodes/ui.js");
   );
   await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [{ schemaVersion: 1, meta: {}, defaults: {}, items: [] }] }, prod);
   check("invalid attach rejected", S().episodePrompt === null && S().settings?.uniformPoints === upBefore, JSON.stringify(S().episodePrompt));
+  // Ensure round is IDLE so attach applies defaults immediately (new behavior:
+  // attach defers defaults while a round is live).
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "attachEpisode", args: [testEp] }, prod);
   check("attach seeds defaults", S().settings?.uniformPoints === 777 && S().settings?.timeOpen === 25, JSON.stringify({ u: S().settings?.uniformPoints, t: S().settings?.timeOpen }));
-  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
   check("runner card on host", _mount.innerHTML.includes("ep-runner") && _mount.innerHTML.includes("Harness Ep"), "runner card missing");
@@ -2767,6 +3053,107 @@ const epui = await import("../src/episodes/ui.js");
   check("deviceLinks capped", Object.keys(S().deviceLinks || {}).length <= 500, String(Object.keys(S().deviceLinks || {}).length));
   S().deviceLinks = {};
 }
+// --- no-timer mode: timeOpen 0 + untimed minigames (screw stays timed) ---
+{
+  const T = globalThis.__BUZZER_TEST__;
+  const prevTimeOpen = S().settings?.timeOpen;
+  const prevScoring = S().settings?.scoringMode;
+  const prevLock = S().settings?.lockAfterBuzz;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", false] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", "uniform"] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 0] }, prod);
+  check("no-timer timeOpen stored", S().settings?.timeOpen === 0, JSON.stringify(S().settings?.timeOpen));
+  check("normalizeTimeOpen keeps 0", T.normalizeTimeOpen(0) === 0, String(T.normalizeTimeOpen(0)));
+  check("normalizeTimeOpen blanks fall back", T.normalizeTimeOpen("") === 20 && T.normalizeTimeOpen(999) === 120, `${T.normalizeTimeOpen("")}/${T.normalizeTimeOpen(999)}`);
+  // JACK needs a timer: refused while untimed (coop refuses it regardless).
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", "jack"] }, prod);
+  check("JACK refused with no timer", S().settings?.scoringMode !== "jack", S().settings?.scoringMode);
+  if (!COOP) {
+    // Timed JACK works, then killing the timer flips back to uniform.
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 20] }, prod);
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", "jack"] }, prod);
+    check("JACK allowed when timed", S().settings?.scoringMode === "jack", S().settings?.scoringMode);
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", 0] }, prod);
+    check("disabling timer flips JACK to uniform", S().settings?.scoringMode === "uniform", S().settings?.scoringMode);
+  }
+  // Open round carries nulls; the host tick never auto-closes it.
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
+  check("untimed round open", S().round?.status === "open", S().round?.status);
+  check("untimed closesAt null", S().round?.closesAt === null, JSON.stringify(S().round?.closesAt));
+  check("untimed remainingCs null", S().round?.remainingCs === null, JSON.stringify(S().round?.remainingCs));
+  check("untimed timeLeft null", T.getTimeLeftCs(S().round, S().settings) === null, String(T.getTimeLeftCs(S().round, S().settings)));
+  T.hostTick();
+  check("untimed survives hostTick", S().round?.status === "open", S().round?.status);
+  // Manual pause/resume round-trips an untimed round.
+  await pk._store.rpc["producer-action"]({ fn: "pauseBuzzers", args: [] }, prod);
+  check("untimed pause closes", S().round?.status === "closed", S().round?.status);
+  await pk._store.rpc["producer-action"]({ fn: "resumeBuzzers", args: [] }, prod);
+  check("untimed resume reopens", S().round?.status === "open" && S().round?.closesAt === null, `${S().round?.status} ${S().round?.closesAt}`);
+  // Host UI offers No timer and the status strip shows it.
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  await sleep(100);
+  check("time open select offers No timer", _mount.innerHTML.includes('value="0"') && _mount.innerHTML.includes("No timer"), `len=${_mount.innerHTML.length}`);
+  check("host status shows No timer", _mount.innerHTML.includes(">No timer<"), "status strip still counting");
+  check("JACK hidden while untimed", !_mount.innerHTML.includes("JACK (time-based)"), "JACK option leaked");
+  if (!COOP) {
+    // --- fibbage untimed: lying never auto-reviews ---
+    T.setFibbageLieTime(0);
+    T.setFibbageVoteTime(0);
+    check("fibbage untimed stored", S().fibbage?.lieTimeSec === 0 && S().fibbage?.voteTimeSec === 0, JSON.stringify({ l: S().fibbage?.lieTimeSec, v: S().fibbage?.voteTimeSec }));
+    check("fibbage lie timeLeft null", T.getFibbageLieTimeLeftCs(S().fibbage) === null, String(T.getFibbageLieTimeLeftCs(S().fibbage)));
+    check("fibbage vote timeLeft null", T.getFibbageVoteTimeLeftCs(S().fibbage) === null, String(T.getFibbageVoteTimeLeftCs(S().fibbage)));
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fibbage"] }, prod);
+    S().fibbage = { ...S().fibbage, active: true, phase: "lying", truth: "T", timeEndsAt: null, voteEndsAt: null, lies: {}, blocked: {}, seed: 1 };
+    T.hostTick();
+    check("untimed lying never auto-reviews", S().fibbage?.phase === "lying", S().fibbage?.phase);
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+    // --- disordat untimed: timed mode runs with no deadline, no time bonus ---
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "disordat"] }, prod);
+    for (let q = 0; q < 7; q++) {
+      clickBtn({ q: String(q), answer: "dat" }, "[data-disordat-answer-chip]");
+    }
+    S().disordat = { ...S().disordat, timedSeconds: 0 };
+    clickBtn({ disordatStart: "allPlayTimed" }, "[data-disordat-start]");
+    check("untimed disordat starts without deadline", S().disordat?.active === true && S().disordat?.timeEndsAt === null, JSON.stringify({ a: S().disordat?.active, t: S().disordat?.timeEndsAt }));
+    check("untimed disordat timeLeft null", T.getDisOrDatTimeLeftCs(S().disordat) === null, String(T.getDisOrDatTimeLeftCs(S().disordat)));
+    check("untimed disordat earns no time bonus", T.isDisOrDatBonusEligible(S().disordat) === false, String(T.getDisOrDatTimedSeconds(S().disordat)));
+    T.hostTick();
+    check("untimed disordat never auto-finalizes", S().disordat?.phase === "playing", S().disordat?.phase);
+    clickBtn({}, "[data-disordat-reset]");
+    check("untimed disordat resets", S().disordat?.active !== true, JSON.stringify(S().disordat?.active));
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+    // --- quixort untimed: blocks never void on expiry ---
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "quixort"] }, prod);
+    for (const [i, v] of ["Alpha", "Bravo", "Charlie", "Delta"].entries()) {
+      await pk._store.rpc["producer-action"]({ fn: "setQuixortItem", args: [i, v] }, prod);
+    }
+    await pk._store.rpc["producer-action"]({ fn: "setQuixortBlockSec", args: [0] }, prod);
+    check("quixort untimed stored", S().quixort?.blockSec === 0, JSON.stringify(S().quixort?.blockSec));
+    check("quixort run timeLeft null", T.getQuixortRunTimeLeftCs({ finished: false, blockEndsAt: null, deckPos: 0 }, S().quixort) === null, "not null");
+    check("quixort setup offers No timer", /id="quixort-block-sec"[\s\S]*?value="0" selected/.test(_mount.innerHTML), "no-timer option missing");
+    await pk._store.rpc["producer-action"]({ fn: "startQuixort", args: [] }, prod);
+    if (S().quixort?.active === true) {
+      const firstTrack = (S().quixort?.expectedTracks || [])[0];
+      check("untimed quixort has no deadline", S().quixort?.runs?.[firstTrack]?.blockEndsAt === null, JSON.stringify(S().quixort?.runs?.[firstTrack]?.blockEndsAt));
+      T.hostTick();
+      check("untimed quixort never voids", ((S().quixort?.runs?.[firstTrack]?.voided) || []).length === 0 && S().quixort?.phase === "playing", S().quixort?.phase);
+      await pk._store.rpc["producer-action"]({ fn: "resetQuixort", args: [] }, prod);
+    } else {
+      check("untimed quixort skipped (no eligible tracks)", true, "no tracks to start");
+    }
+    await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
+  }
+  // --- restore timed defaults for the tail of the suite ---
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["timeOpen", prevTimeOpen] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["scoringMode", prevScoring] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["lockAfterBuzz", prevLock] }, prod);
+  await pk._store.rpc["producer-action"]({ fn: "resetRound", args: [] }, prod);
+  check("timed defaults restored", S().settings?.timeOpen === prevTimeOpen && S().round?.status === "idle", `${S().settings?.timeOpen}/${S().round?.status}`);
+  pk._store.self = pk._store.participants.host1;
+}
 // --- audience display rethink: pill/stage/screw-collapse/last-result/analytics/bars ---
 {
   pk._store.self = pk._store.participants.host1;
@@ -2836,5 +3223,6 @@ const epui = await import("../src/episodes/ui.js");
 }
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

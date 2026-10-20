@@ -67,34 +67,41 @@ In the hypothetical situation where you want to give that kind of time, I gave t
 ### Sample slideshow?
 IDK possibly
 
+### Audio?
+No. (someone else must do this beast)
+
 ### What's in this thing?
 (breathes in) 
-- 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off
+- 1,2,4,6,8 response multiple choice questions with the ability to toggle specific answers on and off, plus custom labels and diamond / grid / list layouts
 - Text response mode for gibberish/anagram questions (or lame fill in the blanks)
-- Dis or Dats
-- Bingo
-- Wen dit happ'n
-- Fibbage
-- Quixort
+- Dis or Dats (7 items, custom Dis/Dat labels)
+- Bingo (5-letter word, up to 12 rounds)
+- Wen dit happ'n (Before / Never / After)
+- Fibbage (truth + lie timers, voting, 1-5x multiplier, hide-scores-mid-game option)
+- Quixort (order 4-9 items + up to 3 trash, block timer, reveal view)
+- Episode runner (pre-set question list with per-question scoring/timing overrides)
 - Audience display
 - Timer display for host companion devices (timer is shown on audience display too)
-- Producers (Co-Hosts)
-- SCREWS
+- Room-code spotlight (force-join modal on all audience screens)
+- Producers (Co-Hosts via PIN, can do everything the host can remotely)
+- SCREWS (timed victim-pick, per-player block list)
 - F*** You easter egg
 - Team mode (share buzzer across multiple devices)
 - Alliance mode (lump scores together)
 - You or players can create the teams (up to 10 teams, and you can add a player limit)
 - 42 Player cap.
-- Three separate scoring modes (Uniform, JACK, and Pick-a-value (roulette))
+- Three separate scoring modes (Uniform, JACK, and Pick-a-value (roulette, additive or single-target, animated))
+- Full game log with re-ruling, manual score adjust, and global reset
+- Configurable flow (lock-after-buzz, re-buzz, max buzzes per option, close-on-points, 1-600s timers)
+- Per-player host powers (disable buzzer, kick / re-admit, screw-block, rename)
 - Organized labeled menu
 - Handwritten snark
-- Coopertition mode
-- Credits roll
+- Coopertition mode (up to 3 players per device, Jeopardy-style control, animated faces)
 - Per-round Analytics
-- Post-Game Review
+- Post-Game Review (export / share via code)
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.
 - PWA support
-- and probably more (soon!)
+- and probably more I forgot about
 
 ### Why are you using gameshow terms in this thing
 Play JACK, then you will know
@@ -144,5 +151,7 @@ npm run test:harness
 I am currently trying to learn node.js, and this was a project I decided to make, as I saw a possibility of this being useful, then added more and more then thought "wait this is actually kinda neat".\
 This is mostly vibe-coded in its current state (github copilot and opencode), this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy.\
 Still adding new features using AI at this time, and dont worry, I dont YOLO ai code instantly, I test it out, make sure it works, then fix it myself if I have to. Also, I work on this in phases, where a lot gets added then I leave it be for a month or two, If there is a feature you want to add in, fork, make, PR, I read my emails.
+
+Real Cool AI Scale: 5 
 
 Built on playroom kit and nodejs
