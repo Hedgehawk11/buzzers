@@ -7,6 +7,7 @@
 
 import {
   EPISODE_BINGO_MAX_ROUNDS,
+  EPISODE_COOP_MIN_OPTIONS,
   EPISODE_DISORDAT_ANSWER_VALUES,
   EPISODE_DISORDAT_COUNT,
   EPISODE_FIBBAGE_LIE_TIMES,
@@ -17,6 +18,7 @@ import {
   EPISODE_WEN_ANSWERS,
   EPISODE_WEN_LABELS,
   EPISODE_WEN_MAX_ROUNDS,
+  episodeCoopReport,
 } from "./schema.js";
 
 export const EPISODE_KIND_LABELS = {
@@ -411,6 +413,62 @@ function renderCloudPanel(cloud, esc) {
     </section>`;
 }
 
+function coopProblemText(problem) {
+  switch (problem.code) {
+    case "blocked":
+      return `${kindLabel(problem.kind)} is off limits in coopertition mode.`;
+    case "options":
+      return `${kindLabel(problem.kind)} needs at least ${EPISODE_COOP_MIN_OPTIONS} options in coopertition mode (this one has ${problem.optionCount}).`;
+    default:
+      return "This question can't run in coopertition mode.";
+  }
+}
+
+// Single episode-level coop marker. Details stay collapsed so the creator
+// layout is unchanged for hosts who don't care about coop; main.js toggles
+// the panels in place (no re-render, so typed fields survive).
+function renderCoopPanel(ep, esc) {
+  const report = episodeCoopReport(ep);
+  const total = Array.isArray(ep.items) ? ep.items.length : 0;
+  const count = report.problems.length;
+  const state = !total ? "empty" : count ? "warn" : "ok";
+  const status = state === "ok" ? "Works in coop" : state === "warn" ? "Won't work in coop" : "Coop check";
+  const summary = state === "ok"
+    ? "Every question in this episode can run in coopertition mode."
+    : state === "warn"
+      ? `${count} of ${total} question${total === 1 ? "" : "s"} won't work as written in coopertition mode.`
+      : "Add questions to check whether the episode works in coopertition mode.";
+  const problems = report.problems.map((p) => `<li><strong>Q${p.index + 1}</strong> — ${esc(coopProblemText(p))}</li>`).join("");
+  return `
+    <section class="card ep-sub ep-coop" data-ep-coop>
+      <div class="ep-coop-head">
+        <div>
+          <span class="ep-coop-status ep-coop-${state}">${esc(status)}</span>
+          <p class="muted ep-coop-summary">${esc(summary)}</p>
+        </div>
+        <div class="ep-toolbar ep-coop-actions">
+          ${count ? `<button type="button" data-ep-coop-problems aria-expanded="false" aria-controls="ep-coop-problems">Show problems</button>` : ""}
+          <button type="button" data-ep-coop-learn aria-expanded="false" aria-controls="ep-coop-learn">Learn more</button>
+        </div>
+      </div>
+      ${count ? `<div class="ep-coop-panel" id="ep-coop-problems" hidden>
+        <h3>Coop problems</h3>
+        <ul>${problems}</ul>
+      </div>` : ""}
+      <div class="ep-coop-panel" id="ep-coop-learn" hidden>
+        <h3>How coopertition mode works</h3>
+        <p>Up to 3 players share one device using the Q/B/P keys. Each player keeps their own score, and the host can show combined group totals.</p>
+        <ul>
+          <li>Multiple choice questions need at least ${EPISODE_COOP_MIN_OPTIONS} options; coop widens smaller ones automatically.</li>
+          <li>Fibbage, Dis or Dat, and Quixort are off limits while coop is on.</li>
+          <li>JACK scoring, screws, re-buzz, and shared-team scoring are disabled.</li>
+          <li>Buttons, Text answer, Bingo, and Wen Dit Happn all work in coop.</li>
+        </ul>
+        <p class="muted">To run a blocked question, turn coopertition off from buzzer mode first.</p>
+      </div>
+    </section>`;
+}
+
 export function renderCreatorScreen({ ep, selectedId, errors, importErrors, cloudEnabled, cloud = null, cloudError = null, esc }) {
   const d = ep.defaults || {};
   const selected = (ep.items || []).find((it) => it && it.id === selectedId) || null;
@@ -443,6 +501,7 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
 
       ${renderErrorPanel(errors, importErrors, esc)}
       ${renderCloudPanel(cloud, esc)}
+      ${renderCoopPanel(ep, esc)}
 
       <section class="card ep-sub">
         <h2>Episode details</h2>

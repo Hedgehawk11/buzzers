@@ -1968,6 +1968,22 @@ for (const [name, mutate, field] of badCases) {
     check("absent keys omitted", !("jackMultiplier" in gap) && !("maxBuzzesPerOption" in gap) && !("choiceLayout" in gap) && !("closeBuzzersOnPointsGiven" in gap), JSON.stringify(gap));
   }
   {
+    // Coop readiness: shared pure rules behind the creator marker.
+    check("coop: text ready", eps.episodeItemCoopIssue({ kind: "text" }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "text" })));
+    check("coop: bingo ready", eps.episodeItemCoopIssue({ kind: "bingo" }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "bingo" })));
+    check("coop: wen ready", eps.episodeItemCoopIssue({ kind: "wendithapn" }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "wendithapn" })));
+    check("coop: buttons 4 ready", eps.episodeItemCoopIssue({ kind: "buttons", optionCount: 4 }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "buttons", optionCount: 4 })));
+    const thin = eps.episodeItemCoopIssue({ kind: "buttons", optionCount: 2 });
+    check("coop: buttons under 4 flagged", thin?.code === "options" && thin.optionCount === 2, JSON.stringify(thin));
+    for (const kind of ["fibbage", "disordat", "quixort"]) {
+      check(`coop: ${kind} blocked`, eps.episodeItemCoopIssue({ kind })?.code === "blocked", JSON.stringify(eps.episodeItemCoopIssue({ kind })));
+    }
+    const mixed = eps.episodeCoopReport(validEp());
+    check("coop: mixed episode reports 3", mixed.ok === false && mixed.problems.length === 3 && mixed.problems.map((p) => p.kind).join(",") === "fibbage,disordat,quixort", JSON.stringify(mixed));
+    const ready = eps.episodeCoopReport({ ...validEp(), items: validEp().items.filter((it) => ["buttons", "text", "bingo", "wendithapn"].includes(it.kind)) });
+    check("coop: ready episode passes", ready.ok === true && ready.problems.length === 0, JSON.stringify(ready));
+  }
+  {
     // Lowercase letters normalize up, then validate.
     const lower = eps.normalizeEpisode(validEp());
     lower.items[5].rounds = [{ prompt: "  pick g ", answer: "g" }];
@@ -2043,6 +2059,18 @@ const epui = await import("../src/episodes/ui.js");
   check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
   check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
   check("creator cloud disabled", html.includes('data-ep-cloud-save disabled'), "cloud save not disabled");
+  check("creator coop marker warns", html.includes("Won't work in coop"), "coop warning missing");
+  check("creator coop shows problems button", html.includes("data-ep-coop-problems") && html.includes("Show problems"), "problems button missing");
+  check("creator coop problem text", html.includes("Quixort is off limits in coopertition mode"), "problem reason missing");
+  check("creator coop learn panel", html.includes("data-ep-coop-learn") && html.includes('id="ep-coop-learn" hidden'), "learn panel missing");
+  {
+    const readyEp = { ...ep, items: ep.items.filter((it) => it.kind !== "quixort") };
+    const readyHtml = epui.renderCreatorScreen({ ep: readyEp, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("creator coop marker ready", readyHtml.includes("Works in coop") && !readyHtml.includes("data-ep-coop-problems"), "ready marker wrong");
+    const thinEp = { ...ep, items: [{ id: "thin", kind: "buttons", prompt: "Thin?", optionCount: 2, correctOptions: [1] }] };
+    const thinHtml = epui.renderCreatorScreen({ ep: thinEp, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("creator coop flags small MC", thinHtml.includes("needs at least 4 options") && thinHtml.includes("this one has 2"), "small MC reason missing");
+  }
   const htmlErr = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, cloudError: "Cloud unreachable at http://x", esc: (s) => String(s) });
   check("creator shows cloud reason", htmlErr.includes("Cloud unreachable") && htmlErr.includes("data-ep-cloud-retry"), "diagnosis missing");
   const htmlNoSel = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });

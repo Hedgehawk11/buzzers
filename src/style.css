@@ -3607,6 +3607,17 @@ body[data-ui-anims="off"] .credits-crawl {
 .ep-status { margin-left: auto; font-weight: 600; }
 .ep-status.is-valid { color: var(--good, #4caf7d); }
 .ep-status.is-invalid { color: var(--bad, #e05c5c); }
+.ep-coop-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.ep-coop-status { display: inline-block; font-weight: 700; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid currentColor; border-radius: 999px; padding: 0.15rem 0.6rem; }
+.ep-coop-ok { color: var(--good, #4caf7d); }
+.ep-coop-warn { color: #d99a2b; }
+.ep-coop-empty { color: var(--muted, #8fa3b8); }
+.ep-coop-summary { margin: 0.35rem 0 0; }
+.ep-coop-actions { margin: 0; }
+.ep-coop-panel { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--line, #2a3b4d); }
+.ep-coop-panel h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+.ep-coop-panel ul { margin: 0.35rem 0 0; padding-left: 1.25rem; }
+.ep-coop-panel li { margin: 0.25rem 0; }
 .ep-sub { margin: 1rem 0; padding: 1rem; }
 .ep-sub h2 { margin-top: 0; font-size: 1.05rem; }
 .ep-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }

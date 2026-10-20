@@ -25,6 +25,12 @@ export const EPISODE_MAX_ITEMS = 200;
 export const EPISODE_PROMPT_MAX = 300;
 export const EPISODE_LABEL_MAX = 120;
 
+// Coopertition compatibility. Mirrors the gates in main.js: Fibbage, Dis or
+// Dat, and Quixort have no coop model, and coop forces at least 4 options
+// for Multiple choice questions. Text, Bingo, and Wen Dit Happn all work.
+export const EPISODE_COOP_BLOCKED_KINDS = ["fibbage", "disordat", "quixort"];
+export const EPISODE_COOP_MIN_OPTIONS = 4;
+
 // Mirrors main.js: optionCount choices, text/fibbage 120ch trims.
 export const EPISODE_OPTION_COUNTS = [1, 2, 4, 6, 8];
 export const EPISODE_TEXT_MAX = 120;
@@ -516,6 +522,34 @@ export function effectiveItemSettings(ep, item) {
     if (v !== undefined) eff[key] = v;
   }
   return eff;
+}
+
+// Coopertition readiness for one question. Returns null when it can run in
+// coop, or { code, ... } describing why it can't. Pure data: the creator UI
+// turns these codes into human-readable text.
+export function episodeItemCoopIssue(item) {
+  if (!isPlainObject(item) || !EPISODE_KINDS.includes(item.kind)) {
+    return { code: "invalid" };
+  }
+  if (EPISODE_COOP_BLOCKED_KINDS.includes(item.kind)) {
+    return { code: "blocked" };
+  }
+  if (item.kind === "buttons" && Number(item.optionCount) < EPISODE_COOP_MIN_OPTIONS) {
+    return { code: "options", optionCount: Number(item.optionCount) || 0 };
+  }
+  return null;
+}
+
+// Episode-level coop report. The UI uses this for the single creator marker;
+// callers get stable question indexes so "Show problems" can point at rows.
+export function episodeCoopReport(ep) {
+  const items = Array.isArray(ep?.items) ? ep.items : [];
+  const problems = [];
+  items.forEach((item, index) => {
+    const issue = episodeItemCoopIssue(item);
+    if (issue) problems.push({ index, id: item?.id ?? null, kind: item?.kind || "", ...issue });
+  });
+  return { ok: problems.length === 0, problems };
 }
 
 export function validateEpisode(ep) {

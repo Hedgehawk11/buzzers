@@ -10866,6 +10866,18 @@ function harvestIntoDraft() {
   epPersistDraft(episodeDraft);
 }
 function refreshCreator() { renderPrejoinScreen("creator"); }
+// Expand/collapse a coop marker panel in place. Deliberately no re-render:
+// the creator harvests text fields on actions, so toggling must not wipe them.
+function toggleCoopPanel(panelId, btn) {
+  try {
+    const panel = document.querySelector(`#${panelId}`);
+    if (!panel) return;
+    const open = panel.hasAttribute("hidden");
+    if (open) panel.removeAttribute("hidden");
+    else panel.setAttribute("hidden", "");
+    btn?.setAttribute("aria-expanded", open ? "true" : "false");
+  } catch {}
+}
 // Patch the host form's cloud row without re-rendering (a re-render would
 // wipe the typed host name). Top-level: probeEpisodeCloud calls it.
 // Also patches the in-game loader's cloud row. No-ops when forms aren't showing.
@@ -14289,6 +14301,14 @@ function bindEvents() {
     if (prejoinMode !== "creator") return;
     harvestIntoDraft();
     refreshCreator();
+  });
+
+  // Coop marker details (episode creator). In-place toggles, no re-render.
+  delegate("click", "[data-ep-coop-problems]", (e, btn) => {
+    toggleCoopPanel("ep-coop-problems", btn);
+  });
+  delegate("click", "[data-ep-coop-learn]", (e, btn) => {
+    toggleCoopPanel("ep-coop-learn", btn);
   });
 
   // --- Episode runner (host + producer via producer-action relay) ---
