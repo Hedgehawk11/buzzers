@@ -90,6 +90,11 @@ export const EPISODE_SETTING_KEYS = [
   "maxBuzzesPerOption",
   "closeBuzzersOnPointsGiven",
   "choiceLayout",
+  "appTitle",
+  "disordatTitle",
+  "bingoTitle",
+  "quixortTitle",
+  "fibbageTitle",
 ];
 const EPISODE_SCORING_MODES = ["uniform", "jack", "roulette"];
 const EPISODE_JACK_MULTIPLIERS = [1, 1.5, 2, 2.5, 3];

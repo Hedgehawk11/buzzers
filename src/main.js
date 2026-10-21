@@ -79,6 +79,15 @@ const DEFAULT_SETTINGS = {
   disOrDatTimedSeconds: 30,
   quixortAudienceLive: false,
   fYouEasterEggEnabled: true,
+  // Per-mode avatar image namespace. When set, avatar paths are prefixed
+  // with "/${namespace}" so each minigame mode can have its own image set.
+  // E.g. set to "bingo" to use /public/bingo/1.png, /public/bingo/1-buzz.*, etc.
+  // Default "" keeps the existing flat /public layout.
+  coopImageNamespace: "",
+  // Image namespace for when a text question has "gibberish question" in the name.
+  // When set, avatar paths are prefixed with "/${namespace}" enabling a separate
+  // image set for this specific scenario. Default "" keeps the existing layout.
+  gibberishQuestionNamespace: "",
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -166,6 +175,8 @@ let prejoinMode = "landing";
 let rouletteAnimationInterval = null;
 let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
+let fYouNameEasterEggUnlocked = false;
+let fYouNameEasterEggNextPressed = false;
 let hostPrejoinTeamSetting = "off";
 let hostPrejoinCoopSetting = false;
 let hostPrejoinEpisodeEnabled = false;
@@ -304,6 +315,10 @@ function isFYouEasterEggAnswer(answerText) {
 
 function isFYouCorrectAnswer(round) {
   return normalizeAnswerForCompare(round?.correctAnswer) === "fuck you";
+}
+
+function isFYouPlayerName(player) {
+  return player && normalizeAnswerForCompare(getPlayerName(player)) === "fuck you";
 }
 
 function setBuzzNotice(message) {
@@ -1174,7 +1189,11 @@ const coopCharFrames = { 1: { buzz: 0, correct: 0, wrong: 0 }, 2: { buzz: 0, cor
 let coopCharsProbed = false;
 
 function coopCharFileBase(slot, state) {
-  return state === "base" ? `/${slot}` : `/${slot}-${state}`;
+  // Check gibberish question namespace first (more specific), then coop namespace
+  const gibberishNs = getSettings().gibberishQuestionNamespace;
+  const coopNs = getSettings().coopImageNamespace;
+  const prefix = gibberishNs ? `/${gibberishNs}` : (coopNs ? `/${coopNs}` : "");
+  return state === "base" ? `${prefix}/${slot}` : `${prefix}/${slot}-${state}`;
 }
 
 function probeCoopChars() {
@@ -3259,6 +3278,19 @@ function hostHandleBuzz(player, payload) {
   const playerTeamColor = getPlayerTeamColor(player.id, assignments);
   const shouldLockAfterBuzz = isVictimScrewActive(round) || (settings.lockAfterBuzz && !settings.rebuzzAllowed);
   const usingTextEntry = settings.inputMode === "text";
+  
+  // F-You name Easter egg: detect player joining with that name
+  if (!fYouNameEasterEggUnlocked) {
+    const participants = currentParticipants();
+    const fYouPlayer = participants.find((p) => isFYouPlayerName(p));
+    if (fYouPlayer) {
+      // Show monologue modal
+      setBuzzNotice(getSnark("player.easteregg.fyoujoin", "Nice try! Getting ejected."));
+      // Mark as handled so we only show the modal once
+      fYouNameEasterEggUnlocked = true;
+      scheduleRender(render);
+    }
+  }
 
   let validOption = null;
   let answerText = null;
@@ -10908,6 +10940,38 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const notice = getRecentBuzzNotice();
   const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const usingTextEntry = settings.inputMode === "text";
+  
+  // F-You name Easter egg: detect player joining with that name
+  if (!fYouNameEasterEggUnlocked) {
+    const participants = currentParticipants();
+    const fYouPlayer = participants.find((p) => isFYouPlayerName(p));
+    if (fYouPlayer) {
+      // Show monologue modal
+      setBuzzNotice(getSnark("player.easteregg.fyoujoin", "Nice try! Getting ejected."));
+      // Mark as handled so we only show the modal once
+      fYouNameEasterEggUnlocked = true;
+      scheduleRender(render);
+    }
+  }
+  
+  // F-You name Easter egg modal: show when the name was detected
+  if (fYouNameEasterEggUnlocked) {
+    if (fYouNameEasterEggNextPressed) {
+      // Show goat.png on player screen
+      return `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
+    }
+    // Show the modal card with "Next" button — the detection already fired once
+    // and set fYouNameEasterEggUnlocked, so we just show the choice screen.
+    return `<section class="card player-card easter-egg-card">
+      <h2>${escapeHtml(getSnark("player.easteregg.heading", "F*** You?"))}</h2>
+      <p class="muted">
+        Nice try! Getting ejected.
+      </p>
+      <div class="easter-egg-actions">
+        <button type="button" data-f-you-next">${getSnark("player.easteregg.nextButton", "Next")}</button>
+      </div>
+    </section>`;
+  }
 
   // Option display order (scrambled in all-screw mode)
   const optionOrder = getPlayerOptionOrder(settings, round, mePlayer.id);
@@ -14028,7 +14092,18 @@ function renderScores(players, scores, extraClass = "") {
   const controllerId = getControllerId();
   const producerIds = getSafeState("producerIds", []);
   const kicked = new Set(settings.kickedPlayerIds || []);
-  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id));
+  // Hide player from scoreboard if their name normalizes to "fuck you" (easter egg)
+  const fYouPlayerId = (() => {
+    try {
+      const all = Object.values(getParticipants() || {});
+      for (const p of all) {
+        const name = getPlayerName(p);
+        if (normalizeAnswerForCompare(name) === "fuck you") return p.id;
+      }
+    } catch {}
+    return null;
+  })();
+  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id) && player.id !== fYouPlayerId);
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (isCoopMode(settings)) {
@@ -14971,6 +15046,19 @@ function bindEvents() {
     await submitRoadkillBuzz(Number.isInteger(slot) ? slot : null);
   });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
+  delegate("click", "[data-f-you-next]", () => {
+    fYouNameEasterEggNextPressed = true;
+    // The render() early-return at line 10961 generates goat HTML but skips
+    // mountView() at line 14720, so we mount it directly instead.
+    const mount = getApp() || app;
+    const goatHTML = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
+    if (mount) {
+      const full = `${goatHTML}${renderCreditsOverlay()}`;
+      if (!transitionMount(mount, full, "default")) mount.innerHTML = full;
+    }
+    // Also schedule via the normal path for subsequent ticks
+    scheduleRender(render);
+  });
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
   delegate("change", "#disordat-dat-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), datLabel: String(e.target.value || "").trim() }, true)));

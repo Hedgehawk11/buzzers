@@ -9,7 +9,7 @@ But wait! isnt this just kahoot? I hear you ask! yes and no (see "why?" in the F
 ## FAQ
 
 ### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
-Yes. yes there is, handwritten response too, try it, I dare ya
+Yes. yes there is, handwritten response too, try it, I dare ya (Text question easter egg modifiable in settings, name easter egg kicks them immediatly)
 
 ### My players are being evil
 Screw em' you as the host (or producer) have as many as you need.
