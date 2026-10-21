@@ -12683,54 +12683,7 @@ function episodeRunLoad(index) {
   }
   setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys, roundIndex: null, roundTotal: null }, true);
   episodeIndex = Number(index);
-  // Auto-open the round when a new question is loaded and the round is IDLE,
-  // so the game starts immediately rather than requiring the host to manually
-  // click "open buzzers."
-  const round = getRound();
-  if (round.status === ROUND_STATUSES.IDLE) {
-    const settings = getSettings();
-    const safeTimeOpen = normalizeTimeOpen(settings.timeOpen);
-    const openedAt = now();
-    const closesAt = safeTimeOpen > 0 ? openedAt + safeTimeOpen * 1000 : null;
-    setState(
-      "round",
-      {
-        ...round,
-        status: ROUND_STATUSES.OPEN,
-        opensAt: openedAt,
-        closesAt,
-        remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null,
-        roundNumber: Number.isFinite(Number(round.roundNumber)) ? Math.trunc(Number(round.roundNumber)) + 1 : 1,
-        pausedFrom: null,
-        winnerId: null,
-        winnerTeam: null,
-        winnerOption: null,
-        winnerAnswer: null,
-        winnerName: null,
-        winnerCoopKey: null,
-        coopControl: null,
-        buzzedPlayerIds: [],
-        buzzCounts: {},
-        roulette: {
-          ...round.roulette,
-          active: false,
-          startedAt: null,
-          mode: settings.rouletteMode,
-          topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount),
-          ceiling: 0,
-          targetPlayerId: null,
-          targetPlayerName: null,
-          selections: {},
-          completedPlayerIds: [],
-          finalValue: null,
-          finishedAt: null,
-        },
-        screw: makeIdleScrew(),
-      },
-      true,
-    );
-  }
-  render();
+render();
   return true;
 }
 
