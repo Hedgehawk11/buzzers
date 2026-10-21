@@ -15050,12 +15050,33 @@ function bindEvents() {
     fYouNameEasterEggNextPressed = true;
     // The render() early-return at line 10961 generates goat HTML but skips
     // mountView() at line 14720, so we mount it directly instead.
-    const mount = getApp() || app;
+    // Use document.body append — the goat HTML is position:fixed full-screen,
+    // so it works regardless of app state, without removing app content.
     const goatHTML = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
-    if (mount) {
-      const full = `${goatHTML}${renderCreditsOverlay()}`;
-      if (!transitionMount(mount, full, "default")) mount.innerHTML = full;
-    }
+    const existing = document.body.querySelector('[data-f-you-goat-overlay]');
+    if (existing) existing.remove();
+    const overlay = document.createElement("div");
+    overlay.innerHTML = goatHTML + renderCreditsOverlay();
+    overlay.setAttribute("data-f-you-goat-overlay", "1");
+    // Clicking the goat overlay or pressing Escape dismisses the easter egg
+    overlay.addEventListener("click", () => {
+      overlay.remove();
+      fYouNameEasterEggUnlocked = false;
+      fYouNameEasterEggNextPressed = false;
+      scheduleRender(render);
+    });
+    // Single Escape key listener to dismiss the goat overlay
+    const goatEscapeListener = (e) => {
+      if (e.key === "Escape") {
+        overlay.remove();
+        fYouNameEasterEggUnlocked = false;
+        fYouNameEasterEggNextPressed = false;
+        scheduleRender(render);
+        document.removeEventListener("keydown", goatEscapeListener);
+      }
+    };
+    document.addEventListener("keydown", goatEscapeListener);
+    document.body.append(overlay);
     // Also schedule via the normal path for subsequent ticks
     scheduleRender(render);
   });
