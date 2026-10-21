@@ -1,8 +1,8 @@
 # Coopertition Player Avatars
 
-Character art for coopertition mode. Files live in `/public` next to the
-rank badges (`1.png`, `2.png`, `3.png`) and are probed automatically at boot —
-no code changes needed to swap art.
+Character art for coopertition mode. Files live in `/public` next to the rank
+badges (`1.png`, `2.png`, `3.png`) and are probed automatically at boot — no
+code changes needed to swap art.
 
 ## Slot mapping
 
@@ -26,11 +26,11 @@ scoreboard rows. Single-player (1-slot) devices use the slot-1 art.
 - `1-correct.png` — one-shot spritesheet on a correct ruling
 - `1-wrong.png` — one-shot spritesheet on a wrong ruling, holds last frame
 
-Supported extensions (probed in order):
-`png, jpg, jpeg, webp, gif, svg, avif`
+Supported extensions (probed in order): `png`, `jpg`, `jpeg`, `webp`, `gif`,
+`svg`, `avif`.
 
-All files are optional. Anything missing falls back to the highlight /
-score-delta treatment (audience screens always show the base image only).
+All files are optional. Anything missing falls back to the highlight/score-delta
+treatment (audience screens always show the base image only).
 
 ## Spritesheet specification (correct / wrong)
 
@@ -41,23 +41,22 @@ should be horizontal filmstrip spritesheets (PNG or WebP recommended):
 - Square frames (frame height == image height).
 - Frame count is auto-detected as `round(imageWidth / imageHeight)` — no
   sidecar or metadata files needed.
-- Playback is ~0.9s with a stepped timing function and `forwards` fill, so
-  the strip freezes on its final frame.
+- Playback is ~0.9s with a stepped timing function and `forwards` fill, so the
+  strip freezes on its final frame.
 - `buzz` plays once on buzz-in — optimistically the moment the key/button is
-  pressed on that device, then from the host round state — and holds its
-  final frame while the ruling is pending (or until the instant judged face
-  flips in, ~1s in fast coop rounds); `correct` plays once when judged, then
-  returns to idle; `wrong` plays once and holds its last frame until a new
-  round opens (or the round resets), at which point it plays in reverse and
-  returns to idle. Faces are player-specific:
-  one-shot states animate only on the acting slot's own device (plus host
-  screens) — other devices keep the idle avatar.
-- Transparent backgrounds preferred. Keep strips under ~2MB so the audience
-  and player screens stay snappy. 256px+ frame height looks best.
+  pressed on that device, then from the host round state — and holds its final
+  frame while the ruling is pending (or until the instant judged face flips in,
+  ~1s in fast coop rounds); `correct` plays once when judged, then returns to
+  idle; `wrong` plays once and holds its last frame until a new round opens (or
+  the round resets), at which point it plays in reverse and returns to idle.
+- Faces are player-specific: one-shot states animate only on the acting slot's
+  own device (plus host screens) — other devices keep the idle avatar.
+- Transparent backgrounds preferred. Keep strips under ~2MB so the audience and
+  player screens stay snappy. 256px+ frame height looks best.
 
-Plain (non-strip) images are also accepted for these states — they simply
-swap in statically. `prefers-reduced-motion` and the in-game UI-animation
-toggle show the final frame without animating.
+Plain (non-strip) images are also accepted for these states — they simply swap
+in statically. `prefers-reduced-motion` and the in-game UI-animation toggle show
+the final frame without animating.
 
 ## Behavior summary
 
@@ -69,6 +68,28 @@ toggle show the final frame without animating.
 | correct | positive ruling, multiple-choice only | plays once, then idle | buzzing device + host screens |
 | wrong | negative ruling, multiple-choice only | plays once, holds last frame until a new round opens or reset, then rewinds to idle | buzzing device + host screens |
 
-Zero-point rulings stay neutral (no face). Text answers advance the
-last-correct rep but never show faces. Bingo, Dis-or-Dat and Fibbage never
-show faces.
+Zero-point rulings stay neutral (no face). Text answers advance the last-correct
+rep but never show faces. Bingo, Dis-or-Dat and Fibbage never show faces.
+
+## Audience display
+
+- Audience screens **always** show the base/idle avatar only — never buzz/dance/correct/wrong faces.
+- The base image (`1.png`, `2.png`, `3.png`) is the only avatar visible on remote displays.
+- Avatar state changes (buzz, correct, wrong) are **not** broadcast to audience screens; they remain on the idle base image.
+
+## Host screens
+
+- Host screens display the full avatar lifecycle (buzz → judged face → idle/correct/wrong as appropriate).
+- Host screens also show the dance animation while a slot holds pick-a-value rep status.
+- The host sees all player faces including those on remote devices.
+
+## File ownership & Fallback
+
+- Missing avatar files fall back gracefully: the base image is always available
+  (default placeholder if none provided), and state-specific states fall back to
+  the base image when the corresponding file is absent.
+- All avatar GIFs/PNGs are gitignored by design — see `.gitignore`. Fresh deploys
+  404-probe and fall back silently; no code changes are needed to swap art.
+- Rank badges (`1.png`, `2.png`, `3.png`) continue to work alongside avatars on
+  grouped scoreboard rows and are shown in addition to, not instead of, the
+  player avatar images.

@@ -81,9 +81,9 @@ const DEFAULT_SETTINGS = {
   fYouEasterEggEnabled: true,
   // Per-mode avatar image namespace. When set, avatar paths are prefixed
   // with "/${namespace}" so each minigame mode can have its own image set.
-  // E.g. set to "bingo" to use /public/bingo/1.png, /public/bingo/1-buzz.*, etc.
+  // E.g. set to "avatars" to use /public/avatars/1.png, /public/avatars/1-buzz.*, etc.
   // Default "" keeps the existing flat /public layout.
-  coopImageNamespace: "",
+  coopImageNamespace: "avatars",
   // Image namespace for when a text question has "gibberish question" in the name.
   // When set, avatar paths are prefixed with "/${namespace}" enabling a separate
   // image set for this specific scenario. Default "" keeps the existing layout.
@@ -10957,8 +10957,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   // F-You name Easter egg modal: show when the name was detected
   if (fYouNameEasterEggUnlocked) {
     if (fYouNameEasterEggNextPressed) {
-      // Show goat.png on player screen
-      return `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
+      // Show goat.png on player screen (hosted version)
+      return `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="https://hedgehawk11.github.io/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
     }
     // Show the modal card with "Next" button — the detection already fired once
     // and set fYouNameEasterEggUnlocked, so we just show the choice screen.
@@ -12683,6 +12683,53 @@ function episodeRunLoad(index) {
   }
   setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys, roundIndex: null, roundTotal: null }, true);
   episodeIndex = Number(index);
+  // Auto-open the round when a new question is loaded and the round is IDLE,
+  // so the game starts immediately rather than requiring the host to manually
+  // click "open buzzers."
+  const round = getRound();
+  if (round.status === ROUND_STATUSES.IDLE) {
+    const settings = getSettings();
+    const safeTimeOpen = normalizeTimeOpen(settings.timeOpen);
+    const openedAt = now();
+    const closesAt = safeTimeOpen > 0 ? openedAt + safeTimeOpen * 1000 : null;
+    setState(
+      "round",
+      {
+        ...round,
+        status: ROUND_STATUSES.OPEN,
+        opensAt: openedAt,
+        closesAt,
+        remainingCs: safeTimeOpen > 0 ? safeTimeOpen * 100 : null,
+        roundNumber: Number.isFinite(Number(round.roundNumber)) ? Math.trunc(Number(round.roundNumber)) + 1 : 1,
+        pausedFrom: null,
+        winnerId: null,
+        winnerTeam: null,
+        winnerOption: null,
+        winnerAnswer: null,
+        winnerName: null,
+        winnerCoopKey: null,
+        coopControl: null,
+        buzzedPlayerIds: [],
+        buzzCounts: {},
+        roulette: {
+          ...round.roulette,
+          active: false,
+          startedAt: null,
+          mode: settings.rouletteMode,
+          topAmount: normalizeRouletteTopAmount(settings.rouletteTopAmount),
+          ceiling: 0,
+          targetPlayerId: null,
+          targetPlayerName: null,
+          selections: {},
+          completedPlayerIds: [],
+          finalValue: null,
+          finishedAt: null,
+        },
+        screw: makeIdleScrew(),
+      },
+      true,
+    );
+  }
   render();
   return true;
 }
@@ -15047,38 +15094,7 @@ function bindEvents() {
   });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
   delegate("click", "[data-f-you-next]", () => {
-    fYouNameEasterEggNextPressed = true;
-    // The render() early-return at line 10961 generates goat HTML but skips
-    // mountView() at line 14720, so we mount it directly instead.
-    // Use document.body append — the goat HTML is position:fixed full-screen,
-    // so it works regardless of app state, without removing app content.
-    const goatHTML = `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
-    const existing = document.body.querySelector('[data-f-you-goat-overlay]');
-    if (existing) existing.remove();
-    const overlay = document.createElement("div");
-    overlay.innerHTML = goatHTML + renderCreditsOverlay();
-    overlay.setAttribute("data-f-you-goat-overlay", "1");
-    // Clicking the goat overlay or pressing Escape dismisses the easter egg
-    overlay.addEventListener("click", () => {
-      overlay.remove();
-      fYouNameEasterEggUnlocked = false;
-      fYouNameEasterEggNextPressed = false;
-      scheduleRender(render);
-    });
-    // Single Escape key listener to dismiss the goat overlay
-    const goatEscapeListener = (e) => {
-      if (e.key === "Escape") {
-        overlay.remove();
-        fYouNameEasterEggUnlocked = false;
-        fYouNameEasterEggNextPressed = false;
-        scheduleRender(render);
-        document.removeEventListener("keydown", goatEscapeListener);
-      }
-    };
-    document.addEventListener("keydown", goatEscapeListener);
-    document.body.append(overlay);
-    // Also schedule via the normal path for subsequent ticks
-    scheduleRender(render);
+    window.location.href = "https://hedgehawk11.github.io/goat.png";
   });
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
