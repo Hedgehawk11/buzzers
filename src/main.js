@@ -393,13 +393,14 @@ function getSettings() {
 // Section keys are dot-paths like "player.buzzer.buzzSent" (screen.group.section).
 // Strings rendered on a single screen live under that screen; strings reused
 // across screens live once under the "shared" screen and are found by fallback.
-// When snark is off, or a level line is blank, falls back to the English line,
-// then to the fallback. {token} placeholders are replaced with the vars object.
+// When snark is off, returns the fallback immediately (with token replacement).
+// Otherwise, falls back through snark2 → snark1 → en → fallback.
+// {token} placeholders are always replaced with the vars object.
 // =============================================================================
 function getSnark(section, fallbackEn = "", vars = {}) {
   const mode = getSettings().snarkMode;
   if (mode === "off") {
-    return fallbackEn;
+    return fallbackEn.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? escapeHtml(String(vars[key])) : match));
   }
   const [screen, group, ...rest] = section.split(".");
   const key = rest.join(".");
@@ -1117,25 +1118,6 @@ function getRound() {
 // =============================================================================
 function getScores() {
   return getSafeState("scores", {});
-}
-
-function getPlayerRank(playerId, settings, scores, players) {
-  const controllerId = getControllerId();
-  const scored = players
-    .filter((p) => p.id !== controllerId)
-    .map((p) => ({
-      id: p.id,
-      score: Number(scores[getScoreKeyForPlayer(p.id, settings)] || 0),
-    }))
-    .sort((a, b) => b.score - a.score);
-  const idx = scored.findIndex((p) => p.id === playerId);
-  return idx === -1 ? scored.length + 1 : idx + 1;
-}
-
-function getOrdinal(n) {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
 // =============================================================================
@@ -2077,63 +2059,37 @@ function updateTimerDisplays() {
   const liveCs = getTimeLeftCs(round, settings);
   const noMainTimer = liveCs === null || liveCs === undefined;
   const timeLeftText = noMainTimer ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(liveCs)}s`;
-  const liveUrgent = !noMainTimer && Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
-  document.querySelectorAll("[data-live-time-left]").forEach((element) => {
-    element.textContent = timeLeftText;
-    try {
-      if (liveUrgent) element.setAttribute("data-timer-urgent", "true");
-      else element.removeAttribute("data-timer-urgent");
-    } catch {}
-  });
+  const liveUrgent = !noMainTimer && Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === ROUND_STATUSES.OPEN;
+
+  patchTimer("[data-live-time-left]", timeLeftText, liveUrgent);
+
   // audience mirrors live timer
-  document.querySelectorAll("[data-audience-time-left]").forEach((element) => {
+  patchTimer("[data-audience-time-left]", () => {
     const ms = getScrewTimerMs(round);
-    let shownCs = null;
     if (ms != null) {
-      shownCs = Math.ceil(ms / 10);
-      element.textContent = `${formatSeconds(shownCs)}s`;
-    } else if (round.screw?.active) {
-      element.textContent = "SCREW";
-    } else {
-      shownCs = liveCs;
-      element.textContent = timeLeftText;
+      const shownCs = Math.ceil(ms / 10);
+      return `${formatSeconds(shownCs)}s`;
     }
-    try {
-      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || isVictimScrewActive(round));
-      if (urgent) element.setAttribute("data-timer-urgent", "true");
-      else element.removeAttribute("data-timer-urgent");
-    } catch {}
-  });
+    if (round.screw?.active) return "SCREW";
+    return timeLeftText;
+  }, (cs) => cs !== null && Number.isFinite(cs) && cs <= 500 && cs > 0 && (round?.status === ROUND_STATUSES.OPEN || isVictimScrewActive(round)));
+
   // tablet mirrors live/screw
-  document.querySelectorAll("[data-tablet-time-left]").forEach((element) => {
+  patchTimer("[data-tablet-time-left]", () => {
     const ms = getScrewTimerMs(round);
-    let shownCs = null;
     if (ms != null) {
-      shownCs = Math.ceil(ms / 10);
-      element.textContent = `${formatSeconds(shownCs)}s`;
-    } else if (isVictimScrewActive(round)) {
-      element.textContent = "SCREW";
-    } else {
-      shownCs = liveCs;
-      element.textContent = timeLeftText;
+      const shownCs = Math.ceil(ms / 10);
+      return `${formatSeconds(shownCs)}s`;
     }
-    try {
-      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || isVictimScrewActive(round));
-      if (urgent) element.setAttribute("data-timer-urgent", "true");
-      else element.removeAttribute("data-timer-urgent");
-    } catch {}
-  });
+    if (isVictimScrewActive(round)) return "SCREW";
+    return timeLeftText;
+  }, (cs) => cs !== null && Number.isFinite(cs) && cs <= 500 && cs > 0 && (round?.status === ROUND_STATUSES.OPEN || isVictimScrewActive(round)));
+
   if (isDisOrDatMode()) {
     const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
     const ddText = ddCs === null || ddCs === undefined ? getSnark("player.disdat.noTimerLabel", "No timer") : `${formatSeconds(ddCs)}s`;
     const ddUrgent = ddCs !== null && ddCs !== undefined && Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
-    document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
-      element.textContent = ddText;
-      try {
-        if (ddUrgent) element.setAttribute("data-timer-urgent", "true");
-        else element.removeAttribute("data-timer-urgent");
-      } catch {}
-    });
+    patchTimer("[data-disordat-time-left]", ddText, ddUrgent);
   }
   if (isFibbageMode()) {
     const fb = getFibbage();
@@ -2141,12 +2097,12 @@ function updateTimerDisplays() {
       const cs = getFibbageLieTimeLeftCs(fb);
       const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
       const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
+      patchTimer("[data-fibbage-time-left]", t, urgent);
     } else if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
       const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
       const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
+      patchTimer("[data-fibbage-time-left]", t, urgent);
     }
   }
   if (isQuixortMode()) {
@@ -2155,10 +2111,7 @@ function updateTimerDisplays() {
       try {
         const run = qx.runs?.[el.dataset?.quixortTrack];
         if (!run || run.finished) return;
-        if (typeof run.blockEndsAt !== "number") {
-          // Untimed block: static label set at render; nothing to patch.
-          return;
-        }
+        if (typeof run.blockEndsAt !== "number") return;
         const cs = Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
         el.textContent = `${formatSeconds(cs)}s`;
         if (Number.isFinite(cs) && cs <= 500 && cs > 0) el.setAttribute("data-timer-urgent", "true");
@@ -2172,6 +2125,19 @@ function updateTimerDisplays() {
     const screwUrgent = round?.screw?.active && ms !== null && Number.isFinite(ms) && ms > 0;
     document.querySelectorAll("[data-screw-timer]").forEach((el) => { try { if (screwUrgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
   }
+}
+
+function patchTimer(selector, getText, getUrgent) {
+  const elements = document.querySelectorAll(selector);
+  elements.forEach((element) => {
+    try {
+      const text = typeof getText === "function" ? getText() : getText;
+      element.textContent = text;
+      const urgent = typeof getUrgent === "function" ? getUrgent() : getUrgent;
+      if (urgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
+  });
 }
 
 function getUiSignature() {
@@ -3639,12 +3605,12 @@ async function submitResponse(payload) {
 // Host actions — open, close, reset round, start bingo, etc.
 // =============================================================================
 // A CLOSED round is terminal — all answers in, timer elapsed, or ruled shut —
-// unless it was only paused mid-round (pausedFrom "open"). Terminal rounds
+// unless it was only paused mid-round (pausedFrom ROUND_STATUSES.OPEN). Terminal rounds
 // can't be paused, resumed, reopened, or re-preset: reset the round or enable
-// re-buzz to continue. pausedFrom is only ever null/"open" (see pauseBuzzers,
-// resumeBuzzers, openBuzzers), so anything else-but-"open" is terminal.
+// re-buzz to continue. pausedFrom is only ever null/ROUND_STATUSES.OPEN (see pauseBuzzers,
+// resumeBuzzers, openBuzzers), so anything else-but-ROUND_STATUSES.OPEN is terminal.
 function isTerminallyClosedRound(round) {
-  return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== "open";
+  return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== ROUND_STATUSES.OPEN;
 }
 
 // New-round face sweep: held "wrong" faces flip to reverse playback
@@ -3818,7 +3784,7 @@ function pauseBuzzers() {
       ...round,
       status: ROUND_STATUSES.CLOSED,
       remainingCs: safeRemaining,
-      pausedFrom: "open",
+      pausedFrom: ROUND_STATUSES.OPEN,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -3867,12 +3833,12 @@ function resumeBuzzers() {
   // Terminal closes (all answers in, timer elapsed, ruled shut) are final:
   // only a mid-round pause may resume — unless re-buzz is on, in which case
   // players can answer the reopened round again.
-  if (round.pausedFrom !== "open" && !getSettings().rebuzzAllowed) {
+  if (round.pausedFrom !== ROUND_STATUSES.OPEN && !getSettings().rebuzzAllowed) {
     setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
     render();
     return;
   }
-  const resumeToLocked = round.pausedFrom === "locked" && getSafeState("pendingLogId", null);
+  const resumeToLocked = round.pausedFrom === ROUND_STATUSES.LOCKED && getSafeState("pendingLogId", null);
   const resumedAt = now();
   setState(
     "round",
@@ -13835,7 +13801,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               : ""}
             <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset || (isTerminallyClosedRound(round) && !settings.rebuzzAllowed) ? "disabled" : ""}>Open Buzzers</button>
             <button type="button" data-host-action="pause" ${round.status !== ROUND_STATUSES.OPEN ? "disabled" : ""} ${round.status === ROUND_STATUSES.LOCKED ? `title="Timer is already paused for the ruling"` : ""}>Pause Timer</button>
-            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === "open" || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
+            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === ROUND_STATUSES.OPEN || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
             <button type="button" data-host-action="reset">Next Round</button>
             ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings) && settings.screwMode === "individual"
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
@@ -16804,11 +16770,11 @@ function boot() {
   // Feature 3: smooth rAF timer (display/tablet + player OPEN; audience/tablet reuse same timers)
   try {
     startSmoothTimer([
-      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && r?.status === "OPEN"; } },
+      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && r?.status === ROUND_STATUSES.OPEN; } },
       // audience main timer mirrors live timer, but shows SCREW when screw active without timer
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === ROUND_STATUSES.OPEN || r?.screw?.active); } },
       // tablet main timer: screw overrides live, otherwise live; SCREW shows static text
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === ROUND_STATUSES.OPEN || r?.screw?.active); } },
       { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
       { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
       { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]", isUrgent: (cs) => { const r=getRound(); return r?.screw?.active && cs > 0; } },
