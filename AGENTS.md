@@ -13,7 +13,7 @@ npm run test:harness     # coop-on run, several hundred checks
 npm run test:harness:all # both runs: HARNESS_COOP=on + off
 npm run episode-server   # standalone episode share API on :3001 (needs MONGO_URL)
 ```
-No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports. No CI workflow exists; the harness never runs in CI, so run it locally.
+No typecheck/lint/format hooks. `dist/` gitignored. PWA SW only in `build` — stale-SW/user-cache is the prime suspect for "works here, broken live" reports. CI (`.github/workflows/node.js.yml`) runs `npm run test:harness:all` on push/PR to main across Node 20/22/24.
 
 ## Key structure
 - `src/main.js` — entire game: state, RPC, render assembly. Game logic goes here. File is very large; function names are stable but line numbers rot fast, so grep instead of trusting any cited line.
