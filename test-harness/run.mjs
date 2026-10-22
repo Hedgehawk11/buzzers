@@ -400,6 +400,89 @@ check(
   !warnings.some((w) => w.includes("[render]")),
   warnings.filter((w) => w.includes("[render]")).join(" | ").slice(0, 500),
 );
+
+// --- input preservation across renders ---
+// Test that draft values in inputs survive re-renders (host tick, rulings, etc.)
+{
+  const T = globalThis.__BUZZER_TEST__;
+  const { _resetPreservedElements, createMockElement, getDoc } = await import("./dom-stub.mjs");
+  const doc = getDoc();
+  _resetPreservedElements();
+
+  // 1. Known ID preservation (prejoin-name) - create the element first
+  const nameInput = createMockElement({ id: "prejoin-name", value: "Initial" });
+  nameInput.value = "Typed Name";
+  nameInput.focus();
+  nameInput.setSelectionRange(5, 9);
+  T.hostTick();
+  const preservedName = doc.getElementById("prejoin-name");
+  check("known ID value preserved", preservedName?.value === "Typed Name", `value=${preservedName?.value}`);
+  check("known ID focus preserved", doc.activeElement === preservedName, "focus lost");
+  check("known ID selection preserved", preservedName?.selectionStart === 5 && preservedName?.selectionEnd === 9, `sel=${preservedName?.selectionStart}-${preservedName?.selectionEnd}`);
+
+  // 2. Checkbox preservation (prejoin-coop)
+  const coopInput = createMockElement({ id: "prejoin-coop", type: "checkbox", checked: false });
+  coopInput.checked = true;
+  T.hostTick();
+  const preservedCoop = doc.getElementById("prejoin-coop");
+  check("checkbox checked preserved", preservedCoop?.checked === true, `checked=${preservedCoop?.checked}`);
+
+  // 3. Ruling input preservation (data-log-input)
+  const testEntryId = "test-entry-123";
+  const rulingInput = createMockElement({
+    id: "", // no id, uses data-log-input
+    dataset: { logInput: testEntryId },
+    value: "100",
+  });
+  rulingInput.focus();
+  rulingInput.setSelectionRange(1, 3);
+  T.hostTick();
+  const preservedRuling = doc.querySelector(`[data-log-input="${testEntryId}"]`);
+  check("ruling input value preserved", preservedRuling?.value === "100", `value=${preservedRuling?.value}`);
+  check("ruling input focus preserved", doc.activeElement === preservedRuling, "focus lost on ruling input");
+  check("ruling input selection preserved", preservedRuling?.selectionStart === 1 && preservedRuling?.selectionEnd === 3, `sel=${preservedRuling?.selectionStart}-${preservedRuling?.selectionEnd}`);
+
+  // 4. Generic fallback: input NOT in PRESERVED_INPUT_IDS
+  const customInput = createMockElement({ id: "custom-input-not-in-list", value: "custom draft" });
+  customInput.focus();
+  T.hostTick();
+  const preservedCustom = doc.getElementById("custom-input-not-in-list");
+  check("generic fallback preserves unknown input", preservedCustom?.value === "custom draft", `value=${preservedCustom?.value}`);
+  check("generic fallback preserves focus", doc.activeElement === preservedCustom, "focus lost on custom input");
+
+  // 5. Multiple inputs preserved simultaneously
+  const inputA = createMockElement({ id: "multi-a", value: "A" });
+  const inputB = createMockElement({ id: "multi-b", value: "B" });
+  const inputC = createMockElement({ id: "multi-c", value: "C" });
+  inputB.focus();
+  T.hostTick();
+  check("multi-input A preserved", doc.getElementById("multi-a")?.value === "A", "A lost");
+  check("multi-input B preserved", doc.getElementById("multi-b")?.value === "B", "B lost");
+  check("multi-input C preserved", doc.getElementById("multi-c")?.value === "C", "C lost");
+  check("multi-input focus preserved", doc.activeElement === inputB, "focus lost on multi");
+
+  // 6. Value change during edit is preserved (not overwritten by queryMap)
+  // Create a fresh element to test queryMap doesn't overwrite typed value
+  const nameInput2 = createMockElement({ id: "prejoin-name-2", value: "From QueryMap" });
+  nameInput2.value = "User Typed This";
+  nameInput2.focus();
+  T.hostTick();
+  const preservedName2 = doc.getElementById("prejoin-name-2");
+  check("typed value wins over queryMap", preservedName2?.value === "User Typed This", `value=${preservedName2?.value}`);
+
+  // 7. select element preservation (optionCount, etc.)
+  const selectEl = createMockElement({
+    id: "prejoin-team-mode",
+    tagName: "SELECT",
+    value: "alliance",
+  });
+  selectEl.focus();
+  T.hostTick();
+  const preservedSelect = doc.getElementById("prejoin-team-mode");
+  check("select value preserved", preservedSelect?.value === "alliance", `value=${preservedSelect?.value}`);
+  check("select focus preserved", doc.activeElement === preservedSelect, "focus lost on select");
+}
+
 pk._store.self = pk._store.participants.host1;
 
 // --- exact host click paths: quick-minus, ruling card, typed apply ---
