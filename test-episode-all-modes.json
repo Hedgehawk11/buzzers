@@ -85,6 +85,58 @@
       "trash": ["Time machine", "Hoverboard"],
       "multiplier": 1,
       "blockSec": 30
+    },
+    {
+      "id": "t8-roadkill",
+      "kind": "roadkill",
+      "prompt": "Roadkill: buzz when the middle word connects both clues.",
+      "decoys": ["Cheese", "Brush", "Cloud", "Glass"],
+      "correctPoints": 1000,
+      "penaltyPoints": 1000,
+      "rounds": [
+        {
+          "clues": ["Milk", "Paint"],
+          "answer": "Chalk",
+          "decoys": ["Cheese", "Brush"]
+        },
+        {
+          "clues": ["Sky", "Ocean"],
+          "answer": "Blue",
+          "decoys": ["Green", "Cloud"]
+        },
+        {
+          "clues": ["Piano", "Voice"],
+          "answer": "Key",
+          "decoys": ["Note", "String"]
+        }
+      ],
+      "finale": {
+        "answer": "White",
+        "decoys": ["Black", "Silver"]
+      }
+    },
+    {
+      "id": "t9-fourway",
+      "kind": "fourway",
+      "prompt": "Which of these apply to the category?",
+      "fixedOptions": ["Is a mammal", "Lives in water", "Has feathers"],
+      "rounds": [
+        {
+          "category": "Things that are mammals",
+          "rotatingOption": "Lays eggs",
+          "correct": [0]
+        },
+        {
+          "category": "Things that live in water",
+          "rotatingOption": "Breathes air",
+          "correct": [1]
+        },
+        {
+          "category": "Things that have feathers",
+          "rotatingOption": "Can fly",
+          "correct": [2]
+        }
+      ]
     }
   ]
 }

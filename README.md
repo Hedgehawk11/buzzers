@@ -9,7 +9,7 @@ But wait! isnt this just kahoot? I hear you ask! yes and no (see "why?" in the F
 ## FAQ
 
 ### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
-Yes. yes there is, handwritten response too, try it, I dare ya
+Yes. yes there is, handwritten response too, try it, I dare ya (Text question easter egg modifiable in settings, name easter egg kicks them immediatly)
 
 ### My players are being evil
 Screw em' you as the host (or producer) have as many as you need.
@@ -36,7 +36,6 @@ In no particular order:
  - BINGO/Wendit UI revamp
  - Some love to the main buzzers
  - Better UI
- - Custom music/sfx engine
  - Screw Revamp
  - YDKJ The Ride RNG preset for pick-a-value
  - whatever people ask via creating issues
@@ -79,6 +78,7 @@ No. (someone else must do this beast)
 - Wen dit happ'n (Before / Never / After)
 - Fibbage (truth + lie timers, voting, 1-5x multiplier, hide-scores-mid-game option)
 - Quixort (order 4-9 items + up to 3 trash, block timer, reveal view)
+- Roadkill (episode-creator only: two clues + a streaming connector per pair, 1-12 pairs, configurable points, optional finale)
 - Episode runner (pre-set question list with per-question scoring/timing overrides)
 - Audience display
 - Timer display for host companion devices (timer is shown on audience display too)
