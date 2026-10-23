@@ -1547,6 +1547,8 @@ function freshDisOrDatState() {
     jackBonus: {},
     finishedPlayerIds: [],
     timedSeconds: 30,
+    // Track which questions have been revealed (for host-paced mode)
+    revealedQuestions: [],
   };
 }
 
@@ -4924,28 +4926,53 @@ function nextDisOrDatQuestion() {
   const dd = getDisOrDat();
   if (!dd.active || dd.phase !== "playing" || dd.mode !== "allPlayHostPaced") return;
   const q = dd.currentQuestion;
-  const nextResponses = { ...(dd.responses || {}) };
-  const controllerId = getControllerId();
-  const producerIds = getSafeState("producerIds", []);
-  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
-  const settings = getSettings();
-  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
-  const tracks = getDisOrDatTracks(settings, assignments, participants);
-  for (const track of tracks) {
-    const resps = nextResponses[track] || [];
-    if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
-      const next = [...resps];
-      next[q] = "none";
-      nextResponses[track] = next;
+  const revealed = dd.revealedQuestions || [];
+
+  // If current question not yet revealed, reveal it first
+  if (!revealed.includes(q)) {
+    const nextResponses = { ...(dd.responses || {}) };
+    const controllerId = getControllerId();
+    const producerIds = getSafeState("producerIds", []);
+    const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+    const settings = getSettings();
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+    const tracks = getDisOrDatTracks(settings, assignments, participants);
+    for (const track of tracks) {
+      const resps = nextResponses[track] || [];
+      if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
+        const next = [...resps];
+        next[q] = "none";
+        nextResponses[track] = next;
+      }
     }
+    setState("disordat", { ...dd, responses: nextResponses, revealedQuestions: [...revealed, q] }, true);
+    render();
+    return;
   }
+
+  // Current question already revealed, advance to next question
   const nextQ = q + 1;
   if (nextQ >= DIS_OR_DAT_QUESTION_COUNT) {
+    const nextResponses = { ...(dd.responses || {}) };
+    const controllerId = getControllerId();
+    const producerIds = getSafeState("producerIds", []);
+    const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+    const settings = getSettings();
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+    const tracks = getDisOrDatTracks(settings, assignments, participants);
+    for (const track of tracks) {
+      const resps = nextResponses[track] || [];
+      if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
+        const next = [...resps];
+        next[q] = "none";
+        nextResponses[track] = next;
+      }
+    }
     setState("disordat", { ...dd, responses: nextResponses, currentQuestion: nextQ }, true);
     finalizeDisOrDat();
     return;
   }
-  setState("disordat", { ...dd, responses: nextResponses, currentQuestion: nextQ }, true);
+  setState("disordat", { ...dd, currentQuestion: nextQ }, true);
   render();
 }
 
@@ -9554,7 +9581,15 @@ function renderDisOrDatHostPanel(settings, players) {
       ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}` : ""}
       ${isTimed ? thingsList : ""}
       <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
-      ${!isTimed ? `<div class="host-actions" style="margin-top:0.6rem"><button type="button" class="primary-action" data-disordat-next>Next Question</button></div>` : ""}
+      ${!isTimed ? (() => {
+        const revealed = dd.revealedQuestions || [];
+        const currentQ = dd.currentQuestion;
+        const isRevealed = revealed.includes(currentQ);
+        const btnLabel = isRevealed
+          ? getSnark("host.disdat.nextQuestion", "Next Question")
+          : getSnark("host.disdat.revealAnswers", "Reveal Answers");
+        return `<div class="host-actions" style="margin-top:0.6rem"><button type="button" class="primary-action" data-disordat-next>${btnLabel}</button></div>`;
+      })() : ""}
       <div class="host-actions" style="margin-top:0.6rem">
         <button type="button" data-disordat-end>End & Award Points</button>
         <button type="button" data-disordat-exit>Return to buzzer mode</button>
@@ -9598,15 +9633,19 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
 
   const myResponses = dd.responses[trackKey] || [];
   const bothShown = dd.answers.some(a => a === "both");
+  const revealedQuestions = dd.revealedQuestions || [];
+  const isHostPaced = dd.mode === "allPlayHostPaced";
 
   const renderQuestionDiamond = (i) => {
     const q = dd.answers[i];
     const myAnswer = myResponses[i];
     const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
     const isCorrect = answered && myAnswer === q;
+    // In host-paced mode, only show correct/incorrect if question has been revealed
+    const showResult = !isHostPaced || revealedQuestions.includes(i);
     const btn = (value, pos, label) => {
       const chosen = myAnswer === value;
-      const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+      const resultCls = answered && showResult ? (isCorrect ? " is-correct" : " is-wrong") : "";
       const chosenCls = chosen ? " is-chosen" : "";
       return `<button type="button" class="disordat-answer-btn ${pos}${resultCls}${chosenCls}" data-disordat-answer data-q="${i}" data-answer="${value}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
     };
@@ -9615,7 +9654,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
         ${btn("dis", "pos-x", dd.disLabel || "Dis")}
         ${btn("dat", "pos-b", dd.datLabel || "Dat")}
         ${bothShown ? btn("both", "pos-a", "Both") : ""}
-        <div class="diamond-center disordat-diamond-center">${answered ? (isCorrect ? "✓" : "✗") : `Q${i + 1}`}</div>
+        <div class="diamond-center disordat-diamond-center">${answered && showResult ? (isCorrect ? "✓" : "✗") : `Q${i + 1}`}</div>
       </div>
     `;
   };
@@ -9687,9 +9726,13 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
     const myAnswer = myResponses[q];
     const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
     const isCorrect = answered && myAnswer === dd.answers[q];
+    // In host-paced mode, only show correct/incorrect if question has been revealed
+    const revealedQuestions = dd.revealedQuestions || [];
+    const isHostPaced = dd.mode === "allPlayHostPaced";
+    const showResult = !isHostPaced || revealedQuestions.includes(q);
     const btn = (value, pos, label) => {
       const chosen = myAnswer === value;
-      const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+      const resultCls = answered && showResult ? (isCorrect ? " is-correct" : " is-wrong") : "";
       const chosenCls = chosen ? " is-chosen" : "";
       return `<button type="button" class="disordat-answer-btn ${pos}${resultCls}${chosenCls}" data-disordat-answer data-q="${q}" data-answer="${value}" data-coop-slot="${slot}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
     };
@@ -9698,7 +9741,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
         ${btn("dis", "pos-x", dd.disLabel || "Dis")}
         ${btn("dat", "pos-b", dd.datLabel || "Dat")}
         ${bothShown ? btn("both", "pos-a", "Both") : ""}
-        <div class="diamond-center disordat-diamond-center">${answered ? (isCorrect ? "✓" : "✗") : `Q${q + 1}`}</div>
+        <div class="diamond-center disordat-diamond-center">${answered && showResult ? (isCorrect ? "✓" : "✗") : `Q${q + 1}`}</div>
       </div>`;
   };
 

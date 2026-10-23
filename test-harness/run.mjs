@@ -889,6 +889,10 @@ const hpAns = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat" }, de
 check("host-paced answer accepted", hpAns?.ok === true, JSON.stringify(hpAns));
 const hpClaim = await pk._store.rpc["disordat-claim"]({ q: 0 }, dev1);
 check("host-paced claim unneeded non-coop", hpClaim?.ok === false, JSON.stringify(hpClaim));
+// First click reveals answers for current question
+clickBtn({}, "[data-disordat-next]");
+check("host-paced revealed q0", (S().disordat?.revealedQuestions || []).includes(0), JSON.stringify(S().disordat?.revealedQuestions));
+// Second click advances to next question
 clickBtn({}, "[data-disordat-next]");
 check("host-paced advanced", S().disordat?.currentQuestion === 1, JSON.stringify(S().disordat?.currentQuestion));
 const hpAns2 = await pk._store.rpc["disordat-answer"]({ q: 1, answer: "dat" }, dev1);

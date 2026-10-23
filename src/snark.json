@@ -1804,6 +1804,16 @@
         "en": "No timer",
         "snark1": "",
         "snark2": ""
+      },
+      "nextQuestion": {
+        "en": "Next Question",
+        "snark1": "",
+        "snark2": ""
+      },
+      "revealAnswers": {
+        "en": "Reveal Answers",
+        "snark1": "",
+        "snark2": ""
       }
     },
     "fourway": {
