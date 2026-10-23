@@ -114,6 +114,29 @@
         "answer": "White",
         "decoys": ["Black", "Silver"]
       }
+    },
+    {
+      "id": "t9-fourway",
+      "kind": "fourway",
+      "prompt": "Which of these apply to the category?",
+      "fixedOptions": ["Is a mammal", "Lives in water", "Has feathers"],
+      "rounds": [
+        {
+          "category": "Things that are mammals",
+          "rotatingOption": "Lays eggs",
+          "correct": [0]
+        },
+        {
+          "category": "Things that live in water",
+          "rotatingOption": "Breathes air",
+          "correct": [1]
+        },
+        {
+          "category": "Things that have feathers",
+          "rotatingOption": "Can fly",
+          "correct": [2]
+        }
+      ]
     }
   ]
 }

@@ -20,6 +20,7 @@ export const EPISODE_KINDS = [
   "fibbage",
   "quixort",
   "roadkill",
+  "fourway",
 ];
 
 export const EPISODE_MAX_ITEMS = 200;
@@ -27,10 +28,19 @@ export const EPISODE_PROMPT_MAX = 300;
 export const EPISODE_LABEL_MAX = 120;
 
 // Coopertition compatibility. Mirrors the gates in main.js: Fibbage, Dis or
-// Dat, and Quixort have no coop model, and coop forces at least 4 options
+// Dat, Quixort, and 4-Way have no coop model, and coop forces at least 4 options
 // for Multiple choice questions. Text, Bingo, Wen Dit Happn, and Roadkill work.
-export const EPISODE_COOP_BLOCKED_KINDS = ["fibbage", "disordat", "quixort"];
+export const EPISODE_COOP_BLOCKED_KINDS = ["fibbage", "disordat", "quixort", "fourway"];
 export const EPISODE_COOP_MIN_OPTIONS = 4;
+
+// Four-Way (The Category Game): 3 fixed options + 1 rotating per round.
+// Players pick which options apply to each round's category.
+export const EPISODE_FOURWAY_MIN_ROUNDS = 1;
+export const EPISODE_FOURWAY_MAX_ROUNDS = 12;
+export const EPISODE_FOURWAY_DEFAULT_ROUNDS = 7;
+export const EPISODE_FOURWAY_FIXED_OPTIONS = 3; // options 1-3 are fixed
+export const EPISODE_FOURWAY_TOTAL_OPTIONS = 4; // total options shown each round
+export const EPISODE_FOURWAY_OPTION_MAX = 120; // per-option character limit
 
 // Roadkill (The Ride): N pairs of top clues + a streamed connector per pair.
 // Decoys can be authored per pair and/or in one shared pool; the two merge at
@@ -146,6 +156,12 @@ export function blankItem(kind) {
         decoys: [],
         correctPoints: EPISODE_ROADKILL_DEFAULT_CORRECT,
         penaltyPoints: EPISODE_ROADKILL_DEFAULT_PENALTY,
+      };
+    case "fourway":
+      return {
+        ...base,
+        fixedOptions: ["", "", ""],
+        rounds: Array.from({ length: EPISODE_FOURWAY_DEFAULT_ROUNDS }, () => ({ category: "", rotatingOption: "", correct: [] })),
       };
     default:
       return { ...base, kind: "buttons", optionCount: 4, correctOptions: [] };
@@ -474,6 +490,78 @@ function validateRoadkill(item, index) {
   return errors;
 }
 
+function validateFourway(item, index) {
+  const errors = checkPrompt(item, index);
+  // fixedOptions: exactly 3 strings, each ≤120 chars, non-empty, unique
+  if (!Array.isArray(item.fixedOptions) || item.fixedOptions.length !== EPISODE_FOURWAY_FIXED_OPTIONS) {
+    errors.push(err(index, item.id, "fixedOptions", `Provide exactly ${EPISODE_FOURWAY_FIXED_OPTIONS} fixed options.`));
+  } else {
+    const seen = new Set();
+    item.fixedOptions.forEach((opt, i) => {
+      const s = String(opt ?? "").trim();
+      if (!s) {
+        errors.push(err(index, item.id, "fixedOptions", `Fixed option ${i + 1} cannot be empty.`));
+      } else if (s.length > EPISODE_FOURWAY_OPTION_MAX) {
+        errors.push(err(index, item.id, "fixedOptions", `Fixed option ${i + 1} must be ${EPISODE_FOURWAY_OPTION_MAX} characters or fewer.`));
+      }
+      const k = normCompare(s);
+      if (seen.has(k)) {
+        errors.push(err(index, item.id, "fixedOptions", "Fixed options must all be different."));
+      }
+      seen.add(k);
+    });
+  }
+  // rounds: array of MIN to MAX entries
+  if (!Array.isArray(item.rounds) || item.rounds.length < EPISODE_FOURWAY_MIN_ROUNDS) {
+    errors.push(err(index, item.id, "rounds", `Add at least ${EPISODE_FOURWAY_MIN_ROUNDS} round.`));
+  } else if (item.rounds.length > EPISODE_FOURWAY_MAX_ROUNDS) {
+    errors.push(err(index, item.id, "rounds", `At most ${EPISODE_FOURWAY_MAX_ROUNDS} rounds.`));
+  } else {
+    item.rounds.forEach((round, r) => {
+      const tag = `Round ${r + 1}`;
+      if (!isPlainObject(round)) {
+        errors.push(err(index, item.id, "rounds", `${tag} must be an object.`));
+        return;
+      }
+      for (const key of Object.keys(round)) {
+        if (!["category", "rotatingOption", "correct"].includes(key)) {
+          errors.push(err(index, item.id, "rounds", `${tag}: unknown field "${key}".`));
+        }
+      }
+      const category = String(round.category ?? "").trim();
+      if (!category) {
+        errors.push(err(index, item.id, "rounds", `${tag}: category cannot be empty.`));
+      } else if (category.length > EPISODE_PROMPT_MAX) {
+        errors.push(err(index, item.id, "rounds", `${tag}: category must be ${EPISODE_PROMPT_MAX} characters or fewer.`));
+      }
+      const rotating = String(round.rotatingOption ?? "").trim();
+      if (!rotating) {
+        errors.push(err(index, item.id, "rounds", `${tag}: rotating option cannot be empty.`));
+      } else if (rotating.length > EPISODE_FOURWAY_OPTION_MAX) {
+        errors.push(err(index, item.id, "rounds", `${tag}: rotating option must be ${EPISODE_FOURWAY_OPTION_MAX} characters or fewer.`));
+      }
+      if (!Array.isArray(round.correct) || round.correct.length === 0) {
+        errors.push(err(index, item.id, "rounds", `${tag}: pick at least one correct option.`));
+      } else {
+        const seenCorrect = new Set();
+        for (const c of round.correct) {
+          const n = Number(c);
+          if (!Number.isInteger(n) || n < 0 || n >= EPISODE_FOURWAY_TOTAL_OPTIONS) {
+            errors.push(err(index, item.id, "rounds", `${tag}: correct options must be 0–${EPISODE_FOURWAY_TOTAL_OPTIONS - 1}.`));
+            break;
+          }
+          if (seenCorrect.has(n)) {
+            errors.push(err(index, item.id, "rounds", `${tag}: correct options must not repeat.`));
+            break;
+          }
+          seenCorrect.add(n);
+        }
+      }
+    });
+  }
+  return errors;
+}
+
 function validateQuixort(item, index) {
   const errors = checkPrompt(item, index);
   const items = Array.isArray(item.items) ? item.items.map((s) => String(s ?? "").trim()) : [];
@@ -585,6 +673,7 @@ const ITEM_VALIDATORS = {
   bingo: validateBingo,
   wendithapn: validateWenDitHapn,
   roadkill: validateRoadkill,
+  fourway: validateFourway,
 };
 
 const ITEM_FIELDS = {
@@ -596,6 +685,7 @@ const ITEM_FIELDS = {
   bingo: ["id", "kind", "prompt", "word", "rounds", "overrides"],
   wendithapn: ["id", "kind", "prompt", "rounds", "overrides"],
   roadkill: ["id", "kind", "prompt", "rounds", "decoys", "finale", "correctPoints", "penaltyPoints", "overrides"],
+  fourway: ["id", "kind", "prompt", "fixedOptions", "rounds", "overrides"],
 };
 
 // Shared validation for episode defaults and per-question overrides.
@@ -688,6 +778,19 @@ export function normalizeEpisode(ep) {
               if (typeof f.answer === "string") f.answer = f.answer.trim();
               if (Array.isArray(f.decoys)) f.decoys = f.decoys.map((s) => String(s ?? "").trim());
               next.finale = f;
+            }
+          }
+          if (next.kind === "fourway") {
+            if (Array.isArray(next.fixedOptions)) next.fixedOptions = next.fixedOptions.map((s) => String(s ?? "").trim());
+            if (Array.isArray(next.rounds)) {
+              next.rounds = next.rounds.map((r) => {
+                if (!isPlainObject(r)) return r;
+                const out = { ...r };
+                if (typeof out.category === "string") out.category = out.category.trim();
+                if (typeof out.rotatingOption === "string") out.rotatingOption = out.rotatingOption.trim();
+                if (Array.isArray(out.correct)) out.correct = [...new Set(out.correct.map(Number).filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
+                return out;
+              });
             }
           }
           // Migrate pre-rounds episodes (single `answer`): fold it into one

@@ -2091,7 +2091,7 @@ for (const [name, mutate, field] of badCases) {
     check("legacy validates after migrate", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
   }
 }
-check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}), ...(k === "roadkill" ? { rounds: [{ clues: ["A", "B"], answer: "C", decoys: ["D"] }], finale: null } : {}) }] }).ok), "blank failed");
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}), ...(k === "roadkill" ? { rounds: [{ clues: ["A", "B"], answer: "C", decoys: ["D"] }], finale: null } : {}), ...(k === "fourway" ? { fixedOptions: ["A", "B", "C"], rounds: [{ category: "Cat", rotatingOption: "D", correct: [0] }] } : {}) }] }).ok), "blank failed");
 // --- episode editor ops (mode-independent, DOM-free) ---
 const eped = await import("../src/episodes/editor.js");
 const epui = await import("../src/episodes/ui.js");
@@ -3447,6 +3447,107 @@ pk._store.self = pk._store.participants.host1;
   pk._store.self = pk._store.participants.host1;
   T.endRoadkill(true);
   check("roadkill exits to buzzer mode", S().settings?.inputMode === "buttons" && S().roadkill?.active === false, `${S().settings?.inputMode}/${S().roadkill?.active}`);
+}
+
+// Four-Way tests
+{
+  const T = globalThis.__BUZZER_TEST__;
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fourway"] }, prod);
+  check("fourway mode on", S().settings?.inputMode === "fourway", S().settings?.inputMode);
+  const fwSetup = {
+    fixedOptions: ["Is a mammal", "Lives in water", "Has feathers"],
+    rounds: [
+      { category: "Things that are mammals", rotatingOption: "Lays eggs", correct: [0] },
+      { category: "Things that live in water", rotatingOption: "Breathes air", correct: [1] },
+      { category: "Things that have feathers", rotatingOption: "Can fly", correct: [2] },
+    ],
+    active: false,
+    phase: "playing",
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: null,
+    timedSeconds: 30,
+  };
+  S().fourway = { ...S().fourway, ...fwSetup };
+  T.startFourway("timed");
+  check("fourway starts timed", S().fourway?.active === true && S().fourway?.mode === "timed" && S().fourway?.phase === "playing", JSON.stringify(S().fourway?.mode));
+  check("fourway timer set", S().fourway?.timeEndsAt !== null && S().fourway?.timeEndsAt > Date.now(), S().fourway?.timeEndsAt);
+
+  // Test host-paced mode
+  pk._store.self = pk._store.participants.host1;
+  S().fourway = { ...fwSetup };
+  T.startFourway("hostPaced");
+  check("fourway starts host-paced", S().fourway?.active === true && S().fourway?.mode === "hostPaced", S().fourway?.mode);
+
+  // Test host-paced next round
+  pk._store.self = pk._store.participants.host1;
+  S().fourway.mode = "hostPaced";
+  S().fourway.currentRound = 0;
+  T.nextFourwayQuestion();
+  check("fourway next round advances", S().fourway?.currentRound === 1, S().fourway?.currentRound);
+
+  // Test finalize
+  pk._store.self = pk._store.participants.host1;
+  S().fourway.currentRound = 2;
+  S().fourway.mode = "timed";
+  T.finalizeFourway();
+  check("fourway finalized", S().fourway?.phase === "results", S().fourway?.phase);
+  const fwEntry = S().gameLog.filter((e) => e.type === "fourway").pop();
+  check("fourway log entry", fwEntry?.type === "fourway" && fwEntry?.resolved === true, JSON.stringify(fwEntry));
+
+  // Test reset
+  pk._store.self = pk._store.participants.host1;
+  T.resetFourway();
+  check("fourway reset", S().fourway?.active === false && S().fourway?.phase === "playing", `${S().fourway?.active}/${S().fourway?.phase}`);
+
+  // Test exit - exitFourway calls finalizeFourway (sets phase=results) then changes inputMode
+  pk._store.self = pk._store.participants.host1;
+  S().fourway = { ...fwSetup, active: true };
+  T.exitFourway();
+  check("fourway exits to buzzer mode", S().settings?.inputMode === "buttons" && S().fourway?.phase === "results", `${S().settings?.inputMode}/${S().fourway?.phase}`);
+
+  // Render tests - need to be in fourway mode
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fourway"] }, prod);
+
+  // Host panel setup view (not active)
+  S().fourway = { ...fwSetup, active: false };
+  T.renderNow();
+  check("fourway host panel renders (setup)", _mount.innerHTML.includes("fourway-host-panel"), "host panel missing");
+
+  // Player panel - needs active game state
+  pk._store.self = pk._store.participants.dev1;
+  S().fourway = {
+    ...fwSetup,
+    active: true,
+    phase: "playing",
+    mode: "timed",
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: Date.now() + 30000,
+  };
+  T.renderNow();
+  const playerHtml = T.renderFourwayPlayerPanel(S().settings, pk._store.participants.dev1);
+  check("fourway player panel renders", playerHtml.includes("fourway-player-card") && playerHtml.includes("data-fourway-answer"), "player panel missing");
+
+  // Audience display - needs active game state with tracks
+  pk._store.self = pk._store.participants.host1;
+  S().fourway = {
+    ...fwSetup,
+    active: true,
+    phase: "playing",
+    mode: "timed",
+    currentRound: 0,
+    responses: { dev1: { 0: [0] } },
+    pointsEarned: { dev1: 500 },
+    timeEndsAt: Date.now() + 30000,
+  };
+  T.renderNow();
+  const audHtml = T.renderFourwayAudienceDisplay(S().settings, Object.values(pk._store.participants));
+  check("fourway audience display renders", audHtml.includes("fourway-active") && audHtml.includes("audience-standings"), "audience panel missing");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

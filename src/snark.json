@@ -684,6 +684,93 @@
         "snark2": ""
       }
     },
+    "fourway": {
+      "waitingHost": {
+        "en": "Waiting for the host to start...",
+        "snark1": "Waiting for the host to start 4-Way... any day now...",
+        "snark2": "Waiting on the host... they're picking categories."
+      },
+      "coopBlocked": {
+        "en": "4-Way is off limits in coopertition mode.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notActive": {
+        "en": "4-Way isn't active.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badRound": {
+        "en": "Bad round.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "badSelection": {
+        "en": "Bad selection.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "alreadyAnswered": {
+        "en": "Already answered this round.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "notLiveYet": {
+        "en": "That round isn't live yet.",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roundPrompt": {
+        "en": "Round {current} of {total}: {category}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "submitted": {
+        "en": "Submitted!",
+        "snark1": "Submitted! Let's see how you did.",
+        "snark2": "Submitted. No take-backs."
+      },
+      "submittedWaiting": {
+        "en": "Submitted! Waiting for other players...",
+        "snark1": "Submitted! Waiting for other players to finish.",
+        "snark2": "Submitted. Now we wait."
+      },
+      "submitButton": {
+        "en": "Submit",
+        "snark1": "",
+        "snark2": ""
+      },
+      "resultsTitle": {
+        "en": "Results",
+        "snark1": "",
+        "snark2": ""
+      },
+      "roundComplete": {
+        "en": "Round {current} of {total} complete",
+        "snark1": "",
+        "snark2": ""
+      },
+      "waitingHostContinue": {
+        "en": "Waiting for the host to continue...",
+        "snark1": "Waiting for the host to continue... any day now...",
+        "snark2": "Waiting on the host... gently. They're trying their best."
+      },
+      "timeLeftLabel": {
+        "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
+      },
+      "answerSendFailed": {
+        "en": "Could not send answer.",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "quixort": {
       "waitingHost": {
         "en": "Waiting for the host to start...",
@@ -1484,6 +1571,38 @@
         "snark2": ""
       }
     },
+    "fourway": {
+      "waitingGame": {
+        "en": "Waiting for the game to start...",
+        "snark1": "",
+        "snark2": ""
+      },
+      "questionTitle": {
+        "en": "Round {current} of {total}",
+        "snark1": "",
+        "snark2": ""
+      },
+      "finalStandings": {
+        "en": "Final Standings",
+        "snark1": "",
+        "snark2": ""
+      },
+      "standings": {
+        "en": "Standings",
+        "snark1": "",
+        "snark2": ""
+      },
+      "timeLeftLabel": {
+        "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
     "quixort": {
       "waitingGame": {
         "en": "Waiting for the game to start...",
@@ -1676,6 +1795,18 @@
       }
     },
     "disdat": {
+      "timeLeftLabel": {
+        "en": "Time left",
+        "snark1": "",
+        "snark2": ""
+      },
+      "noTimerLabel": {
+        "en": "No timer",
+        "snark1": "",
+        "snark2": ""
+      }
+    },
+    "fourway": {
       "timeLeftLabel": {
         "en": "Time left",
         "snark1": "",

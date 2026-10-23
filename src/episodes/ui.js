@@ -26,6 +26,11 @@ import {
   EPISODE_WEN_ANSWERS,
   EPISODE_WEN_LABELS,
   EPISODE_WEN_MAX_ROUNDS,
+  EPISODE_FOURWAY_MAX_ROUNDS,
+  EPISODE_FOURWAY_DEFAULT_ROUNDS,
+  EPISODE_FOURWAY_FIXED_OPTIONS,
+  EPISODE_FOURWAY_TOTAL_OPTIONS,
+  EPISODE_FOURWAY_OPTION_MAX,
   episodeCoopReport,
 } from "./schema.js";
 
@@ -38,6 +43,7 @@ export const EPISODE_KIND_LABELS = {
   fibbage: "Fibbage",
   quixort: "Quixort",
   roadkill: "Roadkill",
+  fourway: "4-Way",
 };
 
 export function kindLabel(kind) {
@@ -85,6 +91,11 @@ function itemSummary(item) {
       const correct = Number(item.correctPoints ?? EPISODE_ROADKILL_DEFAULT_CORRECT);
       const penalty = Number(item.penaltyPoints ?? EPISODE_ROADKILL_DEFAULT_PENALTY);
       return `${rounds.length} pair${rounds.length === 1 ? "" : "s"} • +${correct} / −${penalty}${item.finale?.answer ? " • finale" : ""}`;
+    }
+    case "fourway": {
+      const fixed = Array.isArray(item.fixedOptions) ? item.fixedOptions.filter(Boolean).length : 0;
+      const rounds = Array.isArray(item.rounds) ? item.rounds.filter(r => r?.category?.trim()).length : 0;
+      return `${fixed}/3 fixed options • ${rounds} round${rounds === 1 ? "" : "s"}`;
     }
     default:
       return "";
@@ -262,6 +273,47 @@ function renderRoadkillFields(item, esc) {
     </fieldset>`;
 }
 
+function renderFourwayFields(item, esc) {
+  const fixedOptions = Array.isArray(item.fixedOptions) ? item.fixedOptions : ["", "", ""];
+  const rounds = Array.isArray(item.rounds) && item.rounds.length
+    ? item.rounds
+    : Array.from({ length: EPISODE_FOURWAY_DEFAULT_ROUNDS }, () => ({ category: "", rotatingOption: "", correct: [] }));
+  const fixedInputs = Array.from({ length: EPISODE_FOURWAY_FIXED_OPTIONS }, (_, k) => `
+    <label>Fixed Option ${k + 1} <span class="muted">(shown every round)</span>
+      <input id="ep-fw-fixed-${k}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(fixedOptions[k] || "")}" placeholder="Required" />
+    </label>`).join("");
+  const roundRows = rounds.map((round, i) => {
+    const r = round && typeof round === "object" ? round : {};
+    const correct = Array.isArray(r.correct) ? r.correct : [];
+    const correctChecks = Array.from({ length: EPISODE_FOURWAY_TOTAL_OPTIONS }, (_, k) => {
+      const isFixed = k < EPISODE_FOURWAY_FIXED_OPTIONS;
+      const label = isFixed ? (fixedOptions[k] || `Option ${k + 1}`) : "Option 4 (rotating)";
+      return `<label class="ep-check" title="${esc(label)}">
+        <input type="checkbox" data-ep-harvest id="ep-fw-correct-${i}-${k}" value="${k}" ${correct.includes(k) ? "checked" : ""} />
+        <span>${isFixed ? `${k + 1}` : "4★"}</span>
+      </label>`;
+    }).join("");
+    return `<div class="ep-round-row ep-fw-row">
+      <span class="ep-rk-num">${i + 1}</span>
+      <input id="ep-fw-cat-${i}" type="text" maxlength="300" value="${esc(r.category || "")}" placeholder="Category" aria-label="Round ${i + 1} category" />
+      <input id="ep-fw-rot-${i}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(r.rotatingOption || "")}" placeholder="Rotating option" aria-label="Round ${i + 1} rotating option" />
+      <div class="ep-fw-corrects">${correctChecks}</div>
+      <button type="button" data-ep-round-del="${i}" ${rounds.length <= 1 ? "disabled" : ""} aria-label="Remove round ${i + 1}">×</button>
+    </div>`;
+  }).join("");
+  return `
+    <p class="muted">Each round: a category + 4 options (3 fixed below, 1 rotating per round). Check which options apply to the category.</p>
+    <fieldset class="ep-fieldset"><legend>Fixed Options (${EPISODE_FOURWAY_FIXED_OPTIONS}) — shown in every round</legend>
+      <div class="ep-grid2">${fixedInputs}</div>
+    </fieldset>
+    <fieldset class="ep-fieldset"><legend>Rounds (${rounds.length}/${EPISODE_FOURWAY_MAX_ROUNDS})</legend>
+      <div class="ep-rounds">${roundRows}</div>
+      <div class="ep-toolbar">
+        <button type="button" data-ep-round-add ${rounds.length >= EPISODE_FOURWAY_MAX_ROUNDS ? "disabled" : ""}>Add round</button>
+      </div>
+    </fieldset>`;
+}
+
 function renderQuixortFields(item, esc) {
   const items = Array.isArray(item.items) ? item.items : [];
   const trash = Array.isArray(item.trash) ? item.trash : [];
@@ -406,6 +458,7 @@ function renderEditForm(item, esc, layout = "diamond") {
     case "bingo": kindFields = renderBingoFields(item, esc); break;
     case "wendithapn": kindFields = renderWenFields(item, esc); break;
     case "roadkill": kindFields = renderRoadkillFields(item, esc); break;
+    case "fourway": kindFields = renderFourwayFields(item, esc); break;
     default: kindFields = "";
   }
   return `
@@ -530,7 +583,7 @@ function renderCoopPanel(ep, esc) {
         <p>Up to 3 players share one device using the Q/B/P keys. Each player keeps their own score, and the host can show combined group totals.</p>
         <ul>
           <li>Multiple choice questions need at least ${EPISODE_COOP_MIN_OPTIONS} options; coop widens smaller ones automatically.</li>
-          <li>Fibbage, Dis or Dat, and Quixort are off limits while coop is on.</li>
+          <li>Fibbage, Dis or Dat, Quixort, and 4-Way are off limits while coop is on.</li>
           <li>JACK scoring, screws, re-buzz, and shared-team scoring are disabled.</li>
           <li>Buttons, Text answer, Bingo, Wen Dit Happn, and Roadkill all work in coop.</li>
         </ul>
@@ -772,6 +825,28 @@ export function harvestCreatorFields(root) {
           : null;
       }
     }
+    // Four-way: fixed options + rounds with category, rotating option, correct picks
+    const fwFixed = [];
+    let hasFw = false;
+    for (let k = 0; k < EPISODE_FOURWAY_FIXED_OPTIONS; k++) {
+      if (!q(`#ep-fw-fixed-${k}`)) continue;
+      hasFw = true;
+      fwFixed.push(val(`#ep-fw-fixed-${k}`) || "");
+    }
+    if (hasFw) patch.fixedOptions = fwFixed;
+    const fwRounds = [];
+    for (let k = 0; q(`#ep-fw-cat-${k}`); k++) {
+      const correct = [];
+      for (let c = 0; c < EPISODE_FOURWAY_TOTAL_OPTIONS; c++) {
+        if (q(`#ep-fw-correct-${k}-${c}`)?.checked) correct.push(c);
+      }
+      fwRounds.push({
+        category: val(`#ep-fw-cat-${k}`) || "",
+        rotatingOption: val(`#ep-fw-rot-${k}`) || "",
+        correct,
+      });
+    }
+    if (fwRounds.length) patch.rounds = fwRounds;
     const qxItems = [];
     let hasQx = false;
     for (let k = 0; k < 9; k++) {

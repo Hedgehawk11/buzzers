@@ -1461,6 +1461,10 @@ function isRoadkillMode() {
   return getSettings().inputMode === "roadkill";
 }
 
+function isFourwayMode() {
+  return getSettings().inputMode === "fourway";
+}
+
 function hasAudienceDisplay() {
   try {
     const parts = Object.values(getParticipants() || {});
@@ -1667,6 +1671,35 @@ function freshRoadkillState() {
 
 function getRoadkill() {
   return getSafeState("roadkill", freshRoadkillState());
+}
+
+// =============================================================================
+// Four-Way shared state
+// - fixedOptions: 3 options shown every round
+// - rounds: variable rounds with category, rotatingOption, correct indices
+// - currentRound: which round is active
+// - responses: trackKey -> { roundIndex: [selectedOptionIndices] }
+// - pointsEarned: trackKey -> total points
+// =============================================================================
+const FOURWAY_CORRECT_POINTS = 500;
+const FOURWAY_INCORRECT_PENALTY = 500;
+
+function freshFourwayState() {
+  return {
+    active: false,
+    phase: "playing", // playing | results
+    fixedOptions: [],
+    rounds: [],
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: null,
+    timedSeconds: 30,
+  };
+}
+
+function getFourway() {
+  return getSafeState("fourway", freshFourwayState());
 }
 
 function normalizeRoadkillPoints(value, fallback) {
@@ -2307,6 +2340,20 @@ showScoresToPlayers: settings.showScoresToPlayers,
         correctPoints: rk.correctPoints,
         penaltyPoints: rk.penaltyPoints,
         setupDigest: `${pairs.map((p) => `${(p.clues || []).join("|")}=${p.answer}`).join("~")}#${rk.finale?.answer || ""}`,
+      };
+    })(),
+    fourway: (() => {
+      const fw = getFourway();
+      return {
+        active: fw.active,
+        phase: fw.phase,
+        mode: fw.mode,
+        currentRound: fw.currentRound,
+        fixedOptions: fw.fixedOptions,
+        rounds: fw.rounds,
+        responses: fw.responses,
+        pointsEarned: fw.pointsEarned,
+        timeEndsAt: fw.timeEndsAt,
       };
     })(),
     participantCount: currentParticipants().length,
@@ -4625,6 +4672,24 @@ function getDisOrDatTracks(settings = getSettings(), assignments = getTeamAssign
   return tracks;
 }
 
+// Four-Way tracks (same logic as DisOrDat — per-slot in coop, per-team/player otherwise)
+function getFourwayTracks(settings = getSettings(), assignments = getTeamAssignments(), participants = null) {
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  if (!isCoopMode(settings)) {
+    return [...new Set(list.map((p) => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  }
+  const tracks = [];
+  list.forEach((p) => {
+    const count = getCoopSlotCount(p.id);
+    for (let slot = 0; slot < count; slot++) {
+      if (!isCoopSlotMuted(settings, p.id, slot)) tracks.push(getCoopScoreKey(p.id, slot));
+    }
+  });
+  return tracks;
+}
+
 // Lowest-scoring live individual (coop key) for timed one-play auto-pick.
 // Ties break by earliest-joined device, lowest slot.
 function getDisOrDatLowestCoopKey(settings = getSettings()) {
@@ -5021,6 +5086,220 @@ function handleDisOrDatTick() {
     }
     render();
   }
+}
+
+// =============================================================================
+// Four-Way — category + 4 options (3 fixed, 1 rotating per round)
+// Players multi-select which options apply. Scored per option: +500 correct, -500 incorrect.
+// Modes: "timed" (all play with timer) | "hostPaced" (host advances rounds)
+// =============================================================================
+function startFourway(mode, playerId) {
+  if (!isHost()) return;
+  if (isCoopMode()) {
+    setBuzzNotice("4-Way is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+    render();
+    return;
+  }
+  const fw = getFourway();
+  if (!fw.fixedOptions.length || !fw.rounds.length) return;
+  const isTimed = mode === "timed";
+  const rawTimed = fw.timedSeconds ?? getSettings().timeOpen ?? 30;
+  const timedSeconds = Number(rawTimed);
+  const timedMs = isTimed && timedSeconds > 0 ? now() + timedSeconds * 1000 : null;
+  const tracks = getFourwayTracks();
+  const initialResponses = {};
+  const initialPoints = {};
+  tracks.forEach(t => {
+    initialResponses[t] = {};
+    initialPoints[t] = 0;
+  });
+  setState("fourway", {
+    ...fw,
+    active: true,
+    phase: "playing",
+    mode,
+    currentRound: 0,
+    responses: initialResponses,
+    pointsEarned: initialPoints,
+    timeEndsAt: timedMs,
+  }, true);
+  render();
+}
+
+function handleFourwayAnswer(player, payload) {
+  const fw = getFourway();
+  if (!fw.active || fw.phase !== "playing") {
+    return { ok: false, reason: getSnark("player.fourway.notActive", "4-Way isn't active.") };
+  }
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.fourway.coopBlocked", "4-Way is off limits in coopertition mode.") };
+  const round = Number(payload?.round);
+  const selected = Array.isArray(payload?.selected) ? payload.selected : [];
+  if (!Number.isInteger(round) || round < 0 || round >= fw.rounds.length) {
+    return { ok: false, reason: getSnark("player.fourway.badRound", "Bad round.") };
+  }
+  if (selected.some(s => !Number.isInteger(s) || s < 0 || s >= 4)) {
+    return { ok: false, reason: getSnark("player.fourway.badSelection", "Bad selection.") };
+  }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  let trackKey = getTeamTrackKey(player.id, settings, assignments);
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(player.id);
+    let slot = 0;
+    if (count > 1) {
+      slot = Number(payload?.coopSlot);
+      if (!Number.isInteger(slot) || slot < 0 || slot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+      if (isCoopSlotFrozen(player.id, slot) || isCoopSlotMuted(settings, player.id, slot)) {
+        return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+      }
+    }
+    trackKey = getCoopScoreKey(player.id, slot);
+  }
+  if (settings.teamModeEnabled && !getPlayerTeamColor(player.id, assignments)) {
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  }
+  if (fw.mode === "hostPaced" && round !== fw.currentRound) {
+    return { ok: false, reason: getSnark("player.fourway.notLiveYet", "That round isn't live yet.") };
+  }
+  if (fw.timeEndsAt && now() >= fw.timeEndsAt) {
+    return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
+  }
+  const trackResponses = fw.responses[trackKey] || {};
+  if (trackResponses[round] !== undefined) {
+    return { ok: false, reason: getSnark("player.fourway.alreadyAnswered", "Already answered this round.") };
+  }
+  const correctSet = new Set(fw.rounds[round].correct);
+  const selectedSet = new Set(selected);
+  let roundPoints = 0;
+  for (let i = 0; i < 4; i++) {
+    const isCorrect = correctSet.has(i);
+    const isSelected = selectedSet.has(i);
+    if (isCorrect && isSelected) roundPoints += FOURWAY_CORRECT_POINTS;
+    else if (!isCorrect && isSelected) roundPoints -= FOURWAY_INCORRECT_PENALTY;
+    else if (isCorrect && !isSelected) roundPoints -= FOURWAY_INCORRECT_PENALTY;
+  }
+  const nextResponses = { ...fw.responses };
+  nextResponses[trackKey] = { ...trackResponses, [round]: selected };
+  const nextPoints = { ...fw.pointsEarned };
+  nextPoints[trackKey] = (nextPoints[trackKey] || 0) + roundPoints;
+  setState("fourway", {
+    ...fw,
+    responses: nextResponses,
+    pointsEarned: nextPoints,
+  }, true);
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const activeTracks = getFourwayTracks(settings, assignments, participants);
+  const isTimed = fw.mode === "timed";
+  if (isTimed && activeTracks.length > 0 && activeTracks.every(track =>
+    Object.keys(nextResponses[track] || {}).length >= fw.rounds.length)) {
+    finalizeFourway();
+    return { ok: true, message: getSnark("player.fourway.submitted", "Submitted!") };
+  }
+  render();
+  return { ok: true, message: getSnark("player.fourway.submitted", "Submitted!") };
+}
+
+function nextFourwayQuestion() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (!fw.active || fw.phase !== "playing" || fw.mode !== "hostPaced") return;
+  const nextRound = fw.currentRound + 1;
+  if (nextRound >= fw.rounds.length) {
+    finalizeFourway();
+    return;
+  }
+  setState("fourway", { ...fw, currentRound: nextRound }, true);
+  render();
+}
+
+function finalizeFourway() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (!fw.active || fw.phase === "results") return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const tracks = getFourwayTracks(settings, assignments, participants);
+  const scores = { ...getScores() };
+  const log = getLog();
+  for (const track of tracks) {
+    const trackResponses = fw.responses[track] || {};
+    const points = fw.pointsEarned[track] || 0;
+    if (!Number.isFinite(points)) continue;
+    const isTeamTrack = TEAM_COLORS.includes(track);
+    const parsedTrack = parseCoopScoreKey(track);
+    const rep = parsedTrack
+      ? participants.find((p) => p.id === parsedTrack.deviceId) || null
+      : participants.find((p) => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const teamColor = isTeamTrack ? track : (rep ? getPlayerTeamColor(rep.id, assignments) : null);
+    const scoreKey = parsedTrack ? track : (rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : track);
+    scores[scoreKey] = Number(scores[scoreKey] || 0) + points;
+    const trackDisplayName = parsedTrack ? getCoopKeyDisplayName(track, participants) : (rep ? getPlayerName(rep) : track);
+    log.push({
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "fourway",
+      ts: now(),
+      roundId: currentRoundId(),
+      playerId: rep?.id || track,
+      playerName: trackDisplayName,
+      teamColor,
+      scoreKey,
+      coopKey: parsedTrack ? track : null,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : trackDisplayName,
+      option: null,
+      answerText: `4-Way: ${points >= 0 ? "+" : ""}${points} pts`,
+      timeLeftCs: 0,
+      scoringMode: "uniform",
+      jackMultiplier: settings.jackMultiplier,
+      uniformPoints: FOURWAY_CORRECT_POINTS,
+      basePoints: 0,
+      awardedDelta: points,
+      resolved: true,
+    });
+  }
+  setState("scores", scores, true);
+  setState("gameLog", log, true);
+  setState("fourway", { ...fw, phase: "results" }, true);
+  render();
+}
+
+function resetFourway() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  setState("fourway", {
+    ...fw,
+    active: false,
+    phase: "playing",
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: null,
+  }, true);
+  render();
+}
+
+function exitFourway() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (fw.active && fw.phase === "playing") finalizeFourway();
+  setHostSetting("inputMode", "buttons");
+}
+
+function handleFourwayTick() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (!fw.active || fw.phase !== "playing" || fw.mode !== "timed") return;
+  if (fw.timeEndsAt && now() >= fw.timeEndsAt) {
+    finalizeFourway();
+    return;
+  }
+  render();
 }
 
 // =============================================================================
@@ -6322,6 +6601,10 @@ function hostTick() {
   if (isBingoMode()) return;
   if (isDisOrDatMode()) {
     handleDisOrDatTick();
+    return;
+  }
+  if (isFourwayMode()) {
+    handleFourwayTick();
     return;
   }
   if (isQuixortMode()) {
@@ -9583,6 +9866,260 @@ function renderDisOrDatAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
+// Four-Way — host / player / audience panels
+// =============================================================================
+function renderFourwayPlayerPanel(settings, mePlayer) {
+  const fw = getFourway();
+  if (isCoopMode(settings)) {
+    return `<section class="card player-card"><h2>4-Way</h2><p class="muted">${getSnark("player.fourway.coopBlocked", "4-Way is off limits in coopertition mode.")}</p></section>`;
+  }
+  if (!fw.active) {
+    return `<section class="card player-card"><h2>4-Way</h2><p class="muted">${getSnark("player.fourway.waitingHost", "Waiting for the host to start...")}</p></section>`;
+  }
+
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
+
+  const roundData = fw.rounds[fw.currentRound];
+  const fixedOptions = fw.fixedOptions;
+  const rotatingOption = roundData?.rotatingOption || "";
+  const options = [...fixedOptions, rotatingOption];
+
+  const myResponses = fw.responses[trackKey] || {};
+  const mySelection = myResponses[fw.currentRound] || [];
+  const answered = Array.isArray(mySelection) && mySelection.length > 0;
+
+  const renderOption = (i, label) => {
+    const chosen = mySelection.includes(i);
+    const isCorrect = roundData?.correct?.includes(i);
+    const resultCls = fw.phase === "results" && answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+    const chosenCls = chosen ? " is-chosen" : "";
+    const disabled = answered || fw.phase === "results" ? "disabled" : "";
+    return `<button type="button" class="fourway-option-btn ${resultCls}${chosenCls}" data-fourway-answer data-option="${i}" ${disabled}>${escapeHtml(label)}</button>`;
+  };
+
+  const timerHtml = fw.mode === "timed" && fw.phase === "playing"
+    ? `<div class="fourway-timer">${getSnark("player.fourway.timeLeftLabel", "Time left")}: <strong data-fourway-time-left>${fw.timeEndsAt ? formatSeconds(Math.max(0, Math.ceil((fw.timeEndsAt - now()) / 1000))) : getSnark("player.fourway.noTimerLabel", "No timer")}</strong></div>`
+    : "";
+
+  let body;
+  if (fw.phase === "results") {
+    const trackPoints = fw.pointsEarned[trackKey] || 0;
+    const roundCorrect = roundData?.correct || [];
+    body = `
+      <div class="fourway-results">
+        <h3>${getSnark("player.fourway.resultsTitle", "Results")}</h3>
+        <p class="muted">${getSnark("player.fourway.roundComplete", "Round {current} of {total} complete", { current: fw.currentRound + 1, total: fw.rounds.length })}</p>
+        <div class="fourway-options-result">
+          ${options.map((opt, i) => {
+            const isCorrect = roundCorrect.includes(i);
+            const wasChosen = mySelection.includes(i);
+            const cls = isCorrect ? (wasChosen ? "correct-chosen" : "correct-missed") : (wasChosen ? "wrong-chosen" : "");
+            return `<div class="fourway-result-item ${cls}">${escapeHtml(opt)} ${isCorrect ? "✓" : wasChosen ? "✗" : ""}</div>`;
+          }).join("")}
+        </div>
+        <p>Round points: <strong>${fw.pointsEarned[trackKey] - (Object.values(fw.responses[trackKey] || {}).reduce((sum, sel, idx) => {
+          if (idx >= fw.currentRound) return sum;
+          const roundCorrectSet = new Set(fw.rounds[idx].correct);
+          let rp = 0;
+          for (let i = 0; i < 4; i++) {
+            const isCorrect = roundCorrectSet.has(i);
+            const isSelected = (sel || []).includes(i);
+            if (isCorrect && isSelected) rp += FOURWAY_CORRECT_POINTS;
+            else if (!isCorrect && isSelected) rp -= FOURWAY_INCORRECT_PENALTY;
+            else if (isCorrect && !isSelected) rp -= FOURWAY_INCORRECT_PENALTY;
+          }
+          return sum + rp;
+        }, 0)) || 0}</strong> | Total: <strong>${trackPoints}</strong> pts</p>
+        <p class="muted">${getSnark("player.fourway.waitingHostContinue", "Waiting for the host to continue...")}</p>
+      </div>
+    `;
+  } else {
+    body = `
+      ${timerHtml}
+      <p class="muted">${getSnark("player.fourway.roundPrompt", "Round {current} of {total}: {category}", { current: fw.currentRound + 1, total: fw.rounds.length, category: escapeHtml(roundData?.category || "") })}</p>
+      <div class="fourway-options">
+        ${options.map((opt, i) => renderOption(i, opt)).join("")}
+      </div>
+      ${answered && fw.mode === "timed" ? `<p class="fourway-done">${getSnark("player.fourway.submittedWaiting", "Submitted! Waiting for other players...")}</p>` : ""}
+      ${!answered ? `<button type="button" class="primary-action fourway-submit" data-fourway-submit>${getSnark("player.fourway.submitButton", "Submit")}</button>` : ""}
+    `;
+  }
+
+  return `
+    <section class="card player-card fourway-player-card">
+      <h2>4-Way ${teamPill}</h2>
+      ${body}
+    </section>
+  `;
+}
+
+function renderFourwayAudienceDisplay(settings, players) {
+  const fw = getFourway();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = players.filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+
+  if (!fw.active) {
+    return `
+      <main class="layout audience-layout" data-fourway-active="true" data-round-status="idle">
+        <header class="hero audience-hero">
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">4-Way</span></p><h1 class="audience-title">4-Way</h1><p class="muted">${getSnark("audience.fourway.waitingGame", "Waiting for the game to start...")}</p></div>
+        </header>
+      </main>`;
+  }
+
+  const tracks = getFourwayTracks(settings, assignments, participants);
+  const roundData = fw.rounds[fw.currentRound];
+  const fixedOptions = fw.fixedOptions;
+  const rotatingOption = roundData?.rotatingOption || "";
+  const options = [...fixedOptions, rotatingOption];
+
+  const standings = tracks.map(track => {
+    const trackResponses = fw.responses[track] || {};
+    const trackPoints = fw.pointsEarned[track] || 0;
+    const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const label = TEAM_COLORS.includes(track)
+      ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
+      : escapeHtml(getPlayerName(rep) || track);
+    const parsedTrack = parseCoopScoreKey(track);
+    const displayLabel = parsedTrack ? escapeHtml(getCoopKeyDisplayName(track, participants)) : label;
+    return { track, points: trackPoints, label: displayLabel, responses: trackResponses };
+  }).sort((a, b) => b.points - a.points);
+
+  const standingsHtml = standings.map(({ points, label }, idx) => {
+    const medal = idx < 3 ? getRankBadgeHtml(idx + 1) : "";
+    const rank = medal ? `<span class="standings-rank">${medal}</span>` : `<span class="standings-rank">${idx + 1}.</span>`;
+    return `<li>${rank}<strong>${label}</strong> — <span class="standings-score">${points} pts</span></li>`;
+  }).join("");
+
+  const timerHtml = fw.mode === "timed" && fw.phase === "playing"
+    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.fourway.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-fourway-time-left>${fw.timeEndsAt ? formatSeconds(Math.max(0, Math.ceil((fw.timeEndsAt - now()) / 1000))) : getSnark("audience.fourway.noTimerLabel", "No timer")}</strong></span></div>`
+    : "";
+
+  const roundHtml = fw.phase === "playing"
+    ? `<div class="fourway-audience-question"><h2>${getSnark("audience.fourway.questionTitle", "Round {current} of {total}", { current: fw.currentRound + 1, total: fw.rounds.length })}</h2><p class="fourway-category">${escapeHtml(roundData?.category || "")}</p><div class="fourway-options-audience">${options.map((opt, i) => {
+      const isCorrect = roundData?.correct?.includes(i);
+      return `<span class="fourway-option-audience ${isCorrect ? "correct" : ""}">${escapeHtml(opt)}</span>`;
+    }).join("")}</div></div>`
+    : "";
+
+  const resultsHtml = fw.phase === "results"
+    ? `<section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.fourway.finalStandings", "Final Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standingsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>`
+    : `<section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.fourway.standings", "Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standingsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>`;
+
+  return `
+    <main class="layout audience-layout" data-fourway-active="true" data-round-status="open">
+      <header class="hero audience-hero">
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">4-Way</span></p><h1 class="audience-title">4-Way</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+      </header>
+      ${timerHtml}
+      ${roundHtml}
+      ${resultsHtml}
+    </main>
+  `;
+}
+
+function renderFourwayHostPanel(settings, players) {
+  if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control 4-Way. The host must manage it.</p></section>`;
+  const fw = getFourway();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const tracks = getFourwayTracks(settings, assignments, players);
+
+  if (!fw.active) {
+    const fixedOpts = fw.fixedOptions.map((o, i) => `<div class="fourway-setup-fixed">Fixed ${i + 1}: ${escapeHtml(o || "—")}</div>`).join("");
+    const roundsHtml = fw.rounds.map((r, i) => `
+      <div class="fourway-setup-round">
+        <strong>Round ${i + 1}</strong> — Category: ${escapeHtml(r.category || "—")} | Rotating: ${escapeHtml(r.rotatingOption || "—")} | Correct: ${(r.correct || []).map(c => c + 1).join(", ")}
+      </div>`).join("");
+    return `
+      <section class="card host-panel fourway-host-panel">
+        <h2>4-Way Setup</h2>
+        <p class="muted">3 fixed options + 1 rotating per round. Players pick which apply. +500 per correct pick, −500 per wrong/missed.</p>
+        <div class="fourway-setup-fixed-options">${fixedOpts}</div>
+        <div class="fourway-setup-rounds">${roundsHtml || "<p class='muted'>No rounds configured.</p>"}</div>
+        <div class="host-actions" style="margin-top:0.9rem">
+          <button type="button" class="primary-action" data-fourway-start="timed" ${!fw.fixedOptions.length || !fw.rounds.length ? "disabled" : ""}>Start Timed</button>
+          <button type="button" class="primary-action" data-fourway-start="hostPaced" ${!fw.fixedOptions.length || !fw.rounds.length ? "disabled" : ""}>Start Host-Paced</button>
+        </div>
+        <div class="host-actions" style="margin-top:0.6rem">
+          <button type="button" data-fourway-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+
+  // Live / Results view
+  const roundData = fw.rounds[fw.currentRound];
+  const fixedOptions = fw.fixedOptions;
+  const rotatingOption = roundData?.rotatingOption || "";
+  const options = [...fixedOptions, rotatingOption];
+
+  const trackRows = tracks.map(track => {
+    const trackResponses = fw.responses[track] || {};
+    const trackPoints = fw.pointsEarned[track] || 0;
+    const rep = players.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const parsedTrack = parseCoopScoreKey(track);
+    const label = parsedTrack ? escapeHtml(getCoopKeyDisplayName(track, players)) : (TEAM_COLORS.includes(track) ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "") : escapeHtml(getPlayerName(rep) || track));
+    const currentSel = trackResponses[fw.currentRound] || [];
+    return { track, points: trackPoints, label, currentSel };
+  }).sort((a, b) => b.points - a.points);
+
+  const trackRowsHtml = trackRows.map(({ points, label, currentSel }) => {
+    const selHtml = currentSel.length ? currentSel.map(i => `<span class="fourway-host-sel ${roundData?.correct?.includes(i) ? "correct" : "wrong"}">${i + 1}</span>`).join(" ") : "—";
+    return `<li><strong>${label}</strong> — ${points} pts — Selection: ${selHtml}</li>`;
+  }).join("");
+
+  if (fw.phase === "results") {
+    return `
+      <section class="card host-panel fourway-host-panel">
+        <h2>4-Way — Results</h2>
+        <p class="muted">Round ${fw.currentRound + 1} of ${fw.rounds.length}: ${escapeHtml(roundData?.category || "")}</p>
+        <div class="fourway-options-result">
+          ${options.map((opt, i) => `<span class="fourway-option-result ${roundData?.correct?.includes(i) ? "correct" : ""}">${escapeHtml(opt)}</span>`).join("")}
+        </div>
+        <ul class="fourway-standings">${trackRowsHtml || "<li class='muted'>No players.</li>"}</ul>
+        <div class="host-actions" style="margin-top:0.9rem">
+          ${fw.currentRound + 1 < fw.rounds.length ? `<button type="button" class="primary-action" data-fourway-next>Next Round</button>` : ""}
+          <button type="button" data-fourway-end>End 4-Way</button>
+          <button type="button" data-fourway-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+
+  // Live view
+  const timerHtml = fw.mode === "timed"
+    ? `<div class="fourway-timer">${getSnark("host.fourway.timeLeftLabel", "Time left")}: <strong data-fourway-time-left">${fw.timeEndsAt ? formatSeconds(Math.max(0, Math.ceil((fw.timeEndsAt - now()) / 1000))) : getSnark("host.fourway.noTimerLabel", "No timer")}</strong></div>`
+    : "";
+
+  return `
+    <section class="card host-panel fourway-host-panel">
+      <h2>4-Way — Live ${fw.mode === "timed" ? "(Timed)" : "(Host-Paced)"}</h2>
+      <p class="muted">Round ${fw.currentRound + 1} of ${fw.rounds.length}: ${escapeHtml(roundData?.category || "")}</p>
+      ${timerHtml}
+      <div class="fourway-options-live">
+        ${options.map((opt, i) => `<span class="fourway-option-live ${roundData?.correct?.includes(i) ? "correct" : ""}">${escapeHtml(opt)}</span>`).join("")}
+      </div>
+      <ul class="fourway-standings">${trackRowsHtml || "<li class='muted'>No players.</li>"}</ul>
+      <div class="host-actions" style="margin-top:0.9rem">
+        ${fw.mode === "hostPaced" && fw.currentRound + 1 < fw.rounds.length ? `<button type="button" class="primary-action" data-fourway-next>Next Round</button>` : ""}
+        <button type="button" data-fourway-end>End 4-Way</button>
+        <button type="button" data-fourway-exit>Return to buzzer mode</button>
+      </div>
+    </section>
+  `;
+}
+
+// =============================================================================
 // Quixort — host / player / audience panels
 // =============================================================================
 function quixortTrackLabel(track, participants, assignments) {
@@ -10704,6 +11241,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
   if (isQuixortMode()) return renderQuixortPlayerPanel(settings, mePlayer);
   if (isRoadkillMode()) return renderRoadkillPlayerPanel(settings, mePlayer);
+  if (isFourwayMode()) return renderFourwayPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   // Host/producer have the full host panel already — no buzzer card needed.
   if (isControllerPlayer() || isProducer()) {
@@ -12581,6 +13119,16 @@ function episodeRunLoad(index) {
       return false;
     }
     setState("roadkill", { ...freshRoadkillState(), ...setup }, true);
+  } else if (item.kind === "fourway") {
+    setState("fourway", {
+      ...freshFourwayState(),
+      fixedOptions: [...item.fixedOptions],
+      rounds: item.rounds.map(r => ({
+        category: r.category,
+        rotatingOption: r.rotatingOption,
+        correct: [...r.correct]
+      }))
+    }, true);
   } else if (item.kind === "bingo" || item.kind === "wendithapn") {
     // Fresh question state: reset per-question play (a stale active game
     // from the previous question must not leak in), seed the word + the
@@ -13037,6 +13585,7 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isFibbageMode()) return renderEpisodePromptBanner() + renderFibbageAudienceDisplay(settings, players);
   if (isQuixortMode()) return renderEpisodePromptBanner() + renderQuixortAudienceDisplay(settings, players);
   if (isRoadkillMode()) return renderEpisodePromptBanner() + renderRoadkillAudienceDisplay(settings, players);
+  if (isFourwayMode()) return renderEpisodePromptBanner() + renderFourwayAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const screwActive = Boolean(round.screw?.active);
   // Results read side-by-side (analytics + scores); live play stacks the
@@ -13343,6 +13892,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   if (isRoadkillMode()) {
     if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Roadkill. The host must manage it.</p></section>`;
     return renderRoadkillHostPanel(settings, players);
+  }
+
+  if (isFourwayMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control 4-Way. The host must manage it.</p></section>`;
+    return renderFourwayHostPanel(settings, players);
   }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
@@ -15071,6 +15625,34 @@ function bindEvents() {
     const slotRaw = btn?.dataset?.coopSlot;
     await submitDisOrDatClaim(q, slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw));
   });
+
+  // Four-Way host controls
+  delegate("click", "[data-fourway-start]", requireHost((e, btn) => {
+    const mode = btn.dataset.fourwayStart;
+    startFourway(mode);
+  }));
+  delegate("click", "[data-fourway-next]", requireHost(() => nextFourwayQuestion()));
+  delegate("click", "[data-fourway-end]", requireHost(() => finalizeFourway()));
+  delegate("click", "[data-fourway-exit]", requireHost(() => exitFourway()));
+  delegate("click", "[data-fourway-submit]", async (e, btn) => {
+    if (isControllerPlayer() || isProducer()) return;
+    const checkboxes = document.querySelectorAll("[data-fourway-answer].is-chosen");
+    const selected = Array.from(checkboxes).map(c => Number(c.dataset.option));
+    const payload = { round: getFourway().currentRound, selected };
+    try {
+      const result = await RPC.call("fourway-answer", payload, RPC.Mode.HOST);
+      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+      else if (result?.message) setBuzzNotice(result.message);
+      scheduleRender(render);
+    } catch { setBuzzNotice(getSnark("player.fourway.answerSendFailed", "Could not send answer.")); scheduleRender(render); }
+  });
+  delegate("click", "[data-fourway-answer]", (e, btn) => {
+    if (isControllerPlayer() || isProducer()) return;
+    const option = Number(btn.dataset.option);
+    btn.classList.toggle("is-chosen");
+    scheduleRender(render);
+  });
+
   delegate("click", "[data-coop-text-tab]", (e, btn) => {
     const slot = Number(btn?.dataset?.coopTextTab);
     if (Number.isInteger(slot)) {
@@ -16450,6 +17032,16 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return handleDisOrDatAnswer(senderPlayer, payload);
   });
 
+  RPC.register("fourway-answer", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleFourwayAnswer(senderPlayer, payload);
+  });
+
+  RPC.register("fourway-submit", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleFourwayAnswer(senderPlayer, { ...payload, submitted: true });
+  });
+
   RPC.register("select-team", async (payload, senderPlayer) => {
     if (!isHost()) {
       return { ok: false, reason: "Not host" };
@@ -16863,5 +17455,16 @@ try {
     handleRoadkillBuzz,
     roadkillStageState,
     renderRoadkillPlayerPanel,
+    // Four-Way test seams
+    getFourway,
+    startFourway,
+    nextFourwayQuestion,
+    finalizeFourway,
+    resetFourway,
+    exitFourway,
+    handleFourwayTick,
+    handleFourwayAnswer,
+    renderFourwayPlayerPanel,
+    renderFourwayAudienceDisplay,
   });
 } catch {}

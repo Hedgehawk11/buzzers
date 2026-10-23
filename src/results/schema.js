@@ -21,6 +21,7 @@ export const RESULTS_LOG_TYPES = [
   "quixort",
   "fibbage",
   "roadkill",
+  "fourway",
   "manual-adjust",
   "manual-reset",
 ];
