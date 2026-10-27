@@ -1037,65 +1037,87 @@ body:not([data-ui-anims="off"]) .roulette-card .roulette-value {
 }
 
 .fourway-option-checkbox {
-  position: relative;
-  padding-left: 28px;
-  cursor: pointer;
+  width: 100%;
+  padding: 0.8rem 1rem;
   margin-bottom: 0.5rem;
   font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text);
+  background: none;
+  border: 2px solid var(--panel-border);
+  border-radius: 24px;
+  cursor: pointer;
   user-select: none;
+  transition: border-color 0.15s, background 0.15s;
 }
 
+.fourway-option-checkbox:hover {
+  border-color: var(--accent, #1db954);
+}
+
+.fourway-option-checkbox:hover:not(:disabled) {
+  background: rgba(29, 185, 84, 0.15);
+}
+
+.fourway-option-checkbox:checked {
+  border-color: var(--accent, #1db954);
+  background: var(--accent, #1db954);
+  color: #fff;
+}
+
+.fourway-option-checkbox:checked:hover:not(:disabled) {
+  background: rgba(29, 185, 84, 0.3);
+}
+
+.fourway-option-checkbox:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Checkmark when checked */
+.fourway-option-checkbox .checkmark {
+  position: absolute;
+  top: 50%;
+  left: 1rem;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  border-radius: 4px;
+  display: none;
+}
+
+.fourway-option-checkbox input:checked ~ .checkmark {
+  display: block;
+}
+
+/* Hide the default input */
 .fourway-option-checkbox input {
   position: absolute;
   opacity: 0;
   cursor: pointer;
-  height: 0;
-  width: 0;
-}
-
-/* Create a custom checkbox */
-.fourway-option-checkbox .checkmark {
-  position: absolute;
-  top: 0;
+  height: 1px;
+  width: 1px;
   left: 0;
-  height: 20px;
-  width: 20px;
-  border: 2px solid #ccc;
-  border-radius: 4px;
-  background-color: #fff;
+  top: 0;
 }
 
-.fourway-option-checkbox:hover input ~ .checkmark {
-  border-color: #888;
-}
-
-/* When the checkbox is checked, add a blue background */
-.fourway-option-checkbox input:checked ~ .checkmark {
-  background-color: #1db954;
-  border-color: #1db954;
-}
-
-/* Create the checkmark/indicator (hidden by default) */
+/* Indicator when checked */
 .fourway-option-checkbox .checkmark:after {
   content: "";
   position: absolute;
-  display: none;
-}
-
-/* Show the checkmark when checked */
-.fourway-option-checkbox input:checked ~ .checkmark:after {
-  display: block;
-}
-
-/* Style the checkmark/indicator */
-.fourway-option-checkbox .checkmark:after {
-  left: 7px;
-  top: 3px;
+  left: 4px;
+  top: 2px;
   width: 5px;
   height: 8px;
   border: solid #fff;
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
+  display: none;
+}
+
+.fourway-option-checkbox input:checked ~ .checkmark:after {
+  display: block;
 }
 
 .choice-value {
