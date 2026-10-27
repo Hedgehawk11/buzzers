@@ -682,7 +682,7 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
         ${renderItemRows(ep, errors, esc)}
         <div class="ep-add">
           <select id="ep-add-kind" aria-label="Question type">
-            ${EPISODE_KINDS.map((k) => `<option value="${k}">${esc(kindLabel(k))}</option>`).join("")}
+            ${EPISODE_KINDS.filter((k) => k !== "fourway").map((k) => `<option value="${k}">${esc(kindLabel(k))}</option>`).join("")}
           </select>
           <button type="button" data-ep-add>Add question</button>
         </div>
