@@ -175,8 +175,6 @@ let prejoinMode = "landing";
 let rouletteAnimationInterval = null;
 let rouletteKeydownBound = false;
 let fYouEasterEggUnlocked = false;
-let fYouNameEasterEggUnlocked = false;
-let fYouNameEasterEggNextPressed = false;
 let hostPrejoinTeamSetting = "off";
 let hostPrejoinCoopSetting = false;
 let hostPrejoinEpisodeEnabled = false;
@@ -315,10 +313,6 @@ function isFYouEasterEggAnswer(answerText) {
 
 function isFYouCorrectAnswer(round) {
   return normalizeAnswerForCompare(round?.correctAnswer) === "fuck you";
-}
-
-function isFYouPlayerName(player) {
-  return player && normalizeAnswerForCompare(getPlayerName(player)) === "fuck you";
 }
 
 function setBuzzNotice(message) {
@@ -3293,20 +3287,6 @@ function hostHandleBuzz(player, payload) {
   const playerTeamColor = getPlayerTeamColor(player.id, assignments);
   const shouldLockAfterBuzz = isVictimScrewActive(round) || (settings.lockAfterBuzz && !settings.rebuzzAllowed);
   const usingTextEntry = settings.inputMode === "text";
-  
-  // F-You name Easter egg: detect player joining with that name
-  if (!fYouNameEasterEggUnlocked) {
-    const participants = currentParticipants();
-    const fYouPlayer = participants.find((p) => isFYouPlayerName(p));
-    if (fYouPlayer) {
-      // Show monologue modal
-      setBuzzNotice(getSnark("player.easteregg.fyoujoin", "Nice try! Getting ejected."));
-      // Mark as handled so we only show the modal once
-      fYouNameEasterEggUnlocked = true;
-      scheduleRender(render);
-    }
-  }
-
   let validOption = null;
   let answerText = null;
 
@@ -11488,38 +11468,6 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const usingTextEntry = settings.inputMode === "text";
   
-  // F-You name Easter egg: detect player joining with that name
-  if (!fYouNameEasterEggUnlocked) {
-    const participants = currentParticipants();
-    const fYouPlayer = participants.find((p) => isFYouPlayerName(p));
-    if (fYouPlayer) {
-      // Show monologue modal
-      setBuzzNotice(getSnark("player.easteregg.fyoujoin", "Nice try! Getting ejected."));
-      // Mark as handled so we only show the modal once
-      fYouNameEasterEggUnlocked = true;
-      scheduleRender(render);
-    }
-  }
-  
-  // F-You name Easter egg modal: show when the name was detected
-  if (fYouNameEasterEggUnlocked) {
-    if (fYouNameEasterEggNextPressed) {
-      // Show goat.png on player screen (hosted version)
-      return `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="https://hedgehawk11.com/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
-    }
-    // Show the modal card with "Next" button — the detection already fired once
-    // and set fYouNameEasterEggUnlocked, so we just show the choice screen.
-    return `<section class="card player-card easter-egg-card">
-      <h2>${escapeHtml(getSnark("player.easteregg.heading", "F*** You?"))}</h2>
-      <p class="muted">
-        Nice try! Getting ejected.
-      </p>
-      <div class="easter-egg-actions">
-        <button type="button" data-f-you-next">${getSnark("player.easteregg.nextButton", "Next")}</button>
-      </div>
-    </section>`;
-  }
-
   // Option display order (scrambled in all-screw mode)
   const optionOrder = getPlayerOptionOrder(settings, round, mePlayer.id);
 
@@ -15609,9 +15557,6 @@ function bindEvents() {
     await submitRoadkillBuzz(Number.isInteger(slot) ? slot : null);
   });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
-  delegate("click", "[data-f-you-next]", () => {
-    window.location.href = "https://hedgehawk11.com/goat.png";
-  });
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
   delegate("change", "#disordat-dat-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), datLabel: String(e.target.value || "").trim() }, true)));

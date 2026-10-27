@@ -113,7 +113,7 @@ Because jackbox doesn't have a large player count, easily moddable version of JA
 Just create an issue
 
 ## How make work?
-Just run the thing as you would a node app, as thats what it is or just use the vercel instance [Here](https://instant-buzzers-playroom.vercel.app/)
+Just run the thing as you would a node app, as thats what it is or just use the instance [Here](https://buzzers.hedgehawk11.com/)
 
 USE NODE 20+
 
