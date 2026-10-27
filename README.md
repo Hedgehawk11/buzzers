@@ -34,9 +34,9 @@ In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Bounce gamemode (think Jackbox survey scramble, for lists longer than quixort, this one is probably not happening tho)
  - BINGO/Wendit UI revamp
- - Some love to the main buzzers
+ - Connections
+ - Some love to the main buzzer system
  - Better UI
- - Screw Revamp
  - YDKJ The Ride RNG preset for pick-a-value
  - whatever people ask via creating issues
  - ~~whatever I think of the next time I shower~~ other cool stuff.
