@@ -9921,7 +9921,7 @@ function renderFourwayPlayerPanel(settings, mePlayer) {
     const resultCls = fw.phase === "results" && answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
     const chosenCls = chosen ? " is-chosen" : "";
     const disabled = answered || fw.phase === "results" ? "disabled" : "";
-    return `<button type="button" class="fourway-option-btn ${resultCls}${chosenCls}" data-fourway-answer data-option="${i}" ${disabled}>${escapeHtml(label)}</button>`;
+    return `<input type="checkbox" class="fourway-option-checkbox ${resultCls}${chosenCls}" data-fourway-answer data-option="${i}" ${disabled} ${chosen ? "checked" : ""}>${escapeHtml(label)}`;
   };
 
   const timerHtml = fw.mode === "timed" && fw.phase === "playing"
