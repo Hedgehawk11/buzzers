@@ -11505,7 +11505,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (fYouNameEasterEggUnlocked) {
     if (fYouNameEasterEggNextPressed) {
       // Show goat.png on player screen (hosted version)
-      return `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="https://hedgehawk11.github.io/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
+      return `<div style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;display:flex;align-items:center;justify-content:center;z-index:9999;"><img src="https://hedgehawk11.com/goat.png" alt="Goat" style="max-width:90vh;max-height:90vh;" /></div>`;
     }
     // Show the modal card with "Next" button — the detection already fired once
     // and set fYouNameEasterEggUnlocked, so we just show the choice screen.
@@ -15610,7 +15610,7 @@ function bindEvents() {
   });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
   delegate("click", "[data-f-you-next]", () => {
-    window.location.href = "https://hedgehawk11.github.io/goat.png";
+    window.location.href = "https://hedgehawk11.com/goat.png";
   });
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
