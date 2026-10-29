@@ -7,6 +7,7 @@
 
 import {
   EPISODE_BINGO_MAX_ROUNDS,
+  EPISODE_COOP_MIN_OPTIONS,
   EPISODE_DISORDAT_ANSWER_VALUES,
   EPISODE_DISORDAT_COUNT,
   EPISODE_FIBBAGE_LIE_TIMES,
@@ -14,9 +15,23 @@ import {
   EPISODE_KINDS,
   EPISODE_OPTION_COUNTS,
   EPISODE_QUIXORT_BLOCK_SECS,
+  EPISODE_ROADKILL_DEFAULT_CORRECT,
+  EPISODE_ROADKILL_DEFAULT_PENALTY,
+  EPISODE_ROADKILL_DEFAULT_ROUNDS,
+  EPISODE_ROADKILL_MAX_DECOYS,
+  EPISODE_ROADKILL_MAX_POINTS,
+  EPISODE_ROADKILL_MAX_ROUNDS,
+  EPISODE_ROADKILL_MAX_SHARED_DECOYS,
+  EPISODE_ROADKILL_WORD_MAX,
   EPISODE_WEN_ANSWERS,
   EPISODE_WEN_LABELS,
   EPISODE_WEN_MAX_ROUNDS,
+  EPISODE_FOURWAY_MAX_ROUNDS,
+  EPISODE_FOURWAY_DEFAULT_ROUNDS,
+  EPISODE_FOURWAY_FIXED_OPTIONS,
+  EPISODE_FOURWAY_TOTAL_OPTIONS,
+  EPISODE_FOURWAY_OPTION_MAX,
+  episodeCoopReport,
 } from "./schema.js";
 
 export const EPISODE_KIND_LABELS = {
@@ -27,6 +42,8 @@ export const EPISODE_KIND_LABELS = {
   disordat: "Dis or Dat",
   fibbage: "Fibbage",
   quixort: "Quixort",
+  roadkill: "Roadkill",
+  fourway: "4-Way",
 };
 
 export function kindLabel(kind) {
@@ -68,6 +85,17 @@ function itemSummary(item) {
       const rounds = Array.isArray(item.rounds) ? item.rounds : [];
       const letters = rounds.map((r) => r?.answer).filter(Boolean).join(", ");
       return `${rounds.length} round${rounds.length === 1 ? "" : "s"}${letters ? ` (${letters})` : ""}`;
+    }
+    case "roadkill": {
+      const rounds = Array.isArray(item.rounds) ? item.rounds : [];
+      const correct = Number(item.correctPoints ?? EPISODE_ROADKILL_DEFAULT_CORRECT);
+      const penalty = Number(item.penaltyPoints ?? EPISODE_ROADKILL_DEFAULT_PENALTY);
+      return `${rounds.length} pair${rounds.length === 1 ? "" : "s"} • +${correct} / −${penalty}${item.finale?.answer ? " • finale" : ""}`;
+    }
+    case "fourway": {
+      const fixed = Array.isArray(item.fixedOptions) ? item.fixedOptions.filter(Boolean).length : 0;
+      const rounds = Array.isArray(item.rounds) ? item.rounds.filter(r => r?.category?.trim()).length : 0;
+      return `${fixed}/3 fixed options • ${rounds} round${rounds === 1 ? "" : "s"}`;
     }
     default:
       return "";
@@ -188,6 +216,101 @@ function renderDisordatFields(item, esc) {
     </div>
     <fieldset class="ep-fieldset"><legend>Seven things (${questions.filter((s) => String(s || "").trim()).length}/${EPISODE_DISORDAT_COUNT})</legend>
       <div class="ep-rounds">${rows}</div>
+    </fieldset>`;
+}
+
+function renderRoadkillFields(item, esc) {
+  const rounds = Array.isArray(item.rounds) && item.rounds.length
+    ? item.rounds
+    : Array.from({ length: EPISODE_ROADKILL_DEFAULT_ROUNDS }, () => ({ clues: ["", ""], answer: "", decoys: [] }));
+  const rows = rounds.map((round, i) => {
+    const r = round && typeof round === "object" ? round : {};
+    const clues = Array.isArray(r.clues) ? r.clues : [];
+    const decoys = Array.isArray(r.decoys) ? r.decoys.join(", ") : "";
+    return `<div class="ep-round-row ep-rk-row">
+      <span class="ep-rk-num">${i + 1}</span>
+      <input id="ep-rk-a-${i}" type="text" maxlength="120" value="${esc(clues[0] || "")}" placeholder="Clue A" aria-label="Pair ${i + 1} clue A" />
+      <input id="ep-rk-b-${i}" type="text" maxlength="120" value="${esc(clues[1] || "")}" placeholder="Clue B" aria-label="Pair ${i + 1} clue B" />
+      <input id="ep-rk-ans-${i}" type="text" maxlength="${EPISODE_ROADKILL_WORD_MAX}" value="${esc(r.answer || "")}" placeholder="Connecting word" aria-label="Pair ${i + 1} connecting word" />
+      <input id="ep-rk-dec-${i}" type="text" value="${esc(decoys)}" placeholder="Wrong words, comma-separated" aria-label="Pair ${i + 1} wrong words" />
+      <button type="button" data-ep-round-del="${i}" ${rounds.length <= 1 ? "disabled" : ""} aria-label="Remove pair ${i + 1}">×</button>
+    </div>`;
+  }).join("");
+  const shared = Array.isArray(item.decoys) ? item.decoys.join(", ") : "";
+  const finale = item.finale && typeof item.finale === "object" ? item.finale : {};
+  const finaleDecoys = Array.isArray(finale.decoys) ? finale.decoys.join(", ") : "";
+  const correct = Number(item.correctPoints ?? EPISODE_ROADKILL_DEFAULT_CORRECT);
+  const penalty = Number(item.penaltyPoints ?? EPISODE_ROADKILL_DEFAULT_PENALTY);
+  return `
+    <p class="muted">Two clues on top, one connecting word flying through the middle. Players buzz when the middle word links both clues. Wrong words can be set per pair and/or in one shared pool — they merge when the round runs.</p>
+    <fieldset class="ep-fieldset"><legend>Clue pairs (${rounds.length}/${EPISODE_ROADKILL_MAX_ROUNDS})</legend>
+      <div class="ep-rounds">${rows}</div>
+      <div class="ep-toolbar">
+        <button type="button" data-ep-round-add ${rounds.length >= EPISODE_ROADKILL_MAX_ROUNDS ? "disabled" : ""}>Add pair</button>
+      </div>
+    </fieldset>
+    <label>Shared wrong words <span class="muted">(optional, comma-separated, max ${EPISODE_ROADKILL_MAX_SHARED_DECOYS} — mixed into every pair and the finale)</span>
+      <input id="ep-rk-shared" type="text" value="${esc(shared)}" placeholder="Cream, Oat, Silk" />
+    </label>
+    <div class="ep-grid2">
+      <label>Correct points
+        <input id="ep-rk-correct" type="number" min="1" max="${EPISODE_ROADKILL_MAX_POINTS}" step="100" value="${correct}" />
+      </label>
+      <label>Wrong-buzz penalty <span class="muted">(0 = free guesses)</span>
+        <input id="ep-rk-penalty" type="number" min="0" max="${EPISODE_ROADKILL_MAX_POINTS}" step="100" value="${penalty}" />
+      </label>
+    </div>
+    <fieldset class="ep-fieldset"><legend>Finale (optional)</legend>
+      <p class="muted">After every pair, ask what all the answers had in common. Leave the answer blank for no finale.</p>
+      <div class="ep-grid2">
+        <label>Finale answer
+          <input id="ep-rk-finale-answer" type="text" maxlength="${EPISODE_ROADKILL_WORD_MAX}" value="${esc(finale.answer || "")}" placeholder="What they all have in common" />
+        </label>
+        <label>Finale wrong words <span class="muted">(comma-separated, max ${EPISODE_ROADKILL_MAX_DECOYS})</span>
+          <input id="ep-rk-finale-decoys" type="text" value="${esc(finaleDecoys)}" placeholder="Wrong, Unrelated" />
+        </label>
+      </div>
+    </fieldset>`;
+}
+
+function renderFourwayFields(item, esc) {
+  const fixedOptions = Array.isArray(item.fixedOptions) ? item.fixedOptions : ["", "", ""];
+  const rounds = Array.isArray(item.rounds) && item.rounds.length
+    ? item.rounds
+    : Array.from({ length: EPISODE_FOURWAY_DEFAULT_ROUNDS }, () => ({ category: "", rotatingOption: "", correct: [] }));
+  const fixedInputs = Array.from({ length: EPISODE_FOURWAY_FIXED_OPTIONS }, (_, k) => `
+    <label>Fixed Option ${k + 1} <span class="muted">(shown every round)</span>
+      <input id="ep-fw-fixed-${k}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(fixedOptions[k] || "")}" placeholder="Required" />
+    </label>`).join("");
+  const roundRows = rounds.map((round, i) => {
+    const r = round && typeof round === "object" ? round : {};
+    const correct = Array.isArray(r.correct) ? r.correct : [];
+    const correctChecks = Array.from({ length: EPISODE_FOURWAY_TOTAL_OPTIONS }, (_, k) => {
+      const isFixed = k < EPISODE_FOURWAY_FIXED_OPTIONS;
+      const label = isFixed ? (fixedOptions[k] || `Option ${k + 1}`) : "Option 4 (rotating)";
+      return `<label class="ep-check" title="${esc(label)}">
+        <input type="checkbox" data-ep-harvest id="ep-fw-correct-${i}-${k}" value="${k}" ${correct.includes(k) ? "checked" : ""} />
+        <span>${isFixed ? `${k + 1}` : "4★"}</span>
+      </label>`;
+    }).join("");
+    return `<div class="ep-round-row ep-fw-row">
+      <span class="ep-rk-num">${i + 1}</span>
+      <input id="ep-fw-cat-${i}" type="text" maxlength="300" value="${esc(r.category || "")}" placeholder="Category" aria-label="Round ${i + 1} category" />
+      <input id="ep-fw-rot-${i}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(r.rotatingOption || "")}" placeholder="Rotating option" aria-label="Round ${i + 1} rotating option" />
+      <div class="ep-fw-corrects">${correctChecks}</div>
+      <button type="button" data-ep-round-del="${i}" ${rounds.length <= 1 ? "disabled" : ""} aria-label="Remove round ${i + 1}">×</button>
+    </div>`;
+  }).join("");
+  return `
+    <p class="muted">Each round: a category + 4 options (3 fixed below, 1 rotating per round). Check which options apply to the category.</p>
+    <fieldset class="ep-fieldset"><legend>Fixed Options (${EPISODE_FOURWAY_FIXED_OPTIONS}) — shown in every round</legend>
+      <div class="ep-grid2">${fixedInputs}</div>
+    </fieldset>
+    <fieldset class="ep-fieldset"><legend>Rounds (${rounds.length}/${EPISODE_FOURWAY_MAX_ROUNDS})</legend>
+      <div class="ep-rounds">${roundRows}</div>
+      <div class="ep-toolbar">
+        <button type="button" data-ep-round-add ${rounds.length >= EPISODE_FOURWAY_MAX_ROUNDS ? "disabled" : ""}>Add round</button>
+      </div>
     </fieldset>`;
 }
 
@@ -334,6 +457,8 @@ function renderEditForm(item, esc, layout = "diamond") {
     case "quixort": kindFields = renderQuixortFields(item, esc); break;
     case "bingo": kindFields = renderBingoFields(item, esc); break;
     case "wendithapn": kindFields = renderWenFields(item, esc); break;
+    case "roadkill": kindFields = renderRoadkillFields(item, esc); break;
+    case "fourway": kindFields = renderFourwayFields(item, esc); break;
     default: kindFields = "";
   }
   return `
@@ -411,6 +536,62 @@ function renderCloudPanel(cloud, esc) {
     </section>`;
 }
 
+function coopProblemText(problem) {
+  switch (problem.code) {
+    case "blocked":
+      return `${kindLabel(problem.kind)} is off limits in coopertition mode.`;
+    case "options":
+      return `${kindLabel(problem.kind)} needs at least ${EPISODE_COOP_MIN_OPTIONS} options in coopertition mode (this one has ${problem.optionCount}).`;
+    default:
+      return "This question can't run in coopertition mode.";
+  }
+}
+
+// Single episode-level coop marker. Details stay collapsed so the creator
+// layout is unchanged for hosts who don't care about coop; main.js toggles
+// the panels in place (no re-render, so typed fields survive).
+function renderCoopPanel(ep, esc) {
+  const report = episodeCoopReport(ep);
+  const total = Array.isArray(ep.items) ? ep.items.length : 0;
+  const count = report.problems.length;
+  const state = !total ? "empty" : count ? "warn" : "ok";
+  const status = state === "ok" ? "Works in coop" : state === "warn" ? "Won't work in coop" : "Coop check";
+  const summary = state === "ok"
+    ? "Every question in this episode can run in coopertition mode."
+    : state === "warn"
+      ? `${count} of ${total} question${total === 1 ? "" : "s"} won't work as written in coopertition mode.`
+      : "Add questions to check whether the episode works in coopertition mode.";
+  const problems = report.problems.map((p) => `<li><strong>Q${p.index + 1}</strong> — ${esc(coopProblemText(p))}</li>`).join("");
+  return `
+    <section class="card ep-sub ep-coop" data-ep-coop>
+      <div class="ep-coop-head">
+        <div>
+          <span class="ep-coop-status ep-coop-${state}">${esc(status)}</span>
+          <p class="muted ep-coop-summary">${esc(summary)}</p>
+        </div>
+        <div class="ep-toolbar ep-coop-actions">
+          ${count ? `<button type="button" data-ep-coop-problems aria-expanded="false" aria-controls="ep-coop-problems">Show problems</button>` : ""}
+          <button type="button" data-ep-coop-learn aria-expanded="false" aria-controls="ep-coop-learn">Learn more</button>
+        </div>
+      </div>
+      ${count ? `<div class="ep-coop-panel" id="ep-coop-problems" hidden>
+        <h3>Coop problems</h3>
+        <ul>${problems}</ul>
+      </div>` : ""}
+      <div class="ep-coop-panel" id="ep-coop-learn" hidden>
+        <h3>How coopertition mode works</h3>
+        <p>Up to 3 players share one device using the Q/B/P keys. Each player keeps their own score, and the host can show combined group totals.</p>
+        <ul>
+          <li>Multiple choice questions need at least ${EPISODE_COOP_MIN_OPTIONS} options; coop widens smaller ones automatically.</li>
+          <li>Fibbage, Dis or Dat, Quixort, and 4-Way are off limits while coop is on.</li>
+          <li>JACK scoring, screws, re-buzz, and shared-team scoring are disabled.</li>
+          <li>Buttons, Text answer, Bingo, Wen Dit Happn, and Roadkill all work in coop.</li>
+        </ul>
+        <p class="muted">To run a blocked question, turn coopertition off from buzzer mode first.</p>
+      </div>
+    </section>`;
+}
+
 export function renderCreatorScreen({ ep, selectedId, errors, importErrors, cloudEnabled, cloud = null, cloudError = null, esc }) {
   const d = ep.defaults || {};
   const selected = (ep.items || []).find((it) => it && it.id === selectedId) || null;
@@ -443,6 +624,7 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
 
       ${renderErrorPanel(errors, importErrors, esc)}
       ${renderCloudPanel(cloud, esc)}
+      ${renderCoopPanel(ep, esc)}
 
       <section class="card ep-sub">
         <h2>Episode details</h2>
@@ -500,7 +682,7 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
         ${renderItemRows(ep, errors, esc)}
         <div class="ep-add">
           <select id="ep-add-kind" aria-label="Question type">
-            ${EPISODE_KINDS.map((k) => `<option value="${k}">${esc(kindLabel(k))}</option>`).join("")}
+            ${EPISODE_KINDS.filter((k) => k !== "fourway").map((k) => `<option value="${k}">${esc(kindLabel(k))}</option>`).join("")}
           </select>
           <button type="button" data-ep-add>Add question</button>
         </div>
@@ -614,6 +796,57 @@ export function harvestCreatorFields(root) {
       dodQ.push(val(`#ep-dod-q-${k}`) || "");
     }
     if (hasDodQ) patch.questions = dodQ;
+    const splitList = (raw) => String(raw || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const rkRounds = [];
+    let hasRk = false;
+    for (let k = 0; q(`#ep-rk-a-${k}`); k++) {
+      hasRk = true;
+      rkRounds.push({
+        clues: [val(`#ep-rk-a-${k}`) || "", val(`#ep-rk-b-${k}`) || ""],
+        answer: val(`#ep-rk-ans-${k}`) || "",
+        decoys: splitList(val(`#ep-rk-dec-${k}`)),
+      });
+    }
+    if (hasRk) {
+      patch.rounds = rkRounds;
+      if (q("#ep-rk-shared")) patch.decoys = splitList(val("#ep-rk-shared"));
+      if (q("#ep-rk-correct")) {
+        const v = numOrRaw("#ep-rk-correct");
+        if (v !== null) patch.correctPoints = v;
+      }
+      if (q("#ep-rk-penalty")) {
+        const v = numOrRaw("#ep-rk-penalty");
+        if (v !== null) patch.penaltyPoints = v;
+      }
+      if (q("#ep-rk-finale-answer")) {
+        const answer = String(val("#ep-rk-finale-answer") || "").trim();
+        patch.finale = answer
+          ? { answer, decoys: splitList(val("#ep-rk-finale-decoys")) }
+          : null;
+      }
+    }
+    // Four-way: fixed options + rounds with category, rotating option, correct picks
+    const fwFixed = [];
+    let hasFw = false;
+    for (let k = 0; k < EPISODE_FOURWAY_FIXED_OPTIONS; k++) {
+      if (!q(`#ep-fw-fixed-${k}`)) continue;
+      hasFw = true;
+      fwFixed.push(val(`#ep-fw-fixed-${k}`) || "");
+    }
+    if (hasFw) patch.fixedOptions = fwFixed;
+    const fwRounds = [];
+    for (let k = 0; q(`#ep-fw-cat-${k}`); k++) {
+      const correct = [];
+      for (let c = 0; c < EPISODE_FOURWAY_TOTAL_OPTIONS; c++) {
+        if (q(`#ep-fw-correct-${k}-${c}`)?.checked) correct.push(c);
+      }
+      fwRounds.push({
+        category: val(`#ep-fw-cat-${k}`) || "",
+        rotatingOption: val(`#ep-fw-rot-${k}`) || "",
+        correct,
+      });
+    }
+    if (fwRounds.length) patch.rounds = fwRounds;
     const qxItems = [];
     let hasQx = false;
     for (let k = 0; k < 9; k++) {

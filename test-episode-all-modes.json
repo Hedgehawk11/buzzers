@@ -15,8 +15,15 @@
       "kind": "buttons",
       "prompt": "Which planet is known as the Red Planet?",
       "optionCount": 4,
-      "correctOptions": [2],
-      "options": ["Venus", "Mars", "Jupiter", "Mercury"]
+      "correctOptions": [
+        2
+      ],
+      "options": [
+        "Venus",
+        "Mars",
+        "Jupiter",
+        "Mercury"
+      ]
     },
     {
       "id": "t2-text",
@@ -27,12 +34,21 @@
     {
       "id": "t3-bingo",
       "kind": "bingo",
-      "prompt": "Collect the letters of GAMES — fastest finger wins each letter.",
+      "prompt": "Collect the letters of GAMES \u2014 fastest finger wins each letter.",
       "word": "GAMES",
       "rounds": [
-        { "prompt": "First letter: collect G", "answer": "G" },
-        { "prompt": "Next letter: collect A", "answer": "A" },
-        { "prompt": "Next letter: collect M", "answer": "M" }
+        {
+          "prompt": "First letter: collect G",
+          "answer": "G"
+        },
+        {
+          "prompt": "Next letter: collect A",
+          "answer": "A"
+        },
+        {
+          "prompt": "Next letter: collect M",
+          "answer": "M"
+        }
       ]
     },
     {
@@ -40,9 +56,18 @@
       "kind": "wendithapn",
       "prompt": "Wen Dit Happn: did it happen Before, Never, or After?",
       "rounds": [
-        { "prompt": "The moon landing (1969) vs the first text message (1992)?", "answer": "B" },
-        { "prompt": "A human walking on Mars?", "answer": "N" },
-        { "prompt": "The next leap year after 2024?", "answer": "A" }
+        {
+          "prompt": "The moon landing (1969) vs the first text message (1992)?",
+          "answer": "B"
+        },
+        {
+          "prompt": "A human walking on Mars?",
+          "answer": "N"
+        },
+        {
+          "prompt": "The next leap year after 2024?",
+          "answer": "A"
+        }
       ]
     },
     {
@@ -51,7 +76,15 @@
       "prompt": "Dis or Dat: sort each thing!",
       "disLabel": "Dis",
       "datLabel": "Dat",
-      "answers": ["dis", "dat", "both", "dis", "dat", "both", "dis"],
+      "answers": [
+        "dis",
+        "dat",
+        "both",
+        "dis",
+        "dat",
+        "both",
+        "dis"
+      ],
       "questions": [
         "Honeycrisp",
         "Blue jeans",
@@ -82,9 +115,67 @@
         "Airplane",
         "Internet"
       ],
-      "trash": ["Time machine", "Hoverboard"],
+      "trash": [
+        "Time machine",
+        "Hoverboard"
+      ],
       "multiplier": 1,
       "blockSec": 30
+    },
+    {
+      "id": "t8-roadkill",
+      "kind": "roadkill",
+      "prompt": "Roadkill: buzz when the middle word connects both clues.",
+      "decoys": [
+        "Cheese",
+        "Brush",
+        "Cloud",
+        "Glass"
+      ],
+      "correctPoints": 1000,
+      "penaltyPoints": 1000,
+      "rounds": [
+        {
+          "clues": [
+            "Milk",
+            "Paint"
+          ],
+          "answer": "Chalk",
+          "decoys": [
+            "Cheese",
+            "Brush"
+          ]
+        },
+        {
+          "clues": [
+            "Sky",
+            "Ocean"
+          ],
+          "answer": "Blue",
+          "decoys": [
+            "Green",
+            "Cloud"
+          ]
+        },
+        {
+          "clues": [
+            "Piano",
+            "Voice"
+          ],
+          "answer": "Key",
+          "decoys": [
+            "Note",
+            "String"
+          ]
+        }
+      ],
+      "finale": {
+        "answer": "White",
+        "decoys": [
+          "Black",
+          "Silver"
+        ]
+      }
     }
   ]
 }

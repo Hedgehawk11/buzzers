@@ -19,11 +19,42 @@ export const EPISODE_KINDS = [
   "disordat",
   "fibbage",
   "quixort",
+  "roadkill",
+  "fourway",
 ];
 
 export const EPISODE_MAX_ITEMS = 200;
 export const EPISODE_PROMPT_MAX = 300;
 export const EPISODE_LABEL_MAX = 120;
+
+// Coopertition compatibility. Mirrors the gates in main.js: Fibbage, Dis or
+// Dat, Quixort, and 4-Way have no coop model, and coop forces at least 4 options
+// for Multiple choice questions. Text, Bingo, Wen Dit Happn, and Roadkill work.
+export const EPISODE_COOP_BLOCKED_KINDS = ["fibbage", "disordat", "quixort", "fourway"];
+export const EPISODE_COOP_MIN_OPTIONS = 4;
+
+// Four-Way (The Category Game): 3 fixed options + 1 rotating per round.
+// Players pick which options apply to each round's category.
+export const EPISODE_FOURWAY_MIN_ROUNDS = 1;
+export const EPISODE_FOURWAY_MAX_ROUNDS = 12;
+export const EPISODE_FOURWAY_DEFAULT_ROUNDS = 7;
+export const EPISODE_FOURWAY_FIXED_OPTIONS = 3; // options 1-3 are fixed
+export const EPISODE_FOURWAY_TOTAL_OPTIONS = 4; // total options shown each round
+export const EPISODE_FOURWAY_OPTION_MAX = 120; // per-option character limit
+
+// Roadkill (The Ride): N pairs of top clues + a streamed connector per pair.
+// Decoys can be authored per pair and/or in one shared pool; the two merge at
+// runtime. Points are per question (the original was +1000 / -1000).
+export const EPISODE_ROADKILL_MIN_ROUNDS = 1;
+export const EPISODE_ROADKILL_MAX_ROUNDS = 12;
+export const EPISODE_ROADKILL_DEFAULT_ROUNDS = 7;
+export const EPISODE_ROADKILL_CLUE_MAX = 120;
+export const EPISODE_ROADKILL_WORD_MAX = 60;
+export const EPISODE_ROADKILL_MAX_DECOYS = 4;
+export const EPISODE_ROADKILL_MAX_SHARED_DECOYS = 8;
+export const EPISODE_ROADKILL_MAX_POINTS = 10000;
+export const EPISODE_ROADKILL_DEFAULT_CORRECT = 1000;
+export const EPISODE_ROADKILL_DEFAULT_PENALTY = 1000;
 
 // Mirrors main.js: optionCount choices, text/fibbage 120ch trims.
 export const EPISODE_OPTION_COUNTS = [1, 2, 4, 6, 8];
@@ -69,6 +100,11 @@ export const EPISODE_SETTING_KEYS = [
   "maxBuzzesPerOption",
   "closeBuzzersOnPointsGiven",
   "choiceLayout",
+  "appTitle",
+  "disordatTitle",
+  "bingoTitle",
+  "quixortTitle",
+  "fibbageTitle",
 ];
 const EPISODE_SCORING_MODES = ["uniform", "jack", "roulette"];
 const EPISODE_JACK_MULTIPLIERS = [1, 1.5, 2, 2.5, 3];
@@ -113,6 +149,20 @@ export function blankItem(kind) {
       return { ...base, word: "", rounds: [{ prompt: "", answer: "" }] };
     case "wendithapn":
       return { ...base, rounds: [{ prompt: "", answer: "" }] };
+    case "roadkill":
+      return {
+        ...base,
+        rounds: Array.from({ length: EPISODE_ROADKILL_DEFAULT_ROUNDS }, () => ({ clues: ["", ""], answer: "", decoys: [] })),
+        decoys: [],
+        correctPoints: EPISODE_ROADKILL_DEFAULT_CORRECT,
+        penaltyPoints: EPISODE_ROADKILL_DEFAULT_PENALTY,
+      };
+    case "fourway":
+      return {
+        ...base,
+        fixedOptions: ["", "", ""],
+        rounds: Array.from({ length: EPISODE_FOURWAY_DEFAULT_ROUNDS }, () => ({ category: "", rotatingOption: "", correct: [] })),
+      };
     default:
       return { ...base, kind: "buttons", optionCount: 4, correctOptions: [] };
   }
@@ -279,6 +329,239 @@ function validateDisordat(item, index) {
   return errors;
 }
 
+function validateRoadkill(item, index) {
+  const errors = checkPrompt(item, index);
+  const rounds = Array.isArray(item.rounds) ? item.rounds : [];
+  if (rounds.length < EPISODE_ROADKILL_MIN_ROUNDS) {
+    errors.push(err(index, item.id, "rounds", `Add at least ${EPISODE_ROADKILL_MIN_ROUNDS} clue pair.`));
+  } else if (rounds.length > EPISODE_ROADKILL_MAX_ROUNDS) {
+    errors.push(err(index, item.id, "rounds", `At most ${EPISODE_ROADKILL_MAX_ROUNDS} clue pairs.`));
+  }
+
+  const rawShared = Array.isArray(item.decoys) ? item.decoys : [];
+  const shared = [];
+  const sharedSeen = new Set();
+  if (rawShared.length > EPISODE_ROADKILL_MAX_SHARED_DECOYS) {
+    errors.push(err(index, item.id, "decoys", `At most ${EPISODE_ROADKILL_MAX_SHARED_DECOYS} shared wrong words.`));
+  }
+  rawShared.forEach((raw, i) => {
+    const s = String(raw ?? "").trim();
+    if (!s) {
+      errors.push(err(index, item.id, "decoys", `Shared wrong word ${i + 1} cannot be empty.`));
+      return;
+    }
+    if (s.length > EPISODE_ROADKILL_WORD_MAX) {
+      errors.push(err(index, item.id, "decoys", `Keep words under ${EPISODE_ROADKILL_WORD_MAX} characters.`));
+      return;
+    }
+    const k = normCompare(s);
+    if (sharedSeen.has(k)) {
+      errors.push(err(index, item.id, "decoys", "Shared wrong words must all be different."));
+      return;
+    }
+    sharedSeen.add(k);
+    shared.push(s);
+  });
+
+  rounds.forEach((round, r) => {
+    const tag = `Pair ${r + 1}`;
+    if (!isPlainObject(round)) {
+      errors.push(err(index, item.id, "rounds", `${tag} must be an object.`));
+      return;
+    }
+    for (const key of Object.keys(round)) {
+      if (!["clues", "answer", "decoys"].includes(key)) {
+        errors.push(err(index, item.id, "rounds", `${tag}: unknown field "${key}".`));
+      }
+    }
+    if (!Array.isArray(round.clues) || round.clues.length !== 2) {
+      errors.push(err(index, item.id, "rounds", `${tag} needs exactly two clues.`));
+    } else {
+      round.clues.forEach((clue, c) => {
+        const s = String(clue ?? "").trim();
+        if (!s) {
+          errors.push(err(index, item.id, "rounds", `${tag}: clue ${c + 1} cannot be empty.`));
+        } else if (s.length > EPISODE_ROADKILL_CLUE_MAX) {
+          errors.push(err(index, item.id, "rounds", `${tag}: keep clues under ${EPISODE_ROADKILL_CLUE_MAX} characters.`));
+        }
+      });
+    }
+    const answer = String(round.answer ?? "").trim();
+    if (!answer) {
+      errors.push(err(index, item.id, "rounds", `${tag}: the connecting word cannot be empty.`));
+    } else if (answer.length > EPISODE_ROADKILL_WORD_MAX) {
+      errors.push(err(index, item.id, "rounds", `${tag}: keep words under ${EPISODE_ROADKILL_WORD_MAX} characters.`));
+    }
+    const rawDecoys = Array.isArray(round.decoys) ? round.decoys : [];
+    if (rawDecoys.length > EPISODE_ROADKILL_MAX_DECOYS) {
+      errors.push(err(index, item.id, "rounds", `${tag}: at most ${EPISODE_ROADKILL_MAX_DECOYS} wrong words.`));
+    }
+    const decoySeen = new Set();
+    let decoyCount = 0;
+    rawDecoys.forEach((raw, d) => {
+      const s = String(raw ?? "").trim();
+      if (!s) {
+        errors.push(err(index, item.id, "rounds", `${tag}: wrong word ${d + 1} cannot be empty.`));
+        return;
+      }
+      if (s.length > EPISODE_ROADKILL_WORD_MAX) {
+        errors.push(err(index, item.id, "rounds", `${tag}: keep words under ${EPISODE_ROADKILL_WORD_MAX} characters.`));
+        return;
+      }
+      const k = normCompare(s);
+      if (answer && k === normCompare(answer)) {
+        errors.push(err(index, item.id, "rounds", `${tag}: a wrong word cannot be the connecting word.`));
+        return;
+      }
+      if (decoySeen.has(k)) {
+        errors.push(err(index, item.id, "rounds", `${tag}: wrong words must all be different.`));
+        return;
+      }
+      decoySeen.add(k);
+      decoyCount += 1;
+    });
+    if (decoyCount === 0 && shared.length === 0) {
+      errors.push(err(index, item.id, "rounds", `${tag} needs at least one wrong word (per pair or in the shared pool).`));
+    }
+  });
+
+  if (item.finale !== undefined && item.finale !== null) {
+    if (!isPlainObject(item.finale)) {
+      errors.push(err(index, item.id, "finale", "Finale must be an object, or omitted."));
+    } else {
+      for (const key of Object.keys(item.finale)) {
+        if (!["answer", "decoys"].includes(key)) {
+          errors.push(err(index, item.id, "finale", `Finale: unknown field "${key}".`));
+        }
+      }
+      const answer = String(item.finale.answer ?? "").trim();
+      if (!answer) {
+        errors.push(err(index, item.id, "finale", "Finale answer cannot be empty (omit the finale for none)."));
+      } else if (answer.length > EPISODE_ROADKILL_WORD_MAX) {
+        errors.push(err(index, item.id, "finale", `Keep words under ${EPISODE_ROADKILL_WORD_MAX} characters.`));
+      }
+      const rawDecoys = Array.isArray(item.finale.decoys) ? item.finale.decoys : [];
+      if (rawDecoys.length > EPISODE_ROADKILL_MAX_DECOYS) {
+        errors.push(err(index, item.id, "finale", `At most ${EPISODE_ROADKILL_MAX_DECOYS} finale wrong words.`));
+      }
+      const seen = new Set();
+      let count = 0;
+      rawDecoys.forEach((raw, d) => {
+        const s = String(raw ?? "").trim();
+        if (!s) {
+          errors.push(err(index, item.id, "finale", `Finale wrong word ${d + 1} cannot be empty.`));
+          return;
+        }
+        if (s.length > EPISODE_ROADKILL_WORD_MAX) {
+          errors.push(err(index, item.id, "finale", `Keep words under ${EPISODE_ROADKILL_WORD_MAX} characters.`));
+          return;
+        }
+        const k = normCompare(s);
+        if (answer && k === normCompare(answer)) {
+          errors.push(err(index, item.id, "finale", "A wrong word cannot be the finale answer."));
+          return;
+        }
+        if (seen.has(k)) {
+          errors.push(err(index, item.id, "finale", "Finale wrong words must all be different."));
+          return;
+        }
+        seen.add(k);
+        count += 1;
+      });
+      const sharedDecoyCount = shared.filter((s) => !answer || normCompare(s) !== normCompare(answer)).length;
+      if (count === 0 && sharedDecoyCount === 0) {
+        errors.push(err(index, item.id, "finale", "Finale needs at least one wrong word (finale or shared)."));
+      }
+    }
+  }
+
+  if (item.correctPoints !== undefined) {
+    const n = Number(item.correctPoints);
+    if (!Number.isInteger(n) || n < 1 || n > EPISODE_ROADKILL_MAX_POINTS) {
+      errors.push(err(index, item.id, "correctPoints", `Correct points must be 1–${EPISODE_ROADKILL_MAX_POINTS}.`));
+    }
+  }
+  if (item.penaltyPoints !== undefined) {
+    const n = Number(item.penaltyPoints);
+    if (!Number.isInteger(n) || n < 0 || n > EPISODE_ROADKILL_MAX_POINTS) {
+      errors.push(err(index, item.id, "penaltyPoints", `Wrong-buzz penalty must be 0–${EPISODE_ROADKILL_MAX_POINTS}.`));
+    }
+  }
+  return errors;
+}
+
+function validateFourway(item, index) {
+  const errors = checkPrompt(item, index);
+  // fixedOptions: exactly 3 strings, each ≤120 chars, non-empty, unique
+  if (!Array.isArray(item.fixedOptions) || item.fixedOptions.length !== EPISODE_FOURWAY_FIXED_OPTIONS) {
+    errors.push(err(index, item.id, "fixedOptions", `Provide exactly ${EPISODE_FOURWAY_FIXED_OPTIONS} fixed options.`));
+  } else {
+    const seen = new Set();
+    item.fixedOptions.forEach((opt, i) => {
+      const s = String(opt ?? "").trim();
+      if (!s) {
+        errors.push(err(index, item.id, "fixedOptions", `Fixed option ${i + 1} cannot be empty.`));
+      } else if (s.length > EPISODE_FOURWAY_OPTION_MAX) {
+        errors.push(err(index, item.id, "fixedOptions", `Fixed option ${i + 1} must be ${EPISODE_FOURWAY_OPTION_MAX} characters or fewer.`));
+      }
+      const k = normCompare(s);
+      if (seen.has(k)) {
+        errors.push(err(index, item.id, "fixedOptions", "Fixed options must all be different."));
+      }
+      seen.add(k);
+    });
+  }
+  // rounds: array of MIN to MAX entries
+  if (!Array.isArray(item.rounds) || item.rounds.length < EPISODE_FOURWAY_MIN_ROUNDS) {
+    errors.push(err(index, item.id, "rounds", `Add at least ${EPISODE_FOURWAY_MIN_ROUNDS} round.`));
+  } else if (item.rounds.length > EPISODE_FOURWAY_MAX_ROUNDS) {
+    errors.push(err(index, item.id, "rounds", `At most ${EPISODE_FOURWAY_MAX_ROUNDS} rounds.`));
+  } else {
+    item.rounds.forEach((round, r) => {
+      const tag = `Round ${r + 1}`;
+      if (!isPlainObject(round)) {
+        errors.push(err(index, item.id, "rounds", `${tag} must be an object.`));
+        return;
+      }
+      for (const key of Object.keys(round)) {
+        if (!["category", "rotatingOption", "correct"].includes(key)) {
+          errors.push(err(index, item.id, "rounds", `${tag}: unknown field "${key}".`));
+        }
+      }
+      const category = String(round.category ?? "").trim();
+      if (!category) {
+        errors.push(err(index, item.id, "rounds", `${tag}: category cannot be empty.`));
+      } else if (category.length > EPISODE_PROMPT_MAX) {
+        errors.push(err(index, item.id, "rounds", `${tag}: category must be ${EPISODE_PROMPT_MAX} characters or fewer.`));
+      }
+      const rotating = String(round.rotatingOption ?? "").trim();
+      if (!rotating) {
+        errors.push(err(index, item.id, "rounds", `${tag}: rotating option cannot be empty.`));
+      } else if (rotating.length > EPISODE_FOURWAY_OPTION_MAX) {
+        errors.push(err(index, item.id, "rounds", `${tag}: rotating option must be ${EPISODE_FOURWAY_OPTION_MAX} characters or fewer.`));
+      }
+      if (!Array.isArray(round.correct) || round.correct.length === 0) {
+        errors.push(err(index, item.id, "rounds", `${tag}: pick at least one correct option.`));
+      } else {
+        const seenCorrect = new Set();
+        for (const c of round.correct) {
+          const n = Number(c);
+          if (!Number.isInteger(n) || n < 0 || n >= EPISODE_FOURWAY_TOTAL_OPTIONS) {
+            errors.push(err(index, item.id, "rounds", `${tag}: correct options must be 0–${EPISODE_FOURWAY_TOTAL_OPTIONS - 1}.`));
+            break;
+          }
+          if (seenCorrect.has(n)) {
+            errors.push(err(index, item.id, "rounds", `${tag}: correct options must not repeat.`));
+            break;
+          }
+          seenCorrect.add(n);
+        }
+      }
+    });
+  }
+  return errors;
+}
+
 function validateQuixort(item, index) {
   const errors = checkPrompt(item, index);
   const items = Array.isArray(item.items) ? item.items.map((s) => String(s ?? "").trim()) : [];
@@ -389,6 +672,8 @@ const ITEM_VALIDATORS = {
   quixort: validateQuixort,
   bingo: validateBingo,
   wendithapn: validateWenDitHapn,
+  roadkill: validateRoadkill,
+  fourway: validateFourway,
 };
 
 const ITEM_FIELDS = {
@@ -399,6 +684,8 @@ const ITEM_FIELDS = {
   quixort: ["id", "kind", "prompt", "items", "trash", "multiplier", "blockSec", "overrides"],
   bingo: ["id", "kind", "prompt", "word", "rounds", "overrides"],
   wendithapn: ["id", "kind", "prompt", "rounds", "overrides"],
+  roadkill: ["id", "kind", "prompt", "rounds", "decoys", "finale", "correctPoints", "penaltyPoints", "overrides"],
+  fourway: ["id", "kind", "prompt", "fixedOptions", "rounds", "overrides"],
 };
 
 // Shared validation for episode defaults and per-question overrides.
@@ -465,9 +752,46 @@ export function normalizeEpisode(ep) {
               if (!isPlainObject(r)) return r;
               const out = { ...r };
               if (typeof out.prompt === "string") out.prompt = out.prompt.trim();
-              if (typeof out.answer === "string") out.answer = out.answer.trim().toUpperCase();
+              if (typeof out.answer === "string") {
+                // Only the letter-based cycling modes uppercase answers; Roadkill
+                // answers are display words ("Milk", not "MILK").
+                out.answer = (next.kind === "bingo" || next.kind === "wendithapn")
+                  ? out.answer.trim().toUpperCase()
+                  : out.answer.trim();
+              }
               return out;
             });
+          }
+          if (next.kind === "roadkill") {
+            if (Array.isArray(next.rounds)) {
+              next.rounds = next.rounds.map((r) => {
+                if (!isPlainObject(r)) return r;
+                const out = { ...r };
+                if (Array.isArray(out.clues)) out.clues = out.clues.map((s) => String(s ?? "").trim());
+                if (Array.isArray(out.decoys)) out.decoys = out.decoys.map((s) => String(s ?? "").trim());
+                return out;
+              });
+            }
+            if (Array.isArray(next.decoys)) next.decoys = next.decoys.map((s) => String(s ?? "").trim());
+            if (isPlainObject(next.finale)) {
+              const f = { ...next.finale };
+              if (typeof f.answer === "string") f.answer = f.answer.trim();
+              if (Array.isArray(f.decoys)) f.decoys = f.decoys.map((s) => String(s ?? "").trim());
+              next.finale = f;
+            }
+          }
+          if (next.kind === "fourway") {
+            if (Array.isArray(next.fixedOptions)) next.fixedOptions = next.fixedOptions.map((s) => String(s ?? "").trim());
+            if (Array.isArray(next.rounds)) {
+              next.rounds = next.rounds.map((r) => {
+                if (!isPlainObject(r)) return r;
+                const out = { ...r };
+                if (typeof out.category === "string") out.category = out.category.trim();
+                if (typeof out.rotatingOption === "string") out.rotatingOption = out.rotatingOption.trim();
+                if (Array.isArray(out.correct)) out.correct = [...new Set(out.correct.map(Number).filter((n) => Number.isInteger(n)))].sort((a, b) => a - b);
+                return out;
+              });
+            }
           }
           // Migrate pre-rounds episodes (single `answer`): fold it into one
           // round so older drafts/files keep validating.
@@ -516,6 +840,34 @@ export function effectiveItemSettings(ep, item) {
     if (v !== undefined) eff[key] = v;
   }
   return eff;
+}
+
+// Coopertition readiness for one question. Returns null when it can run in
+// coop, or { code, ... } describing why it can't. Pure data: the creator UI
+// turns these codes into human-readable text.
+export function episodeItemCoopIssue(item) {
+  if (!isPlainObject(item) || !EPISODE_KINDS.includes(item.kind)) {
+    return { code: "invalid" };
+  }
+  if (EPISODE_COOP_BLOCKED_KINDS.includes(item.kind)) {
+    return { code: "blocked" };
+  }
+  if (item.kind === "buttons" && Number(item.optionCount) < EPISODE_COOP_MIN_OPTIONS) {
+    return { code: "options", optionCount: Number(item.optionCount) || 0 };
+  }
+  return null;
+}
+
+// Episode-level coop report. The UI uses this for the single creator marker;
+// callers get stable question indexes so "Show problems" can point at rows.
+export function episodeCoopReport(ep) {
+  const items = Array.isArray(ep?.items) ? ep.items : [];
+  const problems = [];
+  items.forEach((item, index) => {
+    const issue = episodeItemCoopIssue(item);
+    if (issue) problems.push({ index, id: item?.id ?? null, kind: item?.kind || "", ...issue });
+  });
+  return { ok: problems.length === 0, problems };
 }
 
 export function validateEpisode(ep) {

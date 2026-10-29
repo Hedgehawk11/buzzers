@@ -23,7 +23,7 @@ import {
   updateMeta as epUpdateMeta,
 } from "./episodes/editor.js";
 import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
-import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
+import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_ROADKILL_MAX_ROUNDS as EP_MAX_ROADKILL_ROUNDS, EPISODE_ROADKILL_DEFAULT_CORRECT, EPISODE_ROADKILL_DEFAULT_PENALTY, EPISODE_ROADKILL_WORD_MAX, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
 import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 import {
   RESULTS_KIND as RESULTS_KIND_CONST,
@@ -78,6 +78,16 @@ const DEFAULT_SETTINGS = {
   snarkMode: "off",
   disOrDatTimedSeconds: 30,
   quixortAudienceLive: false,
+  fYouEasterEggEnabled: true,
+  // Per-mode avatar image namespace. When set, avatar paths are prefixed
+  // with "/${namespace}" so each minigame mode can have its own image set.
+  // E.g. set to "avatars" to use /public/avatars/1.png, /public/avatars/1-buzz.*, etc.
+  // Default "" keeps the existing flat /public layout.
+  coopImageNamespace: "avatars",
+  // Image namespace for when a text question has "gibberish question" in the name.
+  // When set, avatar paths are prefixed with "/${namespace}" enabling a separate
+  // image set for this specific scenario. Default "" keeps the existing layout.
+  gibberishQuestionNamespace: "",
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -98,6 +108,13 @@ const BINGO_RENDER_INTERVAL_MS = 50;
 const BINGO_CORRECT_POINTS = 500;
 const BINGO_INCORRECT_POINTS = -500;
 const WEN_DIT_HAPN_ITEMS = ["Before", "Never", "After"];
+
+// Roadkill (The Ride): two top clues, a connector word streaming through the
+// middle. Episode-creator exclusive; host drives the stream from its own panel.
+const ROADKILL_WORD_INTERVAL_MS = 800;
+const ROADKILL_REVEAL_MS = 2000;
+const ROADKILL_RENDER_INTERVAL_MS = 50;
+const ROADKILL_STALE_SEQ_GRACE_MS = 600;
 
 const DIS_OR_DAT_QUESTION_COUNT = 7;
 const DIS_OR_DAT_CORRECT_POINTS = 300;
@@ -201,6 +218,7 @@ let episodeSettingsBypass = false;
 let bingoCycleInterval = null;
 let bingoCycleQueue = [];
 let lastBingoRenderKey = "";
+let lastRoadkillRenderKey = "";
 let audienceTimerFrozenCs = null;
 let disOrDatRevealUntil = 0;
 let lastAudienceParticipantCount = 0;
@@ -208,6 +226,7 @@ let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
 let bingoSpaceKeydownBound = false;
 let quixortKeydownBound = false;
+let roadkillKeydownBound = false;
 // Quixort trash two-tap confirm is client-local UI state (never shared —
 // one screen arming trash must not arm every screen). Keyed by
 // `${trackKey}:${deckPos}` so a new block auto-disarms a stale arm.
@@ -368,13 +387,14 @@ function getSettings() {
 // Section keys are dot-paths like "player.buzzer.buzzSent" (screen.group.section).
 // Strings rendered on a single screen live under that screen; strings reused
 // across screens live once under the "shared" screen and are found by fallback.
-// When snark is off, or a level line is blank, falls back to the English line,
-// then to the fallback. {token} placeholders are replaced with the vars object.
+// When snark is off, returns the fallback immediately (with token replacement).
+// Otherwise, falls back through snark2 → snark1 → en → fallback.
+// {token} placeholders are always replaced with the vars object.
 // =============================================================================
 function getSnark(section, fallbackEn = "", vars = {}) {
   const mode = getSettings().snarkMode;
   if (mode === "off") {
-    return fallbackEn;
+    return fallbackEn.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? escapeHtml(String(vars[key])) : match));
   }
   const [screen, group, ...rest] = section.split(".");
   const key = rest.join(".");
@@ -1094,25 +1114,6 @@ function getScores() {
   return getSafeState("scores", {});
 }
 
-function getPlayerRank(playerId, settings, scores, players) {
-  const controllerId = getControllerId();
-  const scored = players
-    .filter((p) => p.id !== controllerId)
-    .map((p) => ({
-      id: p.id,
-      score: Number(scores[getScoreKeyForPlayer(p.id, settings)] || 0),
-    }))
-    .sort((a, b) => b.score - a.score);
-  const idx = scored.findIndex((p) => p.id === playerId);
-  return idx === -1 ? scored.length + 1 : idx + 1;
-}
-
-function getOrdinal(n) {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return n + (s[(v - 20) % 10] || s[v] || s[0]);
-}
-
 // =============================================================================
 // Rank badge images — if /public holds 1.png, 2.png, 3.png (or jpg/jpeg/webp/
 // gif/svg/avif), show them next to the top 3 entries on the scoreboard.
@@ -1164,7 +1165,11 @@ const coopCharFrames = { 1: { buzz: 0, correct: 0, wrong: 0 }, 2: { buzz: 0, cor
 let coopCharsProbed = false;
 
 function coopCharFileBase(slot, state) {
-  return state === "base" ? `/${slot}` : `/${slot}-${state}`;
+  // Check gibberish question namespace first (more specific), then coop namespace
+  const gibberishNs = getSettings().gibberishQuestionNamespace;
+  const coopNs = getSettings().coopImageNamespace;
+  const prefix = gibberishNs ? `/${gibberishNs}` : (coopNs ? `/${coopNs}` : "");
+  return state === "base" ? `${prefix}/${slot}` : `${prefix}/${slot}-${state}`;
 }
 
 function probeCoopChars() {
@@ -1446,6 +1451,14 @@ function isQuixortMode() {
   return getSettings().inputMode === "quixort";
 }
 
+function isRoadkillMode() {
+  return getSettings().inputMode === "roadkill";
+}
+
+function isFourwayMode() {
+  return getSettings().inputMode === "fourway";
+}
+
 function hasAudienceDisplay() {
   try {
     const parts = Object.values(getParticipants() || {});
@@ -1528,6 +1541,8 @@ function freshDisOrDatState() {
     jackBonus: {},
     finishedPlayerIds: [],
     timedSeconds: 30,
+    // Track which questions have been revealed (for host-paced mode)
+    revealedQuestions: [],
   };
 }
 
@@ -1610,6 +1625,149 @@ function getBingo() {
     scoredTracks: {},
   });
 }
+
+// =============================================================================
+// Roadkill shared state
+// - pairs: authored clue pairs, each with a pre-merged word template
+// - finale: optional closing round ("what do all the answers have in common?")
+// - words/wordSeq: the live stream; guessed is keyed by score key and stores
+//   the wordSeq that player/team has already spent (one guess per appearance)
+// - paused: host freeze; nextWordAt/advanceAt are wall-clock deadlines
+// =============================================================================
+function freshRoadkillState() {
+  return {
+    active: false,
+    phase: "setup", // setup | playing | reveal | finished
+    pairs: [],
+    finale: null,
+    sharedDecoys: [],
+    correctPoints: 1000,
+    penaltyPoints: 1000,
+    pairIndex: 0,
+    stageCount: 0,
+    words: [],
+    wordIndex: 0,
+    wordSeq: 0,
+    prevWord: null,
+    prevSeq: 0,
+    lastWordAt: null,
+    paused: false,
+    nextWordAt: null,
+    advanceAt: null,
+    guessed: {},
+    outcome: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    startedAt: null,
+    finishedAt: null,
+  };
+}
+
+function getRoadkill() {
+  return getSafeState("roadkill", freshRoadkillState());
+}
+
+// =============================================================================
+// Four-Way shared state
+// - fixedOptions: 3 options shown every round
+// - rounds: variable rounds with category, rotatingOption, correct indices
+// - currentRound: which round is active
+// - responses: trackKey -> { roundIndex: [selectedOptionIndices] }
+// - pointsEarned: trackKey -> total points
+// =============================================================================
+const FOURWAY_CORRECT_POINTS = 500;
+const FOURWAY_INCORRECT_PENALTY = 500;
+
+function freshFourwayState() {
+  return {
+    active: false,
+    phase: "playing", // playing | results
+    fixedOptions: [],
+    rounds: [],
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: null,
+    timedSeconds: 30,
+  };
+}
+
+function getFourway() {
+  return getSafeState("fourway", freshFourwayState());
+}
+
+function normalizeRoadkillPoints(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.trunc(n);
+  if (v < 0) return 0;
+  return Math.min(v, 10000);
+}
+
+// Merge + dedupe word lists (case-insensitive), guaranteeing the answer is
+// present exactly once. Shared decoys are appended after per-pair ones.
+function mergeRoadkillWords(answer, ...lists) {
+  const ans = String(answer || "").trim();
+  const seen = new Set();
+  const out = [];
+  if (ans) {
+    seen.add(normalizeAnswerForCompare(ans));
+    out.push(ans);
+  }
+  for (const list of lists) {
+    for (const raw of Array.isArray(list) ? list : []) {
+      const word = String(raw || "").trim();
+      if (!word) continue;
+      const key = normalizeAnswerForCompare(word);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(word);
+    }
+  }
+  return out;
+}
+
+function shuffleRoadkillWords(words) {
+  const arr = Array.isArray(words) ? [...words] : [];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function getRoadkillStage(rk, index = rk?.pairIndex) {
+  if (!rk) return null;
+  const pairs = Array.isArray(rk.pairs) ? rk.pairs : [];
+  const stageIndex = Number(index);
+  if (!Number.isInteger(stageIndex) || stageIndex < 0) return null;
+  if (stageIndex < pairs.length) {
+    const pair = pairs[stageIndex];
+    return {
+      kind: "pair",
+      index: stageIndex,
+      number: stageIndex + 1,
+      clues: Array.isArray(pair?.clues) ? pair.clues : ["", ""],
+      answer: String(pair?.answer || ""),
+      words: Array.isArray(pair?.words) ? pair.words : [],
+    };
+  }
+  if (rk.finale && stageIndex === pairs.length) {
+    return {
+      kind: "finale",
+      index: stageIndex,
+      number: stageIndex + 1,
+      clues: pairs.map((pair) => String(pair?.answer || "")),
+      answer: String(rk.finale.answer || ""),
+      words: Array.isArray(rk.finale.words) ? rk.finale.words : [],
+    };
+  }
+  return null;
+}
+
 
 function getLog() {
   return getSafeState("gameLog", []);
@@ -1930,63 +2088,37 @@ function updateTimerDisplays() {
   const liveCs = getTimeLeftCs(round, settings);
   const noMainTimer = liveCs === null || liveCs === undefined;
   const timeLeftText = noMainTimer ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(liveCs)}s`;
-  const liveUrgent = !noMainTimer && Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === "OPEN";
-  document.querySelectorAll("[data-live-time-left]").forEach((element) => {
-    element.textContent = timeLeftText;
-    try {
-      if (liveUrgent) element.setAttribute("data-timer-urgent", "true");
-      else element.removeAttribute("data-timer-urgent");
-    } catch {}
-  });
+  const liveUrgent = !noMainTimer && Number.isFinite(liveCs) && liveCs <= 500 && liveCs > 0 && round?.status === ROUND_STATUSES.OPEN;
+
+  patchTimer("[data-live-time-left]", timeLeftText, liveUrgent);
+
   // audience mirrors live timer
-  document.querySelectorAll("[data-audience-time-left]").forEach((element) => {
+  patchTimer("[data-audience-time-left]", () => {
     const ms = getScrewTimerMs(round);
-    let shownCs = null;
     if (ms != null) {
-      shownCs = Math.ceil(ms / 10);
-      element.textContent = `${formatSeconds(shownCs)}s`;
-    } else if (round.screw?.active) {
-      element.textContent = "SCREW";
-    } else {
-      shownCs = liveCs;
-      element.textContent = timeLeftText;
+      const shownCs = Math.ceil(ms / 10);
+      return `${formatSeconds(shownCs)}s`;
     }
-    try {
-      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || isVictimScrewActive(round));
-      if (urgent) element.setAttribute("data-timer-urgent", "true");
-      else element.removeAttribute("data-timer-urgent");
-    } catch {}
-  });
+    if (round.screw?.active) return "SCREW";
+    return timeLeftText;
+  }, (cs) => cs !== null && Number.isFinite(cs) && cs <= 500 && cs > 0 && (round?.status === ROUND_STATUSES.OPEN || isVictimScrewActive(round)));
+
   // tablet mirrors live/screw
-  document.querySelectorAll("[data-tablet-time-left]").forEach((element) => {
+  patchTimer("[data-tablet-time-left]", () => {
     const ms = getScrewTimerMs(round);
-    let shownCs = null;
     if (ms != null) {
-      shownCs = Math.ceil(ms / 10);
-      element.textContent = `${formatSeconds(shownCs)}s`;
-    } else if (isVictimScrewActive(round)) {
-      element.textContent = "SCREW";
-    } else {
-      shownCs = liveCs;
-      element.textContent = timeLeftText;
+      const shownCs = Math.ceil(ms / 10);
+      return `${formatSeconds(shownCs)}s`;
     }
-    try {
-      const urgent = shownCs !== null && Number.isFinite(shownCs) && shownCs <= 500 && shownCs > 0 && (round?.status === "OPEN" || isVictimScrewActive(round));
-      if (urgent) element.setAttribute("data-timer-urgent", "true");
-      else element.removeAttribute("data-timer-urgent");
-    } catch {}
-  });
+    if (isVictimScrewActive(round)) return "SCREW";
+    return timeLeftText;
+  }, (cs) => cs !== null && Number.isFinite(cs) && cs <= 500 && cs > 0 && (round?.status === ROUND_STATUSES.OPEN || isVictimScrewActive(round)));
+
   if (isDisOrDatMode()) {
     const ddCs = getDisOrDatTimeLeftCs(getDisOrDat());
     const ddText = ddCs === null || ddCs === undefined ? getSnark("player.disdat.noTimerLabel", "No timer") : `${formatSeconds(ddCs)}s`;
     const ddUrgent = ddCs !== null && ddCs !== undefined && Number.isFinite(ddCs) && ddCs <= 500 && ddCs > 0;
-    document.querySelectorAll("[data-disordat-time-left]").forEach((element) => {
-      element.textContent = ddText;
-      try {
-        if (ddUrgent) element.setAttribute("data-timer-urgent", "true");
-        else element.removeAttribute("data-timer-urgent");
-      } catch {}
-    });
+    patchTimer("[data-disordat-time-left]", ddText, ddUrgent);
   }
   if (isFibbageMode()) {
     const fb = getFibbage();
@@ -1994,12 +2126,12 @@ function updateTimerDisplays() {
       const cs = getFibbageLieTimeLeftCs(fb);
       const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
       const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
+      patchTimer("[data-fibbage-time-left]", t, urgent);
     } else if (fb.phase === "voting") {
       const cs = getFibbageVoteTimeLeftCs(fb);
       const t = cs === null || cs === undefined ? getSnark("player.fibbage.noTimerLabel", "No timer") : `${formatSeconds(cs)}s`;
       const urgent = cs !== null && cs !== undefined && Number.isFinite(cs) && cs <= 500 && cs > 0;
-      document.querySelectorAll("[data-fibbage-time-left]").forEach((el) => { el.textContent = t; try { if (urgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
+      patchTimer("[data-fibbage-time-left]", t, urgent);
     }
   }
   if (isQuixortMode()) {
@@ -2008,10 +2140,7 @@ function updateTimerDisplays() {
       try {
         const run = qx.runs?.[el.dataset?.quixortTrack];
         if (!run || run.finished) return;
-        if (typeof run.blockEndsAt !== "number") {
-          // Untimed block: static label set at render; nothing to patch.
-          return;
-        }
+        if (typeof run.blockEndsAt !== "number") return;
         const cs = Math.max(0, Math.ceil((run.blockEndsAt - now()) / 10));
         el.textContent = `${formatSeconds(cs)}s`;
         if (Number.isFinite(cs) && cs <= 500 && cs > 0) el.setAttribute("data-timer-urgent", "true");
@@ -2025,6 +2154,19 @@ function updateTimerDisplays() {
     const screwUrgent = round?.screw?.active && ms !== null && Number.isFinite(ms) && ms > 0;
     document.querySelectorAll("[data-screw-timer]").forEach((el) => { try { if (screwUrgent) el.setAttribute("data-timer-urgent", "true"); else el.removeAttribute("data-timer-urgent"); } catch {} });
   }
+}
+
+function patchTimer(selector, getText, getUrgent) {
+  const elements = document.querySelectorAll(selector);
+  elements.forEach((element) => {
+    try {
+      const text = typeof getText === "function" ? getText() : getText;
+      element.textContent = text;
+      const urgent = typeof getUrgent === "function" ? getUrgent() : getUrgent;
+      if (urgent) element.setAttribute("data-timer-urgent", "true");
+      else element.removeAttribute("data-timer-urgent");
+    } catch {}
+  });
 }
 
 function getUiSignature() {
@@ -2169,6 +2311,45 @@ showScoresToPlayers: settings.showScoresToPlayers,
         coopLockout: b.coopLockout,
         scoredTracks: b.scoredTracks,
         winner: b.winner,
+      };
+    })(),
+    // Roadkill: the live stream/pair must invalidate every 250ms display poll.
+    // Pair contents only change on load, so a compact digest stands in for the
+    // full authored list (the words array is the live stream, always included).
+    roadkill: (() => {
+      const rk = getRoadkill();
+      const pairs = Array.isArray(rk.pairs) ? rk.pairs : [];
+      return {
+        active: rk.active,
+        phase: rk.phase,
+        pairIndex: rk.pairIndex,
+        stageCount: rk.stageCount,
+        words: rk.words,
+        wordIndex: rk.wordIndex,
+        wordSeq: rk.wordSeq,
+        paused: rk.paused,
+        guessed: rk.guessed,
+        outcome: rk.outcome,
+        revealAnswer: rk.revealAnswer,
+        correctKey: rk.correctKey,
+        correctName: rk.correctName,
+        correctPoints: rk.correctPoints,
+        penaltyPoints: rk.penaltyPoints,
+        setupDigest: `${pairs.map((p) => `${(p.clues || []).join("|")}=${p.answer}`).join("~")}#${rk.finale?.answer || ""}`,
+      };
+    })(),
+    fourway: (() => {
+      const fw = getFourway();
+      return {
+        active: fw.active,
+        phase: fw.phase,
+        mode: fw.mode,
+        currentRound: fw.currentRound,
+        fixedOptions: fw.fixedOptions,
+        rounds: fw.rounds,
+        responses: fw.responses,
+        pointsEarned: fw.pointsEarned,
+        timeEndsAt: fw.timeEndsAt,
       };
     })(),
     participantCount: currentParticipants().length,
@@ -3106,7 +3287,6 @@ function hostHandleBuzz(player, payload) {
   const playerTeamColor = getPlayerTeamColor(player.id, assignments);
   const shouldLockAfterBuzz = isVictimScrewActive(round) || (settings.lockAfterBuzz && !settings.rebuzzAllowed);
   const usingTextEntry = settings.inputMode === "text";
-
   let validOption = null;
   let answerText = null;
 
@@ -3235,7 +3415,7 @@ function hostHandleBuzz(player, payload) {
 
   // F-You easter egg stays enabled in alliance/individual scoring but is
   // disabled under shared team scoring (penalty + scolding card don't fit teams).
-  const fYouAllowed = !(settings.teamModeEnabled && settings.teamScoringMode === "shared");
+  const fYouAllowed = !(settings.teamModeEnabled && settings.teamScoringMode === "shared") && settings.fYouEasterEggEnabled;
   if (usingTextEntry && fYouAllowed && isFYouEasterEggAnswer(answerText) && !isFYouCorrectAnswer(round)) {
     if (shouldLockAfterBuzz) {
       setState(
@@ -3454,12 +3634,12 @@ async function submitResponse(payload) {
 // Host actions — open, close, reset round, start bingo, etc.
 // =============================================================================
 // A CLOSED round is terminal — all answers in, timer elapsed, or ruled shut —
-// unless it was only paused mid-round (pausedFrom "open"). Terminal rounds
+// unless it was only paused mid-round (pausedFrom ROUND_STATUSES.OPEN). Terminal rounds
 // can't be paused, resumed, reopened, or re-preset: reset the round or enable
-// re-buzz to continue. pausedFrom is only ever null/"open" (see pauseBuzzers,
-// resumeBuzzers, openBuzzers), so anything else-but-"open" is terminal.
+// re-buzz to continue. pausedFrom is only ever null/ROUND_STATUSES.OPEN (see pauseBuzzers,
+// resumeBuzzers, openBuzzers), so anything else-but-ROUND_STATUSES.OPEN is terminal.
 function isTerminallyClosedRound(round) {
-  return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== "open";
+  return round?.status === ROUND_STATUSES.CLOSED && round?.pausedFrom !== ROUND_STATUSES.OPEN;
 }
 
 // New-round face sweep: held "wrong" faces flip to reverse playback
@@ -3506,6 +3686,11 @@ function openBuzzers() {
   }
   if (!isHost()) {
     if (isProducer()) RPC.call("producer-action", { fn: "openBuzzers", args: [] }, RPC.Mode.HOST);
+    return;
+  }
+  if (isRoadkillMode()) {
+    setBuzzNotice("Roadkill runs from its own host panel.");
+    render();
     return;
   }
   console.log("openBuzzers: host triggered");
@@ -3628,7 +3813,7 @@ function pauseBuzzers() {
       ...round,
       status: ROUND_STATUSES.CLOSED,
       remainingCs: safeRemaining,
-      pausedFrom: "open",
+      pausedFrom: ROUND_STATUSES.OPEN,
       winnerId: null,
       winnerTeam: null,
       winnerOption: null,
@@ -3677,12 +3862,12 @@ function resumeBuzzers() {
   // Terminal closes (all answers in, timer elapsed, ruled shut) are final:
   // only a mid-round pause may resume — unless re-buzz is on, in which case
   // players can answer the reopened round again.
-  if (round.pausedFrom !== "open" && !getSettings().rebuzzAllowed) {
+  if (round.pausedFrom !== ROUND_STATUSES.OPEN && !getSettings().rebuzzAllowed) {
     setBuzzNotice(getSnark("shared.round.terminalClosed", "Round is closed — reset the round or enable re-buzz to play again."));
     render();
     return;
   }
-  const resumeToLocked = round.pausedFrom === "locked" && getSafeState("pendingLogId", null);
+  const resumeToLocked = round.pausedFrom === ROUND_STATUSES.LOCKED && getSafeState("pendingLogId", null);
   const resumedAt = now();
   setState(
     "round",
@@ -4012,11 +4197,465 @@ function handleBingoBuzz(player, payload) {
 }
 
 // =============================================================================
+// Roadkill — host-only game logic
+// The stream is driven by a host interval (roadkillHostTick, booted once). The
+// rules are fixed: +correctPoints for the connector, −penaltyPoints for a miss,
+// one guess per player/team/slot per word appearance. First correct ends the
+// pair and auto-advances after a short reveal; the host can pause/step/reveal.
+// =============================================================================
+
+// Build the live setup from a validated episode item. Merges per-pair decoys
+// with the shared pool, guarantees the answer appears exactly once, and keeps
+// the authored points. Returns { error } when a pair is unusable (legacy or
+// hand-edited cloud files) so the runner can refuse the load.
+function buildRoadkillSetup(item) {
+  const sharedDecoys = Array.isArray(item?.decoys) ? item.decoys : [];
+  const rounds = Array.isArray(item?.rounds) ? item.rounds : [];
+  const pairs = [];
+  for (let i = 0; i < rounds.length; i++) {
+    const round = rounds[i] || {};
+    const clueList = Array.isArray(round.clues) ? round.clues : [];
+    const clues = [0, 1].map((c) => String(clueList[c] ?? "").trim());
+    const answer = String(round.answer ?? "").trim();
+    if (!answer || clues.some((clue) => !clue)) {
+      return { error: `Pair ${i + 1} is incomplete.` };
+    }
+    const words = mergeRoadkillWords(answer, round.decoys, sharedDecoys);
+    if (words.length < 2) {
+      return { error: `Pair ${i + 1} needs at least one wrong word.` };
+    }
+    pairs.push({ clues, answer, words });
+  }
+  if (!pairs.length) return { error: "That Roadkill question has no clue pairs." };
+  let finale = null;
+  const finaleAnswer = String(item?.finale?.answer ?? "").trim();
+  if (finaleAnswer) {
+    const words = mergeRoadkillWords(finaleAnswer, item.finale?.decoys, sharedDecoys);
+    if (words.length < 2) return { error: "The finale needs at least one wrong word." };
+    finale = { answer: finaleAnswer, words };
+  }
+  const correctPoints = normalizeRoadkillPoints(item?.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT) || EPISODE_ROADKILL_DEFAULT_CORRECT;
+  const penaltyPoints = normalizeRoadkillPoints(item?.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY);
+  return {
+    pairs,
+    finale,
+    sharedDecoys: sharedDecoys.map((s) => String(s ?? "").trim()).filter(Boolean),
+    correctPoints: Math.max(1, correctPoints),
+    penaltyPoints,
+    stageCount: pairs.length + (finale ? 1 : 0),
+  };
+}
+
+// Begin a stage: shuffle its word template so the answer lands somewhere new
+// each run, reset per-word guesses and arm the 800 ms stream deadline.
+function roadkillStageState(rk, index) {
+  const stage = getRoadkillStage(rk, index);
+  if (!stage) return null;
+  const words = shuffleRoadkillWords(stage.words);
+  const t = now();
+  return {
+    ...rk,
+    active: true,
+    phase: "playing",
+    pairIndex: index,
+    words,
+    wordIndex: 0,
+    wordSeq: (Number(rk.wordSeq) || 0) + 1,
+    prevWord: null,
+    prevSeq: 0,
+    lastWordAt: t,
+    paused: false,
+    nextWordAt: t + ROADKILL_WORD_INTERVAL_MS,
+    advanceAt: null,
+    guessed: {},
+    outcome: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    startedAt: Number(rk.startedAt) || t,
+    finishedAt: null,
+  };
+}
+
+function startRoadkill() {
+  if (!isHost()) return;
+  if (!isRoadkillMode()) return;
+  const rk = getRoadkill();
+  if (!Array.isArray(rk.pairs) || !rk.pairs.length) {
+    setBuzzNotice("Load a Roadkill question from an episode first.");
+    render();
+    return;
+  }
+  const next = roadkillStageState(rk, 0);
+  if (!next) return;
+  setState("roadkill", next, true);
+  setBuzzNotice("Roadkill started!");
+  render();
+}
+
+function endRoadkill(toButtons = false) {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active && rk.phase === "setup") {
+    if (toButtons) setHostSetting("inputMode", "buttons");
+    return;
+  }
+  setState("roadkill", {
+    ...rk,
+    active: false,
+    phase: "setup",
+    pairIndex: 0,
+    words: [],
+    wordIndex: 0,
+    wordSeq: 0,
+    prevWord: null,
+    prevSeq: 0,
+    lastWordAt: null,
+    paused: true,
+    nextWordAt: null,
+    advanceAt: null,
+    guessed: {},
+    outcome: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    finishedAt: null,
+  }, true);
+  setBuzzNotice("Roadkill stopped.");
+  if (toButtons) {
+    setHostSetting("inputMode", "buttons");
+  } else {
+    render();
+  }
+}
+
+function finishRoadkill(rk = getRoadkill()) {
+  setState("roadkill", {
+    ...rk,
+    active: true,
+    phase: "finished",
+    paused: true,
+    nextWordAt: null,
+    advanceAt: null,
+    finishedAt: now(),
+  }, true);
+  render();
+}
+
+function advanceRoadkillWord() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  const words = Array.isArray(rk.words) ? rk.words : [];
+  if (!words.length) return;
+  const t = now();
+  const current = words[(Number(rk.wordIndex) || 0) % words.length] ?? null;
+  setState("roadkill", {
+    ...rk,
+    prevWord: current,
+    prevSeq: Number(rk.wordSeq) || 0,
+    wordIndex: ((Number(rk.wordIndex) || 0) + 1) % words.length,
+    wordSeq: (Number(rk.wordSeq) || 0) + 1,
+    lastWordAt: t,
+    nextWordAt: rk.paused ? null : t + ROADKILL_WORD_INTERVAL_MS,
+    guessed: {},
+    outcome: null,
+  }, true);
+  render();
+}
+
+function pauseRoadkill() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || (rk.phase !== "playing" && rk.phase !== "reveal")) return;
+  setState("roadkill", {
+    ...rk,
+    paused: true,
+    nextWordAt: null,
+    // Host pause cancels a pending auto-advance; Resume re-arms it.
+    advanceAt: null,
+  }, true);
+  render();
+}
+
+function resumeRoadkill() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || !rk.paused) return;
+  const t = now();
+  const next = { ...rk, paused: false };
+  if (rk.phase === "playing") {
+    next.nextWordAt = t + ROADKILL_WORD_INTERVAL_MS;
+  } else if (rk.phase === "reveal") {
+    const hasNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+    next.advanceAt = hasNext ? t + 1000 : null;
+  }
+  setState("roadkill", next, true);
+  render();
+}
+
+function revealRoadkillAnswer() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  const stage = getRoadkillStage(rk);
+  if (!stage) return;
+  const hasNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+  setState("roadkill", {
+    ...rk,
+    phase: hasNext ? "reveal" : "finished",
+    paused: false,
+    nextWordAt: null,
+    advanceAt: hasNext ? now() + ROADKILL_REVEAL_MS : null,
+    revealAnswer: stage.answer,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    outcome: { key: null, name: "", result: "revealed", word: null, answer: stage.answer, delta: 0, ts: now() },
+    finishedAt: hasNext ? null : now(),
+  }, true);
+  render();
+}
+
+function nextRoadkillStage() {
+  if (!isHost()) return;
+  const rk = getRoadkill();
+  if (!rk.active) {
+    startRoadkill();
+    return;
+  }
+  const next = Number(rk.pairIndex) + 1;
+  if (!Number.isInteger(next) || next >= Number(rk.stageCount)) {
+    finishRoadkill(rk);
+    return;
+  }
+  const state = roadkillStageState(rk, next);
+  if (!state) return;
+  setState("roadkill", state, true);
+  render();
+}
+
+// Host interval: walk the stream and auto-advance after a reveal. Booted once
+// (see boot); cheap no-op unless this host is in Roadkill.
+function roadkillHostTick() {
+  if (!isHost()) return;
+  if (!isRoadkillMode()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.paused) return;
+  const t = now();
+  if (rk.advanceAt && t >= Number(rk.advanceAt)) {
+    const next = Number(rk.pairIndex) + 1;
+    if (next < Number(rk.stageCount)) {
+      const state = roadkillStageState(rk, next);
+      if (state) setState("roadkill", state, true);
+    } else {
+      finishRoadkill(rk);
+    }
+    return;
+  }
+  if (rk.phase === "playing" && rk.nextWordAt && t >= Number(rk.nextWordAt)) {
+    advanceRoadkillWord();
+  }
+}
+
+function setRoadkillCoopMood(scoreKey, mood) {
+  if (!isCoopMode()) return;
+  try { setState("coopMoods", { ...getCoopMoods(), [scoreKey]: mood }, true); } catch {}
+}
+
+function addRoadkillScore(scoreKey, delta) {
+  const scores = { ...getScores() };
+  const prev = Number(scores[scoreKey] || 0);
+  const base = Number.isFinite(prev) ? prev : 0;
+  const d = Number(delta);
+  const safe = Number.isFinite(d) ? Math.trunc(d) : 0;
+  scores[scoreKey] = base + safe;
+  setState("scores", scores, true);
+}
+
+// Host RPC handler: compare the word the player saw to the connector. The
+// answer is shared by the whole stage; only the guess timing differs.
+function handleRoadkillBuzz(player, payload) {
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") {
+    return { ok: false, reason: getSnark("player.roadkill.notActive", "Roadkill isn't playing right now.") };
+  }
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  if (player.id === controllerId || (Array.isArray(producerIds) && producerIds.includes(player.id))) {
+    return { ok: false, reason: getSnark("player.roadkill.spectator", "Hosts and producers watch this one.") };
+  }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const teamColor = getPlayerTeamColor(player.id, assignments);
+  if (settings.teamModeEnabled && !teamColor) {
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  }
+  if (!isPlayerBuzzerEnabled(settings, player.id)) {
+    return { ok: false, reason: getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.") };
+  }
+  if (isPlayerKicked(player.id, settings)) {
+    return { ok: false, reason: getSnark("player.buzzer.buzzerDisabledByHost", "Your buzzer is disabled by the Host.") };
+  }
+
+  let coopSlot = 0;
+  let scoreKey = getScoreKeyForPlayer(player.id, settings, assignments);
+  let buzzName = getPlayerName(player);
+  const coopActive = isCoopMode(settings);
+  if (coopActive) {
+    const count = getCoopSlotCount(player.id);
+    if (count > 1) {
+      coopSlot = Number(payload?.coopSlot);
+      if (!Number.isInteger(coopSlot) || coopSlot < 0 || coopSlot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+    }
+    if (isCoopSlotFrozen(player.id, coopSlot) || isCoopSlotMuted(settings, player.id, coopSlot)) {
+      return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+    }
+    scoreKey = getCoopScoreKey(player.id, coopSlot);
+    buzzName = getCoopSlotName(player.id, coopSlot, getPlayerName(player));
+  }
+
+  // Latency grace: accept the word the client saw plus the immediately previous
+  // one for a short window (the host may have stepped while the RPC was in
+  // flight). Never score a word the client could not have seen.
+  const currentSeq = Number(rk.wordSeq) || 0;
+  const sentSeq = Number(payload?.wordSeq);
+  if (!Number.isInteger(sentSeq) || sentSeq <= 0) {
+    return { ok: false, reason: getSnark("player.roadkill.wordMoved", "The word moved — buzz again.") };
+  }
+  let guessedWord = null;
+  if (sentSeq === currentSeq) {
+    guessedWord = rk.words[(Number(rk.wordIndex) || 0) % Math.max(1, (rk.words || []).length)] ?? null;
+  } else if (
+    sentSeq === currentSeq - 1
+    && Number(rk.prevSeq) === sentSeq
+    && rk.prevWord
+    && Number(rk.lastWordAt)
+    && now() - Number(rk.lastWordAt) <= ROADKILL_STALE_SEQ_GRACE_MS
+  ) {
+    guessedWord = rk.prevWord;
+  }
+  if (!guessedWord) {
+    return { ok: false, reason: getSnark("player.roadkill.wordMoved", "The word moved — buzz again.") };
+  }
+
+  const guessedMap = rk.guessed && typeof rk.guessed === "object" ? rk.guessed : {};
+  if (guessedMap[scoreKey] !== undefined) {
+    return { ok: false, reason: getSnark("player.roadkill.oneGuess", "One guess per word — wait for the next one.") };
+  }
+
+  const stage = getRoadkillStage(rk);
+  if (!stage) return { ok: false, reason: getSnark("player.roadkill.notActive", "Roadkill isn't playing right now.") };
+  const isCorrect = normalizeAnswerForCompare(guessedWord) === normalizeAnswerForCompare(stage.answer);
+  const scoreTarget = scoreKey.startsWith("team:") ? `Team ${teamColor}` : buzzName;
+  const logBase = {
+    id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+    type: "roadkill",
+    ts: now(),
+    roundId: currentRoundId(),
+    playerId: player.id,
+    playerName: coopActive ? buzzName : getPlayerName(player),
+    teamColor,
+    scoreKey,
+    coopSlot: coopActive ? coopSlot : null,
+    coopKey: coopActive ? scoreKey : null,
+    scoreTarget,
+    item: stage.answer,
+    answerText: guessedWord,
+    wordSeq: sentSeq,
+    pairIndex: Number(rk.pairIndex),
+    stageKind: stage.kind,
+  };
+
+  if (isCorrect) {
+    const points = Math.max(1, normalizeRoadkillPoints(rk.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT));
+    addRoadkillScore(scoreKey, points);
+    setRoadkillCoopMood(scoreKey, "correct");
+    const hasNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+    const guessed = { ...guessedMap, [scoreKey]: sentSeq };
+    setState("gameLog", [...getLog(), {
+      ...logBase,
+      result: "correct",
+      points,
+      basePoints: points,
+      awardedDelta: points,
+      resolved: true,
+    }], true);
+    setState("roadkill", {
+      ...rk,
+      phase: hasNext ? "reveal" : "finished",
+      paused: false,
+      guessed,
+      nextWordAt: null,
+      advanceAt: hasNext ? now() + ROADKILL_REVEAL_MS : null,
+      revealAnswer: stage.answer,
+      correctKey: scoreKey,
+      correctName: buzzName,
+      correctSlot: coopActive ? { deviceId: player.id, slot: coopSlot } : null,
+      outcome: { key: scoreKey, name: buzzName, result: "correct", word: guessedWord, answer: stage.answer, delta: points, ts: now() },
+      finishedAt: hasNext ? null : now(),
+    }, true);
+    render();
+    return {
+      ok: true,
+      message: getSnark("player.roadkill.correctBuzz", `Correct! +${points}`, { points }),
+    };
+  }
+
+  const penalty = Math.max(0, normalizeRoadkillPoints(rk.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY));
+  const delta = -penalty;
+  if (penalty > 0) addRoadkillScore(scoreKey, delta);
+  setRoadkillCoopMood(scoreKey, "wrong");
+  setState("gameLog", [...getLog(), {
+    ...logBase,
+    result: "incorrect",
+    points: delta,
+    basePoints: -penalty,
+    awardedDelta: delta,
+    resolved: true,
+  }], true);
+  setState("roadkill", {
+    ...rk,
+    guessed: { ...guessedMap, [scoreKey]: sentSeq },
+    outcome: { key: scoreKey, name: buzzName, result: "incorrect", word: guessedWord, answer: null, delta, ts: now() },
+  }, true);
+  render();
+  return {
+    ok: true,
+    message: penalty > 0
+      ? getSnark("player.roadkill.wrongBuzz", `Wrong! −${penalty}`, { points: penalty })
+      : getSnark("player.roadkill.wrongBuzzFree", "Wrong — no penalty."),
+  };
+}
+
+// =============================================================================
 // Dis or Dat — host-only game logic (no cycling, static questions)
 // =============================================================================
 // All live response tracks (coop-aware: one per slot; shared-team blocked in
 // coop so tracks are always per-slot there).
 function getDisOrDatTracks(settings = getSettings(), assignments = getTeamAssignments(), participants = null) {
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  if (!isCoopMode(settings)) {
+    return [...new Set(list.map((p) => getTeamTrackKey(p.id, settings, assignments)).filter(Boolean))];
+  }
+  const tracks = [];
+  list.forEach((p) => {
+    const count = getCoopSlotCount(p.id);
+    for (let slot = 0; slot < count; slot++) {
+      if (!isCoopSlotMuted(settings, p.id, slot)) tracks.push(getCoopScoreKey(p.id, slot));
+    }
+  });
+  return tracks;
+}
+
+// Four-Way tracks (same logic as DisOrDat — per-slot in coop, per-team/player otherwise)
+function getFourwayTracks(settings = getSettings(), assignments = getTeamAssignments(), participants = null) {
   const controllerId = getControllerId();
   const producerIds = getSafeState("producerIds", []);
   const list = (participants || currentParticipants()).filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
@@ -4267,28 +4906,53 @@ function nextDisOrDatQuestion() {
   const dd = getDisOrDat();
   if (!dd.active || dd.phase !== "playing" || dd.mode !== "allPlayHostPaced") return;
   const q = dd.currentQuestion;
-  const nextResponses = { ...(dd.responses || {}) };
-  const controllerId = getControllerId();
-  const producerIds = getSafeState("producerIds", []);
-  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
-  const settings = getSettings();
-  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
-  const tracks = getDisOrDatTracks(settings, assignments, participants);
-  for (const track of tracks) {
-    const resps = nextResponses[track] || [];
-    if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
-      const next = [...resps];
-      next[q] = "none";
-      nextResponses[track] = next;
+  const revealed = dd.revealedQuestions || [];
+
+  // If current question not yet revealed, reveal it first
+  if (!revealed.includes(q)) {
+    const nextResponses = { ...(dd.responses || {}) };
+    const controllerId = getControllerId();
+    const producerIds = getSafeState("producerIds", []);
+    const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+    const settings = getSettings();
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+    const tracks = getDisOrDatTracks(settings, assignments, participants);
+    for (const track of tracks) {
+      const resps = nextResponses[track] || [];
+      if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
+        const next = [...resps];
+        next[q] = "none";
+        nextResponses[track] = next;
+      }
     }
+    setState("disordat", { ...dd, responses: nextResponses, revealedQuestions: [...revealed, q] }, true);
+    render();
+    return;
   }
+
+  // Current question already revealed, advance to next question
   const nextQ = q + 1;
   if (nextQ >= DIS_OR_DAT_QUESTION_COUNT) {
+    const nextResponses = { ...(dd.responses || {}) };
+    const controllerId = getControllerId();
+    const producerIds = getSafeState("producerIds", []);
+    const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+    const settings = getSettings();
+    const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), controllerId);
+    const tracks = getDisOrDatTracks(settings, assignments, participants);
+    for (const track of tracks) {
+      const resps = nextResponses[track] || [];
+      if (resps[q] !== "dis" && resps[q] !== "dat" && resps[q] !== "both") {
+        const next = [...resps];
+        next[q] = "none";
+        nextResponses[track] = next;
+      }
+    }
     setState("disordat", { ...dd, responses: nextResponses, currentQuestion: nextQ }, true);
     finalizeDisOrDat();
     return;
   }
-  setState("disordat", { ...dd, responses: nextResponses, currentQuestion: nextQ }, true);
+  setState("disordat", { ...dd, currentQuestion: nextQ }, true);
   render();
 }
 
@@ -4429,6 +5093,220 @@ function handleDisOrDatTick() {
     }
     render();
   }
+}
+
+// =============================================================================
+// Four-Way — category + 4 options (3 fixed, 1 rotating per round)
+// Players multi-select which options apply. Scored per option: +500 correct, -500 incorrect.
+// Modes: "timed" (all play with timer) | "hostPaced" (host advances rounds)
+// =============================================================================
+function startFourway(mode, playerId) {
+  if (!isHost()) return;
+  if (isCoopMode()) {
+    setBuzzNotice("4-Way is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+    render();
+    return;
+  }
+  const fw = getFourway();
+  if (!fw.fixedOptions.length || !fw.rounds.length) return;
+  const isTimed = mode === "timed";
+  const rawTimed = fw.timedSeconds ?? getSettings().timeOpen ?? 30;
+  const timedSeconds = Number(rawTimed);
+  const timedMs = isTimed && timedSeconds > 0 ? now() + timedSeconds * 1000 : null;
+  const tracks = getFourwayTracks();
+  const initialResponses = {};
+  const initialPoints = {};
+  tracks.forEach(t => {
+    initialResponses[t] = {};
+    initialPoints[t] = 0;
+  });
+  setState("fourway", {
+    ...fw,
+    active: true,
+    phase: "playing",
+    mode,
+    currentRound: 0,
+    responses: initialResponses,
+    pointsEarned: initialPoints,
+    timeEndsAt: timedMs,
+  }, true);
+  render();
+}
+
+function handleFourwayAnswer(player, payload) {
+  const fw = getFourway();
+  if (!fw.active || fw.phase !== "playing") {
+    return { ok: false, reason: getSnark("player.fourway.notActive", "4-Way isn't active.") };
+  }
+  if (isCoopMode()) return { ok: false, reason: getSnark("player.fourway.coopBlocked", "4-Way is off limits in coopertition mode.") };
+  const round = Number(payload?.round);
+  const selected = Array.isArray(payload?.selected) ? payload.selected : [];
+  if (!Number.isInteger(round) || round < 0 || round >= fw.rounds.length) {
+    return { ok: false, reason: getSnark("player.fourway.badRound", "Bad round.") };
+  }
+  if (selected.some(s => !Number.isInteger(s) || s < 0 || s >= 4)) {
+    return { ok: false, reason: getSnark("player.fourway.badSelection", "Bad selection.") };
+  }
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  let trackKey = getTeamTrackKey(player.id, settings, assignments);
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(player.id);
+    let slot = 0;
+    if (count > 1) {
+      slot = Number(payload?.coopSlot);
+      if (!Number.isInteger(slot) || slot < 0 || slot >= count) {
+        return { ok: false, reason: getSnark("player.coop.unknownSlot", "Unknown player slot for this device.") };
+      }
+      if (isCoopSlotFrozen(player.id, slot) || isCoopSlotMuted(settings, player.id, slot)) {
+        return { ok: false, reason: getSnark("player.coop.slotCannotBuzz", "That player cannot buzz right now.") };
+      }
+    }
+    trackKey = getCoopScoreKey(player.id, slot);
+  }
+  if (settings.teamModeEnabled && !getPlayerTeamColor(player.id, assignments)) {
+    return { ok: false, reason: getSnark("player.buzzer.notAssignedToTeam", "Host has not assigned you to a team yet.") };
+  }
+  if (fw.mode === "hostPaced" && round !== fw.currentRound) {
+    return { ok: false, reason: getSnark("player.fourway.notLiveYet", "That round isn't live yet.") };
+  }
+  if (fw.timeEndsAt && now() >= fw.timeEndsAt) {
+    return { ok: false, reason: getSnark("player.outcome.timeUp", "Time's up.") };
+  }
+  const trackResponses = fw.responses[trackKey] || {};
+  if (trackResponses[round] !== undefined) {
+    return { ok: false, reason: getSnark("player.fourway.alreadyAnswered", "Already answered this round.") };
+  }
+  const correctSet = new Set(fw.rounds[round].correct);
+  const selectedSet = new Set(selected);
+  let roundPoints = 0;
+  for (let i = 0; i < 4; i++) {
+    const isCorrect = correctSet.has(i);
+    const isSelected = selectedSet.has(i);
+    if (isCorrect && isSelected) roundPoints += FOURWAY_CORRECT_POINTS;
+    else if (!isCorrect && isSelected) roundPoints -= FOURWAY_INCORRECT_PENALTY;
+    else if (isCorrect && !isSelected) roundPoints -= FOURWAY_INCORRECT_PENALTY;
+  }
+  const nextResponses = { ...fw.responses };
+  nextResponses[trackKey] = { ...trackResponses, [round]: selected };
+  const nextPoints = { ...fw.pointsEarned };
+  nextPoints[trackKey] = (nextPoints[trackKey] || 0) + roundPoints;
+  setState("fourway", {
+    ...fw,
+    responses: nextResponses,
+    pointsEarned: nextPoints,
+  }, true);
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const activeTracks = getFourwayTracks(settings, assignments, participants);
+  const isTimed = fw.mode === "timed";
+  if (isTimed && activeTracks.length > 0 && activeTracks.every(track =>
+    Object.keys(nextResponses[track] || {}).length >= fw.rounds.length)) {
+    finalizeFourway();
+    return { ok: true, message: getSnark("player.fourway.submitted", "Submitted!") };
+  }
+  render();
+  return { ok: true, message: getSnark("player.fourway.submitted", "Submitted!") };
+}
+
+function nextFourwayQuestion() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (!fw.active || fw.phase !== "playing" || fw.mode !== "hostPaced") return;
+  const nextRound = fw.currentRound + 1;
+  if (nextRound >= fw.rounds.length) {
+    finalizeFourway();
+    return;
+  }
+  setState("fourway", { ...fw, currentRound: nextRound }, true);
+  render();
+}
+
+function finalizeFourway() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (!fw.active || fw.phase === "results") return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = currentParticipants().filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const tracks = getFourwayTracks(settings, assignments, participants);
+  const scores = { ...getScores() };
+  const log = getLog();
+  for (const track of tracks) {
+    const trackResponses = fw.responses[track] || {};
+    const points = fw.pointsEarned[track] || 0;
+    if (!Number.isFinite(points)) continue;
+    const isTeamTrack = TEAM_COLORS.includes(track);
+    const parsedTrack = parseCoopScoreKey(track);
+    const rep = parsedTrack
+      ? participants.find((p) => p.id === parsedTrack.deviceId) || null
+      : participants.find((p) => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const teamColor = isTeamTrack ? track : (rep ? getPlayerTeamColor(rep.id, assignments) : null);
+    const scoreKey = parsedTrack ? track : (rep ? getScoreKeyForPlayer(rep.id, settings, assignments) : track);
+    scores[scoreKey] = Number(scores[scoreKey] || 0) + points;
+    const trackDisplayName = parsedTrack ? getCoopKeyDisplayName(track, participants) : (rep ? getPlayerName(rep) : track);
+    log.push({
+      id: `${now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: "fourway",
+      ts: now(),
+      roundId: currentRoundId(),
+      playerId: rep?.id || track,
+      playerName: trackDisplayName,
+      teamColor,
+      scoreKey,
+      coopKey: parsedTrack ? track : null,
+      scoreTarget: scoreKey.startsWith("team:") ? `Team ${teamColor}` : trackDisplayName,
+      option: null,
+      answerText: `4-Way: ${points >= 0 ? "+" : ""}${points} pts`,
+      timeLeftCs: 0,
+      scoringMode: "uniform",
+      jackMultiplier: settings.jackMultiplier,
+      uniformPoints: FOURWAY_CORRECT_POINTS,
+      basePoints: 0,
+      awardedDelta: points,
+      resolved: true,
+    });
+  }
+  setState("scores", scores, true);
+  setState("gameLog", log, true);
+  setState("fourway", { ...fw, phase: "results" }, true);
+  render();
+}
+
+function resetFourway() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  setState("fourway", {
+    ...fw,
+    active: false,
+    phase: "playing",
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: null,
+  }, true);
+  render();
+}
+
+function exitFourway() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (fw.active && fw.phase === "playing") finalizeFourway();
+  setHostSetting("inputMode", "buttons");
+}
+
+function handleFourwayTick() {
+  if (!isHost()) return;
+  const fw = getFourway();
+  if (!fw.active || fw.phase !== "playing" || fw.mode !== "timed") return;
+  if (fw.timeEndsAt && now() >= fw.timeEndsAt) {
+    finalizeFourway();
+    return;
+  }
+  render();
 }
 
 // =============================================================================
@@ -5732,10 +6610,15 @@ function hostTick() {
     handleDisOrDatTick();
     return;
   }
+  if (isFourwayMode()) {
+    handleFourwayTick();
+    return;
+  }
   if (isQuixortMode()) {
     handleQuixortTick();
     return;
   }
+  if (isRoadkillMode()) return;
   const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) {
     // Single-player target left mid-phase: finalize with current selections
@@ -6044,6 +6927,29 @@ function deactivateSpecialStates(except) {
       if (qx.active) setState("quixort", { ...qx, active: false, phase: "setup", expectedTracks: [], runs: {} }, true);
     }
   } catch {}
+  try {
+    if (except !== "roadkill") {
+      const rk = getRoadkill();
+      if (rk.active || rk.phase !== "setup") {
+        setState("roadkill", {
+          ...rk,
+          active: false,
+          phase: "setup",
+          paused: true,
+          nextWordAt: null,
+          advanceAt: null,
+          words: [],
+          wordIndex: 0,
+          guessed: {},
+          outcome: null,
+          revealAnswer: null,
+          correctKey: null,
+          correctName: null,
+          correctSlot: null,
+        }, true);
+      }
+    }
+  } catch {}
 }
 
 // =============================================================================
@@ -6160,7 +7066,10 @@ function setHostSetting(key, value) {
     } catch {}
   }
   if (key === "coopertitionEnabled") {
-    if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text") {
+    // Roadkill setup can wait with coop on; a live Roadkill cannot be flipped
+    // (score keys/roster are already in flight).
+    const roadkillSetupOnly = settings.inputMode === "roadkill" && !getRoadkill()?.active;
+    if (value === true && settings.inputMode !== "buttons" && settings.inputMode !== "text" && !roadkillSetupOnly) {
       setBuzzNotice("Switch modes from buzzer mode: return to buttons/text before enabling coopertition.");
       render();
       return;
@@ -6294,6 +7203,35 @@ function setHostSetting(key, value) {
       setState("pendingLogId", null, true);
       const qx = getQuixort();
       setState("quixort", { ...freshQuixortState(), items: qx.items || [], trash: qx.trash || [], multiplier: qx.multiplier || 1, blockSec: normalizeQuixortBlockSec(qx.blockSec ?? 30) }, true);
+    }
+    if (value === "roadkill") {
+      setState("round", freshIdleBuzzerRound(settings), true);
+      setState("pendingLogId", null, true);
+      // Preserve the seeded pairs (the episode runner writes them right after
+      // this call) but drop any live stream from the previous question.
+      const rk = getRoadkill();
+      setState("roadkill", {
+        ...rk,
+        active: false,
+        phase: "setup",
+        pairIndex: 0,
+        words: [],
+        wordIndex: 0,
+        wordSeq: 0,
+        prevWord: null,
+        prevSeq: 0,
+        lastWordAt: null,
+        paused: true,
+        nextWordAt: null,
+        advanceAt: null,
+        guessed: {},
+        outcome: null,
+        revealAnswer: null,
+        correctKey: null,
+        correctName: null,
+        correctSlot: null,
+        finishedAt: null,
+      }, true);
     }
   }
   if (key === "rouletteTopAmount") {
@@ -7596,6 +8534,9 @@ function ensureHostInit() {
   if (getState("bingo") === undefined || getState("bingo") === null) {
     setState("bingo", getBingo(), true);
   }
+  if (getState("roadkill") === undefined || getState("roadkill") === null) {
+    setState("roadkill", freshRoadkillState(), true);
+  }
   if (getState("teamSelect") === undefined || getState("teamSelect") === null) {
     setState("teamSelect", freshTeamSelect(), true);
   }
@@ -8212,8 +9153,244 @@ function renderBingoAudienceDisplay(settings, players) {
 }
 
 // =============================================================================
-// Dis or Dat host panel — setup, playing controls, and results
+// Roadkill renderers — shared stage card + host/player/audience views
 // =============================================================================
+function getRoadkillCurrentWord(rk) {
+  const words = Array.isArray(rk?.words) ? rk.words : [];
+  if (!words.length) return "";
+  const index = ((Number(rk.wordIndex) || 0) % words.length + words.length) % words.length;
+  return String(words[index] ?? "");
+}
+
+function renderRoadkillStageCard(rk, { audience = false } = {}) {
+  const stage = getRoadkillStage(rk);
+  if (!stage) {
+    return `<section class="card roadkill-stage"><p class="muted">No Roadkill question loaded.</p></section>`;
+  }
+  const isFinale = stage.kind === "finale";
+  const total = Number(rk.stageCount) || 0;
+  const pairNo = Number(stage.number) || 1;
+  const revealed = (rk.phase === "reveal" || rk.phase === "finished") && Boolean(rk.revealAnswer);
+  const word = revealed ? rk.revealAnswer : getRoadkillCurrentWord(rk);
+  const cluesHtml = isFinale
+    ? `<p class="roadkill-finale-prompt">${getSnark("player.roadkill.finalePrompt", `What do all ${stage.clues.length} answers have in common?`, { count: stage.clues.length })}</p>
+       <div class="roadkill-answer-chips">${stage.clues.map((clue) => `<span class="roadkill-answer-chip">${escapeHtml(clue)}</span>`).join("")}</div>`
+    : `<div class="roadkill-clues">
+        <div class="roadkill-clue"><span class="roadkill-clue-label">Clue 1</span><strong>${escapeHtml(stage.clues[0] || "")}</strong></div>
+        <div class="roadkill-clue"><span class="roadkill-clue-label">Clue 2</span><strong>${escapeHtml(stage.clues[1] || "")}</strong></div>
+      </div>`;
+  const statePill = rk.phase === "finished"
+    ? `<span class="roadkill-pill is-done">Complete</span>`
+    : revealed
+      ? `<span class="roadkill-pill is-reveal">Answer</span>`
+      : rk.paused
+        ? `<span class="roadkill-pill is-paused">Paused</span>`
+        : `<span class="roadkill-pill is-live">Streaming</span>`;
+  const correct = Math.max(0, normalizeRoadkillPoints(rk.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT));
+  const penalty = Math.max(0, normalizeRoadkillPoints(rk.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY));
+  const outlook = rk.outcome && typeof rk.outcome === "object" ? rk.outcome : null;
+  let outcomeHtml = "";
+  if (outlook?.result === "correct") {
+    outcomeHtml = `<p class="roadkill-outcome is-correct"><strong>${escapeHtml(outlook.name || "Someone")}</strong> got it! <span>+${Math.abs(Number(outlook.delta) || correct)}</span></p>`;
+  } else if (outlook?.result === "incorrect") {
+    const d = Number(outlook.delta) || 0;
+    outcomeHtml = `<p class="roadkill-outcome is-wrong"><strong>${escapeHtml(outlook.name || "Someone")}</strong> guessed <em>${escapeHtml(outlook.word || "")}</em> <span>${d > 0 ? "+" : ""}${d}</span></p>`;
+  } else if (outlook?.result === "revealed") {
+    outcomeHtml = `<p class="roadkill-outcome is-reveal">The answer was <strong>${escapeHtml(outlook.answer || "")}</strong>.</p>`;
+  }
+  return `<section class="card roadkill-stage${audience ? " roadkill-stage-audience" : ""}" data-roadkill-stage="${escapeHtml(String(pairNo))}">
+    <div class="roadkill-stage-head">
+      <p class="prejoin-kicker">Roadkill${isFinale ? " · Finale" : ` · Pair ${pairNo} of ${total}`}</p>
+      ${statePill}
+    </div>
+    ${cluesHtml}
+    <div class="roadkill-stream${revealed ? " is-revealed" : ""}${rk.paused && !revealed ? " is-paused" : ""}" data-rk-word-seq="${Number(rk.wordSeq) || 0}">
+      <span class="roadkill-word">${escapeHtml(word || "...")}</span>
+    </div>
+    <p class="roadkill-hint">${revealed
+      ? (isFinale ? "That is what they all had in common." : "The middle word linked both clues.")
+      : "Buzz when the middle word connects both clues."}</p>
+    ${outcomeHtml}
+    <p class="muted roadkill-points">${isFinale ? "Finale" : "Pair"} points: +${escapeHtml(String(correct))} / −${escapeHtml(String(penalty))}</p>
+  </section>`;
+}
+
+function renderRoadkillHostPanel(settings, players) {
+  if (!hasHostPrivileges()) return "";
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase === "setup") {
+    const pairs = Array.isArray(rk.pairs) ? rk.pairs : [];
+    return `
+      <section class="card host-panel roadkill-host-panel">
+        <h2>Roadkill</h2>
+        <p class="muted">Episode-only special question. Load a Roadkill item from the episode runner, then start it here. Two clues on top, one connector word streaming through the middle — players buzz while it connects both.</p>
+        ${pairs.length
+          ? `<ol class="roadkill-pair-list">${pairs.map((pair) => `<li><strong>${escapeHtml((pair.clues || []).join(" + "))}</strong> → <em>${escapeHtml(pair.answer || "")}</em></li>`).join("")}</ol>`
+          : `<p class="muted">No clue pairs seeded yet.</p>`}
+        ${rk.finale ? `<p class="muted">Finale: the answer is <strong>${escapeHtml(rk.finale.answer || "")}</strong>.</p>` : ""}
+        <p class="muted">Points: +${escapeHtml(String(Math.max(0, normalizeRoadkillPoints(rk.correctPoints, EPISODE_ROADKILL_DEFAULT_CORRECT))))} / −${escapeHtml(String(Math.max(0, normalizeRoadkillPoints(rk.penaltyPoints, EPISODE_ROADKILL_DEFAULT_PENALTY))))}</p>
+        <div class="host-actions">
+          <button type="button" class="primary-action" data-roadkill-start ${pairs.length ? "" : "disabled"}>Start Roadkill</button>
+          <button type="button" data-roadkill-exit>Return to buzzer mode</button>
+        </div>
+      </section>`;
+  }
+  const stage = getRoadkillStage(rk);
+  const playing = rk.phase === "playing";
+  const finished = rk.phase === "finished";
+  const canNext = Number(rk.pairIndex) + 1 < Number(rk.stageCount);
+  const lockCount = Object.keys(rk.guessed || {}).length;
+  return `
+    <section class="card host-panel roadkill-host-panel">
+      <h2>Roadkill — ${stage?.kind === "finale" ? "Finale" : `Pair ${Number(rk.pairIndex) + 1} of ${rk.stageCount}`}</h2>
+      ${renderRoadkillStageCard(rk)}
+      <p class="muted">${rk.paused ? "Stream paused." : playing ? "Streaming — Next word steps immediately." : finished ? "Roadkill complete." : "Answer revealed — advancing shortly."} Guess locks this word: ${lockCount}.</p>
+      <div class="host-actions roadkill-host-actions">
+        ${playing ? `<button type="button" data-roadkill-pause>Pause</button>` : ""}
+        ${rk.paused && !finished ? `<button type="button" data-roadkill-resume>Resume</button>` : ""}
+        ${playing ? `<button type="button" data-roadkill-next-word>Next word</button>` : ""}
+        ${playing ? `<button type="button" data-roadkill-reveal>Reveal answer</button>` : ""}
+        ${!finished ? `<button type="button" class="primary-action" data-roadkill-next-pair>${canNext ? "Next pair" : "Finish"}</button>` : ""}
+        <button type="button" data-roadkill-restart>Restart</button>
+        <button type="button" data-roadkill-end>Stop Roadkill</button>
+        <button type="button" data-roadkill-exit>Return to buzzer mode</button>
+      </div>
+    </section>`;
+}
+
+function renderRoadkillCoopBuzzRow(settings, mePlayer, rk) {
+  const deviceId = mePlayer.id;
+  const count = getCoopSlotCount(deviceId);
+  const playing = rk.active && rk.phase === "playing";
+  const allowed = !isControllerPlayer() && !isProducer() && !isAudienceDisplayClient() && isPlayerBuzzerEnabled(settings, deviceId);
+  const cols = [];
+  for (let slot = 0; slot < count; slot++) {
+    const key = getCoopScoreKey(deviceId, slot);
+    const name = getCoopSlotName(deviceId, slot);
+    const hint = getCoopKeyHint(slot, count);
+    const muted = isCoopSlotMuted(settings, deviceId, slot) || isCoopSlotFrozen(deviceId, slot);
+    const spent = Number(rk.guessed?.[key]) === Number(rk.wordSeq);
+    const outcome = rk.outcome?.key === key ? rk.outcome : null;
+    const resultMsg = outcome?.result === "correct"
+      ? `<span class="roadkill-slot-result is-correct">+${Math.abs(Number(outcome.delta) || 0)}</span>`
+      : outcome?.result === "incorrect"
+        ? `<span class="roadkill-slot-result is-wrong">${Number(outcome.delta) || 0}</span>`
+        : "";
+    const off = !playing || !allowed || muted || spent;
+    cols.push(`
+      <div class="coop-slot${spent ? " is-locked" : ""}">
+        <div class="coop-slot-head">${getCoopCharHtml(slot, getCoopCharMoodForKey(key, getRound()), "", key)}<strong>${escapeHtml(name)}</strong><kbd>${hint}</kbd></div>
+        <p class="muted">${resultMsg || (spent ? "Guessed this word." : "Ready.")}</p>
+        <button type="button" class="roadkill-buzz-btn" data-roadkill-buzz data-coop-slot="${slot}" ${off ? "disabled" : ""}>BUZZ${off ? "" : "!"}</button>
+      </div>`);
+  }
+  return `<div class="roadkill-buzz-area"><div class="coop-buzz-row coop-buzz-${count}">${cols.join("")}</div></div>`;
+}
+
+function renderRoadkillPlayerPanel(settings, mePlayer) {
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase === "setup") {
+    return `<section class="card player-card roadkill-player-card"><h2>Roadkill</h2><p class="muted">${getSnark("player.roadkill.waitingHost", "Waiting for the host to start...")}</p></section>`;
+  }
+  const coopActive = isCoopMode(settings);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = settings.teamModeEnabled && settings.teamScoringMode === "shared" && myTeamColor
+    ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>`
+    : "";
+  const scoreKey = coopActive ? getCoopScoreKey(mePlayer.id, 0) : getScoreKeyForPlayer(mePlayer.id, settings, assignments);
+  const myScore = coopActive
+    ? getCoopGroupTotal(mePlayer.id, getScores())
+    : (getScores()[scoreKey] || 0);
+  const playing = rk.phase === "playing";
+  const spent = Number(rk.guessed?.[scoreKey]) === Number(rk.wordSeq);
+  const outcome = rk.outcome?.key === scoreKey ? rk.outcome : null;
+  const canBuzz = playing
+    && !isControllerPlayer()
+    && !isProducer()
+    && !isAudienceDisplayClient()
+    && isPlayerBuzzerEnabled(settings, mePlayer.id)
+    && !(coopActive && isCoopSlotMuted(settings, mePlayer.id, 0));
+  const isMultiSlot = coopActive && getCoopSlotCount(mePlayer.id) > 1;
+  let resultHtml = "";
+  if (outcome?.result === "correct") {
+    resultHtml = `<p class="roadkill-player-result is-correct">${getSnark("player.roadkill.correctBuzz", `Correct! +${Math.abs(Number(outcome.delta) || 0)}`, { points: Math.abs(Number(outcome.delta) || 0) })}</p>`;
+  } else if (outcome?.result === "incorrect") {
+    resultHtml = `<p class="roadkill-player-result is-wrong">${getSnark("player.roadkill.wrongBuzz", `Wrong! −${Math.abs(Number(outcome.delta) || 0)}`, { points: Math.abs(Number(outcome.delta) || 0) })}</p>`;
+  } else if (spent) {
+    resultHtml = `<p class="muted">${getSnark("player.roadkill.oneGuess", "One guess per word — wait for the next one.")}</p>`;
+  }
+  const buzzHtml = isMultiSlot
+    ? renderRoadkillCoopBuzzRow(settings, mePlayer, rk)
+    : `<div class="roadkill-buzz-area">
+        <button type="button" class="roadkill-buzz-btn" data-roadkill-buzz ${canBuzz && !spent ? "" : "disabled"}>BUZZ${canBuzz && !spent ? "!" : ""}</button>
+        ${playing && !spent ? `<p class="muted roadkill-key-hint">Tip: <kbd>Space</kbd> buzzes too.</p>` : ""}
+      </div>`;
+  return `
+    <section class="card player-card roadkill-player-card">
+      <h2>Roadkill ${teamPill}</h2>
+      ${renderRoadkillStageCard(rk)}
+      ${buzzHtml}
+      ${resultHtml}
+      <p class="muted">${getSnark("player.bingo.score", `Score: <strong>${myScore}</strong>`, { points: myScore })}</p>
+    </section>`;
+}
+
+function renderRoadkillAudienceDisplay(settings, players) {
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase === "setup") {
+    return `
+      <main class="layout audience-layout" data-roadkill-active="true" data-round-status="idle">
+        <header class="hero audience-hero">
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Roadkill</span></p><h1 class="audience-title">Roadkill</h1><p class="muted">${getSnark("audience.roadkill.waitingGame", "Waiting for the game to start...")}</p></div>
+        </header>
+      </main>`;
+  }
+  const scores = getScores();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const visible = players.filter((p) => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  let standings = "";
+  if (isSharedTeam) {
+    standings = TEAM_COLORS.map((teamColor) => {
+      const members = getTeamMembers(teamColor, players, assignments);
+      if (!members.length) return "";
+      const s = Number(scores[getTeamScoreKey(teamColor)] || 0);
+      const names = members.map((m) => escapeHtml(getPlayerName(m))).join(", ");
+      return `<li><span class="team-pill team-${teamColor}">${teamColor}</span> <small>(${names})</small> ${getSnark("shared.bingo.score", `Score: ${s}`, { points: s })}</li>`;
+    }).filter(Boolean).join("");
+  } else if (isCoopMode(settings)) {
+    const rows = [];
+    visible.forEach((p) => {
+      const count = getCoopSlotCount(p.id);
+      for (let slot = 0; slot < count; slot++) {
+        const key = getCoopScoreKey(p.id, slot);
+        rows.push({
+          label: `${escapeHtml(getCoopGroupName(p.id, getPlayerName(p)))} — ${escapeHtml(getCoopSlotName(p.id, slot))}`,
+          score: Number(scores[key] || 0),
+        });
+      }
+    });
+    rows.sort((a, b) => b.score - a.score);
+    standings = rows.map((row) => `<li><strong>${row.label}</strong> ${getSnark("shared.bingo.score", `Score: ${row.score}`, { points: row.score })}</li>`).join("");
+  } else {
+    standings = [...visible]
+      .sort((a, b) => (Number(scores[b.id] || 0)) - (Number(scores[a.id] || 0)))
+      .map((p) => `<li><strong>${escapeHtml(getPlayerName(p))}</strong> ${getSnark("shared.bingo.score", `Score: ${Number(scores[p.id] || 0)}`, { points: Number(scores[p.id] || 0) })}</li>`)
+      .join("");
+  }
+  return `
+    <main class="layout audience-layout" data-roadkill-active="true" data-round-status="${rk.phase === "finished" ? "closed" : "open"}">
+      <header class="hero audience-hero">
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">Roadkill</span></p><h1 class="audience-title">Roadkill</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+      </header>
+      ${renderRoadkillStageCard(rk, { audience: true })}
+      <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.bingo.standings", "Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
+    </main>`;
+}
+
 function renderDisOrDatHostPanel(settings, players) {
   if (!hasHostPrivileges()) return "";
   const dd = getDisOrDat();
@@ -8384,7 +9561,15 @@ function renderDisOrDatHostPanel(settings, players) {
       ${!isTimed ? `<p>Question: <strong>${dd.currentQuestion + 1} / ${DIS_OR_DAT_QUESTION_COUNT}</strong></p>${renderDisOrDatQuestionText(dd, dd.currentQuestion)}` : ""}
       ${isTimed ? thingsList : ""}
       <div class="disordat-progress"><h3>Progress</h3>${progressRows || '<p class="muted">No players yet.</p>'}</div>
-      ${!isTimed ? `<div class="host-actions" style="margin-top:0.6rem"><button type="button" class="primary-action" data-disordat-next>Next Question</button></div>` : ""}
+      ${!isTimed ? (() => {
+        const revealed = dd.revealedQuestions || [];
+        const currentQ = dd.currentQuestion;
+        const isRevealed = revealed.includes(currentQ);
+        const btnLabel = isRevealed
+          ? getSnark("host.disdat.nextQuestion", "Next Question")
+          : getSnark("host.disdat.revealAnswers", "Reveal Answers");
+        return `<div class="host-actions" style="margin-top:0.6rem"><button type="button" class="primary-action" data-disordat-next>${btnLabel}</button></div>`;
+      })() : ""}
       <div class="host-actions" style="margin-top:0.6rem">
         <button type="button" data-disordat-end>End & Award Points</button>
         <button type="button" data-disordat-exit>Return to buzzer mode</button>
@@ -8428,15 +9613,19 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
 
   const myResponses = dd.responses[trackKey] || [];
   const bothShown = dd.answers.some(a => a === "both");
+  const revealedQuestions = dd.revealedQuestions || [];
+  const isHostPaced = dd.mode === "allPlayHostPaced";
 
   const renderQuestionDiamond = (i) => {
     const q = dd.answers[i];
     const myAnswer = myResponses[i];
     const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
     const isCorrect = answered && myAnswer === q;
+    // In host-paced mode, only show correct/incorrect if question has been revealed
+    const showResult = !isHostPaced || revealedQuestions.includes(i);
     const btn = (value, pos, label) => {
       const chosen = myAnswer === value;
-      const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+      const resultCls = answered && showResult ? (isCorrect ? " is-correct" : " is-wrong") : "";
       const chosenCls = chosen ? " is-chosen" : "";
       return `<button type="button" class="disordat-answer-btn ${pos}${resultCls}${chosenCls}" data-disordat-answer data-q="${i}" data-answer="${value}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
     };
@@ -8445,7 +9634,7 @@ function renderDisOrDatPlayerPanel(settings, mePlayer) {
         ${btn("dis", "pos-x", dd.disLabel || "Dis")}
         ${btn("dat", "pos-b", dd.datLabel || "Dat")}
         ${bothShown ? btn("both", "pos-a", "Both") : ""}
-        <div class="diamond-center disordat-diamond-center">${answered ? (isCorrect ? "✓" : "✗") : `Q${i + 1}`}</div>
+        <div class="diamond-center disordat-diamond-center">${answered && showResult ? (isCorrect ? "✓" : "✗") : `Q${i + 1}`}</div>
       </div>
     `;
   };
@@ -8517,9 +9706,13 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
     const myAnswer = myResponses[q];
     const answered = myAnswer === "dis" || myAnswer === "dat" || myAnswer === "both";
     const isCorrect = answered && myAnswer === dd.answers[q];
+    // In host-paced mode, only show correct/incorrect if question has been revealed
+    const revealedQuestions = dd.revealedQuestions || [];
+    const isHostPaced = dd.mode === "allPlayHostPaced";
+    const showResult = !isHostPaced || revealedQuestions.includes(q);
     const btn = (value, pos, label) => {
       const chosen = myAnswer === value;
-      const resultCls = answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+      const resultCls = answered && showResult ? (isCorrect ? " is-correct" : " is-wrong") : "";
       const chosenCls = chosen ? " is-chosen" : "";
       return `<button type="button" class="disordat-answer-btn ${pos}${resultCls}${chosenCls}" data-disordat-answer data-q="${q}" data-answer="${value}" data-coop-slot="${slot}" ${answered ? "disabled" : ""}>${escapeHtml(label)}</button>`;
     };
@@ -8528,7 +9721,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
         ${btn("dis", "pos-x", dd.disLabel || "Dis")}
         ${btn("dat", "pos-b", dd.datLabel || "Dat")}
         ${bothShown ? btn("both", "pos-a", "Both") : ""}
-        <div class="diamond-center disordat-diamond-center">${answered ? (isCorrect ? "✓" : "✗") : `Q${q + 1}`}</div>
+        <div class="diamond-center disordat-diamond-center">${answered && showResult ? (isCorrect ? "✓" : "✗") : `Q${q + 1}`}</div>
       </div>`;
   };
 
@@ -8693,6 +9886,260 @@ function renderDisOrDatAudienceDisplay(settings, players) {
       ${questionHtml}
       <section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.disdat.finalStandings", dd.phase === "results" ? "Final Standings" : "Standings")}</h2><span class="audience-standings-mode">${modeLabel}</span></div><ul class="bingo-standings audience-standings-big">${standings || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>
     </main>`;
+}
+
+// =============================================================================
+// Four-Way — host / player / audience panels
+// =============================================================================
+function renderFourwayPlayerPanel(settings, mePlayer) {
+  const fw = getFourway();
+  if (isCoopMode(settings)) {
+    return `<section class="card player-card"><h2>4-Way</h2><p class="muted">${getSnark("player.fourway.coopBlocked", "4-Way is off limits in coopertition mode.")}</p></section>`;
+  }
+  if (!fw.active) {
+    return `<section class="card player-card"><h2>4-Way</h2><p class="muted">${getSnark("player.fourway.waitingHost", "Waiting for the host to start...")}</p></section>`;
+  }
+
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const trackKey = getTeamTrackKey(mePlayer.id, settings, assignments);
+  const myTeamColor = getPlayerTeamColor(mePlayer.id, assignments);
+  const teamPill = isSharedTeam && myTeamColor ? `<span class="team-pill team-${myTeamColor}">${myTeamColor}</span>` : "";
+
+  const roundData = fw.rounds[fw.currentRound];
+  const fixedOptions = fw.fixedOptions;
+  const rotatingOption = roundData?.rotatingOption || "";
+  const options = [...fixedOptions, rotatingOption];
+
+  const myResponses = fw.responses[trackKey] || {};
+  const mySelection = myResponses[fw.currentRound] || [];
+  const answered = Array.isArray(mySelection) && mySelection.length > 0;
+
+  const renderOption = (i, label) => {
+    const chosen = mySelection.includes(i);
+    const isCorrect = roundData?.correct?.includes(i);
+    const resultCls = fw.phase === "results" && answered ? (isCorrect ? " is-correct" : " is-wrong") : "";
+    const chosenCls = chosen ? " is-chosen" : "";
+    const disabled = answered || fw.phase === "results" ? "disabled" : "";
+    return `<input type="checkbox" class="fourway-option-checkbox ${resultCls}${chosenCls}" data-fourway-answer data-option="${i}" ${disabled} ${chosen ? "checked" : ""}>${escapeHtml(label)}`;
+  };
+
+  const timerHtml = fw.mode === "timed" && fw.phase === "playing"
+    ? `<div class="fourway-timer">${getSnark("player.fourway.timeLeftLabel", "Time left")}: <strong data-fourway-time-left>${fw.timeEndsAt ? formatSeconds(Math.max(0, Math.ceil((fw.timeEndsAt - now()) / 1000))) : getSnark("player.fourway.noTimerLabel", "No timer")}</strong></div>`
+    : "";
+
+  let body;
+  if (fw.phase === "results") {
+    const trackPoints = fw.pointsEarned[trackKey] || 0;
+    const roundCorrect = roundData?.correct || [];
+    body = `
+      <div class="fourway-results">
+        <h3>${getSnark("player.fourway.resultsTitle", "Results")}</h3>
+        <p class="muted">${getSnark("player.fourway.roundComplete", "Round {current} of {total} complete", { current: fw.currentRound + 1, total: fw.rounds.length })}</p>
+        <div class="fourway-options-result">
+          ${options.map((opt, i) => {
+            const isCorrect = roundCorrect.includes(i);
+            const wasChosen = mySelection.includes(i);
+            const cls = isCorrect ? (wasChosen ? "correct-chosen" : "correct-missed") : (wasChosen ? "wrong-chosen" : "");
+            return `<div class="fourway-result-item ${cls}">${escapeHtml(opt)} ${isCorrect ? "✓" : wasChosen ? "✗" : ""}</div>`;
+          }).join("")}
+        </div>
+        <p>Round points: <strong>${fw.pointsEarned[trackKey] - (Object.values(fw.responses[trackKey] || {}).reduce((sum, sel, idx) => {
+          if (idx >= fw.currentRound) return sum;
+          const roundCorrectSet = new Set(fw.rounds[idx].correct);
+          let rp = 0;
+          for (let i = 0; i < 4; i++) {
+            const isCorrect = roundCorrectSet.has(i);
+            const isSelected = (sel || []).includes(i);
+            if (isCorrect && isSelected) rp += FOURWAY_CORRECT_POINTS;
+            else if (!isCorrect && isSelected) rp -= FOURWAY_INCORRECT_PENALTY;
+            else if (isCorrect && !isSelected) rp -= FOURWAY_INCORRECT_PENALTY;
+          }
+          return sum + rp;
+        }, 0)) || 0}</strong> | Total: <strong>${trackPoints}</strong> pts</p>
+        <p class="muted">${getSnark("player.fourway.waitingHostContinue", "Waiting for the host to continue...")}</p>
+      </div>
+    `;
+  } else {
+    body = `
+      ${timerHtml}
+      <p class="muted">${getSnark("player.fourway.roundPrompt", "Round {current} of {total}: {category}", { current: fw.currentRound + 1, total: fw.rounds.length, category: escapeHtml(roundData?.category || "") })}</p>
+      <div class="fourway-options">
+        ${options.map((opt, i) => renderOption(i, opt)).join("")}
+      </div>
+      ${answered && fw.mode === "timed" ? `<p class="fourway-done">${getSnark("player.fourway.submittedWaiting", "Submitted! Waiting for other players...")}</p>` : ""}
+      ${!answered ? `<button type="button" class="primary-action fourway-submit" data-fourway-submit>${getSnark("player.fourway.submitButton", "Submit")}</button>` : ""}
+    `;
+  }
+
+  return `
+    <section class="card player-card fourway-player-card">
+      <h2>4-Way ${teamPill}</h2>
+      ${body}
+    </section>
+  `;
+}
+
+function renderFourwayAudienceDisplay(settings, players) {
+  const fw = getFourway();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const participants = players.filter(p => p.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(p.id)));
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+
+  if (!fw.active) {
+    return `
+      <main class="layout audience-layout" data-fourway-active="true" data-round-status="idle">
+        <header class="hero audience-hero">
+          <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">4-Way</span></p><h1 class="audience-title">4-Way</h1><p class="muted">${getSnark("audience.fourway.waitingGame", "Waiting for the game to start...")}</p></div>
+        </header>
+      </main>`;
+  }
+
+  const tracks = getFourwayTracks(settings, assignments, participants);
+  const roundData = fw.rounds[fw.currentRound];
+  const fixedOptions = fw.fixedOptions;
+  const rotatingOption = roundData?.rotatingOption || "";
+  const options = [...fixedOptions, rotatingOption];
+
+  const standings = tracks.map(track => {
+    const trackResponses = fw.responses[track] || {};
+    const trackPoints = fw.pointsEarned[track] || 0;
+    const rep = participants.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const label = TEAM_COLORS.includes(track)
+      ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "")
+      : escapeHtml(getPlayerName(rep) || track);
+    const parsedTrack = parseCoopScoreKey(track);
+    const displayLabel = parsedTrack ? escapeHtml(getCoopKeyDisplayName(track, participants)) : label;
+    return { track, points: trackPoints, label: displayLabel, responses: trackResponses };
+  }).sort((a, b) => b.points - a.points);
+
+  const standingsHtml = standings.map(({ points, label }, idx) => {
+    const medal = idx < 3 ? getRankBadgeHtml(idx + 1) : "";
+    const rank = medal ? `<span class="standings-rank">${medal}</span>` : `<span class="standings-rank">${idx + 1}.</span>`;
+    return `<li>${rank}<strong>${label}</strong> — <span class="standings-score">${points} pts</span></li>`;
+  }).join("");
+
+  const timerHtml = fw.mode === "timed" && fw.phase === "playing"
+    ? `<div class="audience-timer-row"><span class="audience-timer-label">${getSnark("audience.fourway.timeLeftLabel", "Time left")}</span><span class="audience-timer"><strong data-fourway-time-left>${fw.timeEndsAt ? formatSeconds(Math.max(0, Math.ceil((fw.timeEndsAt - now()) / 1000))) : getSnark("audience.fourway.noTimerLabel", "No timer")}</strong></span></div>`
+    : "";
+
+  const roundHtml = fw.phase === "playing"
+    ? `<div class="fourway-audience-question"><h2>${getSnark("audience.fourway.questionTitle", "Round {current} of {total}", { current: fw.currentRound + 1, total: fw.rounds.length })}</h2><p class="fourway-category">${escapeHtml(roundData?.category || "")}</p><div class="fourway-options-audience">${options.map((opt, i) => {
+      const isCorrect = roundData?.correct?.includes(i);
+      return `<span class="fourway-option-audience ${isCorrect ? "correct" : ""}">${escapeHtml(opt)}</span>`;
+    }).join("")}</div></div>`
+    : "";
+
+  const resultsHtml = fw.phase === "results"
+    ? `<section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.fourway.finalStandings", "Final Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standingsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>`
+    : `<section class="card audience-card audience-primary"><div class="audience-standings-head"><h2>${getSnark("audience.fourway.standings", "Standings")}</h2></div><ul class="bingo-standings audience-standings-big">${standingsHtml || `<li class='muted'>${getSnark("shared.bingo.noPlayersYet", "No players yet.")}</li>`}</ul></section>`;
+
+  return `
+    <main class="layout audience-layout" data-fourway-active="true" data-round-status="open">
+      <header class="hero audience-hero">
+        <div class="audience-hero-main"><p class="prejoin-kicker">Audience display · <span class="audience-pill audience-pill-minigame">4-Way</span></p><h1 class="audience-title">4-Way</h1><p class="muted">${getSnark("audience.misc.roomPrefix", `Room ${getRoomCode() || "..."}`, { code: getRoomCode() || "..." })}</p></div>
+      </header>
+      ${timerHtml}
+      ${roundHtml}
+      ${resultsHtml}
+    </main>
+  `;
+}
+
+function renderFourwayHostPanel(settings, players) {
+  if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control 4-Way. The host must manage it.</p></section>`;
+  const fw = getFourway();
+  const controllerId = getControllerId();
+  const producerIds = getSafeState("producerIds", []);
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const isSharedTeam = settings.teamModeEnabled && settings.teamScoringMode === "shared";
+  const tracks = getFourwayTracks(settings, assignments, players);
+
+  if (!fw.active) {
+    const fixedOpts = fw.fixedOptions.map((o, i) => `<div class="fourway-setup-fixed">Fixed ${i + 1}: ${escapeHtml(o || "—")}</div>`).join("");
+    const roundsHtml = fw.rounds.map((r, i) => `
+      <div class="fourway-setup-round">
+        <strong>Round ${i + 1}</strong> — Category: ${escapeHtml(r.category || "—")} | Rotating: ${escapeHtml(r.rotatingOption || "—")} | Correct: ${(r.correct || []).map(c => c + 1).join(", ")}
+      </div>`).join("");
+    return `
+      <section class="card host-panel fourway-host-panel">
+        <h2>4-Way Setup</h2>
+        <p class="muted">3 fixed options + 1 rotating per round. Players pick which apply. +500 per correct pick, −500 per wrong/missed.</p>
+        <div class="fourway-setup-fixed-options">${fixedOpts}</div>
+        <div class="fourway-setup-rounds">${roundsHtml || "<p class='muted'>No rounds configured.</p>"}</div>
+        <div class="host-actions" style="margin-top:0.9rem">
+          <button type="button" class="primary-action" data-fourway-start="timed" ${!fw.fixedOptions.length || !fw.rounds.length ? "disabled" : ""}>Start Timed</button>
+          <button type="button" class="primary-action" data-fourway-start="hostPaced" ${!fw.fixedOptions.length || !fw.rounds.length ? "disabled" : ""}>Start Host-Paced</button>
+        </div>
+        <div class="host-actions" style="margin-top:0.6rem">
+          <button type="button" data-fourway-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+
+  // Live / Results view
+  const roundData = fw.rounds[fw.currentRound];
+  const fixedOptions = fw.fixedOptions;
+  const rotatingOption = roundData?.rotatingOption || "";
+  const options = [...fixedOptions, rotatingOption];
+
+  const trackRows = tracks.map(track => {
+    const trackResponses = fw.responses[track] || {};
+    const trackPoints = fw.pointsEarned[track] || 0;
+    const rep = players.find(p => getTeamTrackKey(p.id, settings, assignments) === track) || null;
+    const parsedTrack = parseCoopScoreKey(track);
+    const label = parsedTrack ? escapeHtml(getCoopKeyDisplayName(track, players)) : (TEAM_COLORS.includes(track) ? `Team ${track}` + (rep ? ` <small>(${escapeHtml(getPlayerName(rep))})</small>` : "") : escapeHtml(getPlayerName(rep) || track));
+    const currentSel = trackResponses[fw.currentRound] || [];
+    return { track, points: trackPoints, label, currentSel };
+  }).sort((a, b) => b.points - a.points);
+
+  const trackRowsHtml = trackRows.map(({ points, label, currentSel }) => {
+    const selHtml = currentSel.length ? currentSel.map(i => `<span class="fourway-host-sel ${roundData?.correct?.includes(i) ? "correct" : "wrong"}">${i + 1}</span>`).join(" ") : "—";
+    return `<li><strong>${label}</strong> — ${points} pts — Selection: ${selHtml}</li>`;
+  }).join("");
+
+  if (fw.phase === "results") {
+    return `
+      <section class="card host-panel fourway-host-panel">
+        <h2>4-Way — Results</h2>
+        <p class="muted">Round ${fw.currentRound + 1} of ${fw.rounds.length}: ${escapeHtml(roundData?.category || "")}</p>
+        <div class="fourway-options-result">
+          ${options.map((opt, i) => `<span class="fourway-option-result ${roundData?.correct?.includes(i) ? "correct" : ""}">${escapeHtml(opt)}</span>`).join("")}
+        </div>
+        <ul class="fourway-standings">${trackRowsHtml || "<li class='muted'>No players.</li>"}</ul>
+        <div class="host-actions" style="margin-top:0.9rem">
+          ${fw.currentRound + 1 < fw.rounds.length ? `<button type="button" class="primary-action" data-fourway-next>Next Round</button>` : ""}
+          <button type="button" data-fourway-end>End 4-Way</button>
+          <button type="button" data-fourway-exit>Return to buzzer mode</button>
+        </div>
+      </section>
+    `;
+  }
+
+  // Live view
+  const timerHtml = fw.mode === "timed"
+    ? `<div class="fourway-timer">${getSnark("host.fourway.timeLeftLabel", "Time left")}: <strong data-fourway-time-left">${fw.timeEndsAt ? formatSeconds(Math.max(0, Math.ceil((fw.timeEndsAt - now()) / 1000))) : getSnark("host.fourway.noTimerLabel", "No timer")}</strong></div>`
+    : "";
+
+  return `
+    <section class="card host-panel fourway-host-panel">
+      <h2>4-Way — Live ${fw.mode === "timed" ? "(Timed)" : "(Host-Paced)"}</h2>
+      <p class="muted">Round ${fw.currentRound + 1} of ${fw.rounds.length}: ${escapeHtml(roundData?.category || "")}</p>
+      ${timerHtml}
+      <div class="fourway-options-live">
+        ${options.map((opt, i) => `<span class="fourway-option-live ${roundData?.correct?.includes(i) ? "correct" : ""}">${escapeHtml(opt)}</span>`).join("")}
+      </div>
+      <ul class="fourway-standings">${trackRowsHtml || "<li class='muted'>No players.</li>"}</ul>
+      <div class="host-actions" style="margin-top:0.9rem">
+        ${fw.mode === "hostPaced" && fw.currentRound + 1 < fw.rounds.length ? `<button type="button" class="primary-action" data-fourway-next>Next Round</button>` : ""}
+        <button type="button" data-fourway-end>End 4-Way</button>
+        <button type="button" data-fourway-exit>Return to buzzer mode</button>
+      </div>
+    </section>
+  `;
 }
 
 // =============================================================================
@@ -9816,6 +11263,8 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   if (isDisOrDatMode()) return renderDisOrDatPlayerPanel(settings, mePlayer);
   if (isFibbageMode()) return renderFibbagePlayerPanel(settings, mePlayer);
   if (isQuixortMode()) return renderQuixortPlayerPanel(settings, mePlayer);
+  if (isRoadkillMode()) return renderRoadkillPlayerPanel(settings, mePlayer);
+  if (isFourwayMode()) return renderFourwayPlayerPanel(settings, mePlayer);
   console.log("renderBuzzerPanel: status=", round?.status, "timeLeftCs=", timeLeftCs, "me=", mePlayer?.id);
   // Host/producer have the full host panel already — no buzzer card needed.
   if (isControllerPlayer() || isProducer()) {
@@ -10018,7 +11467,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   const notice = getRecentBuzzNotice();
   const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const usingTextEntry = settings.inputMode === "text";
-
+  
   // Option display order (scrambled in all-screw mode)
   const optionOrder = getPlayerOptionOrder(settings, round, mePlayer.id);
 
@@ -10030,7 +11479,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   
 // If you came here just to find this, I am both impressed and disappointed.
   if (usingTextEntry) {
-    if (fYouEasterEggUnlocked) {
+    if (fYouEasterEggUnlocked && settings.fYouEasterEggEnabled) {
       return `
         <section class="card player-card easter-egg-card">
           <h2>${escapeHtml(getSnark("player.easteregg.heading", F_YOU_EASTER_EGG_H2))}</h2>
@@ -10498,6 +11947,10 @@ function renderTabletTimerDisplay(settings, round, players, timeLeftCs) {
     return renderTabletTimerNotUseful();
   }
 
+  if (isRoadkillMode()) {
+    return renderTabletTimerNotUseful();
+  }
+
   if (isFibbageMode()) {
     const fb = getFibbage();
     if (fb.phase === "lying") {
@@ -10692,7 +12145,7 @@ function endAnalyticsSpotlight() {
 function getCurrentRoundAnalytics() {
   const settings = getSettings();
   const roundId = currentRoundId();
-  if (isBingoMode() || isDisOrDatMode() || isFibbageMode() || isQuixortMode()) {
+  if (isBingoMode() || isDisOrDatMode() || isFibbageMode() || isQuixortMode() || isRoadkillMode()) {
     return { kind: "minigame", roundId, total: 0, rows: [] };
   }
   const entries = (getLog() || []).filter((e) => e && e.type === "buzz" && Number(e.roundId) === Number(roundId));
@@ -10745,6 +12198,7 @@ function getLogEntryBadge(entry) {
   if (entry.type === "disordat") return { slug: "disordat", label: getSnark("shared.analytics.badgeDisOrDat", "DisOrDat") };
   if (entry.type === "quixort") return { slug: "quixort", label: getSnark("shared.analytics.badgeQuixort", "Quixort") };
   if (entry.type === "fibbage") return { slug: "fibbage", label: getSnark("shared.analytics.badgeFibbage", "Fibbage") };
+  if (entry.type === "roadkill") return { slug: "roadkill", label: getSnark("shared.analytics.badgeRoadkill", "Roadkill") };
   if (entry.answerText !== null && entry.answerText !== undefined && String(entry.answerText) !== "") return { slug: "text", label: getSnark("shared.analytics.badgeText", "Text") };
   if (entry.option !== null && entry.option !== undefined) return { slug: "buttons", label: getSnark("shared.analytics.badgeButtons", "Buttons") };
   return { slug: "buzz", label: getSnark("shared.analytics.badgeBuzz", "Buzz") };
@@ -10866,6 +12320,18 @@ function harvestIntoDraft() {
   epPersistDraft(episodeDraft);
 }
 function refreshCreator() { renderPrejoinScreen("creator"); }
+// Expand/collapse a coop marker panel in place. Deliberately no re-render:
+// the creator harvests text fields on actions, so toggling must not wipe them.
+function toggleCoopPanel(panelId, btn) {
+  try {
+    const panel = document.querySelector(`#${panelId}`);
+    if (!panel) return;
+    const open = panel.hasAttribute("hidden");
+    if (open) panel.removeAttribute("hidden");
+    else panel.setAttribute("hidden", "");
+    btn?.setAttribute("aria-expanded", open ? "true" : "false");
+  } catch {}
+}
 // Patch the host form's cloud row without re-rendering (a re-render would
 // wipe the typed host name). Top-level: probeEpisodeCloud calls it.
 // Also patches the in-game loader's cloud row. No-ops when forms aren't showing.
@@ -11055,7 +12521,7 @@ function renderResultsExportCard() {
 // Accuracy covers buzz + bingo/disordat/quixort/fibbage; manual-* and
 // unresolved entries are listed but excluded from the denominator.
 // ---------------------------------------------------------------------------
-const REVIEW_ACCURACY_TYPES = ["buzz", "bingo", "disordat", "quixort", "fibbage"];
+const REVIEW_ACCURACY_TYPES = ["buzz", "bingo", "disordat", "quixort", "fibbage", "roadkill"];
 
 function reviewerEntryCorrect(e) {
   if (!e || typeof e !== "object") return false;
@@ -11636,6 +13102,24 @@ function episodeRunLoad(index) {
     setState("disordat", { ...getDisOrDat(), disLabel: item.disLabel, datLabel: item.datLabel, answers: [...item.answers], questions }, true);
   } else if (item.kind === "quixort") {
     setState("quixort", { ...getQuixort(), items: [...item.items], trash: [...(item.trash || [])], multiplier: item.multiplier, blockSec: item.blockSec }, true);
+  } else if (item.kind === "roadkill") {
+    const setup = buildRoadkillSetup(item);
+    if (setup.error) {
+      setBuzzNotice(setup.error);
+      render();
+      return false;
+    }
+    setState("roadkill", { ...freshRoadkillState(), ...setup }, true);
+  } else if (item.kind === "fourway") {
+    setState("fourway", {
+      ...freshFourwayState(),
+      fixedOptions: [...item.fixedOptions],
+      rounds: item.rounds.map(r => ({
+        category: r.category,
+        rotatingOption: r.rotatingOption,
+        correct: [...r.correct]
+      }))
+    }, true);
   } else if (item.kind === "bingo" || item.kind === "wendithapn") {
     // Fresh question state: reset per-question play (a stale active game
     // from the previous question must not leak in), seed the word + the
@@ -11704,7 +13188,7 @@ function episodeRunLoad(index) {
   }
   setState("episodePrompt", { index: Number(index), total: ep.items.length, title: ep.meta?.title || "", kind: item.kind, prompt: item.prompt, optionLabels, optionKeys, roundIndex: null, roundTotal: null }, true);
   episodeIndex = Number(index);
-  render();
+render();
   return true;
 }
 
@@ -11884,7 +13368,7 @@ function renderBroadcastHostCard() {
           : `<button type="button" data-room-code-spotlight-show>${escapeHtml(getSnark("shared.misc.roomSpotlightShow", "Show room code"))}</button>`}
       </div>`);
   }
-  if (hasHostPrivileges() && !isBingoMode() && !isDisOrDatMode() && !isFibbageMode() && !isQuixortMode()) {
+  if (hasHostPrivileges() && !isBingoMode() && !isDisOrDatMode() && !isFibbageMode() && !isQuixortMode() && !isRoadkillMode()) {
     const analyticsActive = Boolean(getAnalyticsSpotlight());
     const audienceHint = hasAudienceDisplay()
       ? getSnark("shared.analytics.audienceConnected", "An audience display is connected.")
@@ -12044,6 +13528,9 @@ function renderCreditsOverlay() {
   const endButton = isHost()
     ? `<button type="button" data-credits-end>${escapeHtml(getSnark("shared.credits.endButton", "End credits"))}</button>`
     : "";
+  const closeButton = isHost()
+    ? `<button type="button" data-credits-close>${escapeHtml(getSnark("shared.credits.closeButton", "Close"))}</button>`
+    : "";
 
   return `
     <div class="credits-overlay" data-credits-overlay data-credits-since="${escapeHtml(String(credits.startedAt))}">
@@ -12052,7 +13539,7 @@ function renderCreditsOverlay() {
           <strong>${escapeHtml(getSnark("shared.credits.title", "Credits"))}</strong>
           <div class="credits-topbar-actions">
             ${endButton}
-            <button type="button" data-credits-close>${escapeHtml(getSnark("shared.credits.closeButton", "Close"))}</button>
+            ${closeButton}
           </div>
         </div>
         <div class="credits-viewport">
@@ -12061,6 +13548,9 @@ function renderCreditsOverlay() {
             <p><strong>${escapeHtml(hostName)}</strong></p>
             <h3>${escapeHtml(getSnark("shared.credits.producersHeading", "Producers"))}</h3>
             ${producerNames.length === 0 ? `<p class="muted">${escapeHtml(getSnark("shared.credits.noProducers", "No producers assigned."))}</p>` : producerNames.map((name) => `<p><strong>${escapeHtml(name)}</strong></p>`).join("")}
+            ${activeEpisode && activeEpisode.meta && activeEpisode.meta.author
+              ? `<h3>${escapeHtml(getSnark("shared.credits.writersHeading", "Writers"))}</h3>${String(activeEpisode.meta.author).split(",").map((name) => `<p><strong>${escapeHtml(name.trim())}</strong></p>`).join("")}`
+              : `<h3>${escapeHtml(getSnark("shared.credits.writersHeading", "Writers"))}</h3><p class="muted">${escapeHtml(getSnark("shared.credits.noWriters", "No writers credited."))}</p>`}
             <h3>${escapeHtml(getSnark("shared.credits.playersHeading", "Players"))}</h3>
             ${playerHtml}
             <h3>${escapeHtml(getSnark("shared.credits.thanksHeading", "Credits"))}</h3>
@@ -12085,6 +13575,8 @@ function renderAudienceDisplay(settings, round, players, scores, timeLeftCs, pen
   if (isDisOrDatMode()) return renderEpisodePromptBanner() + renderDisOrDatAudienceDisplay(settings, players);
   if (isFibbageMode()) return renderEpisodePromptBanner() + renderFibbageAudienceDisplay(settings, players);
   if (isQuixortMode()) return renderEpisodePromptBanner() + renderQuixortAudienceDisplay(settings, players);
+  if (isRoadkillMode()) return renderEpisodePromptBanner() + renderRoadkillAudienceDisplay(settings, players);
+  if (isFourwayMode()) return renderEpisodePromptBanner() + renderFourwayAudienceDisplay(settings, players);
   const showScores = Boolean(settings.showScoresToAudience);
   const screwActive = Boolean(round.screw?.active);
   // Results read side-by-side (analytics + scores); live play stacks the
@@ -12386,6 +13878,16 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
   if (isQuixortMode()) {
     if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Quixort. The host must manage it.</p></section>`;
     return renderQuixortHostPanel(settings, players);
+  }
+
+  if (isRoadkillMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control Roadkill. The host must manage it.</p></section>`;
+    return renderRoadkillHostPanel(settings, players);
+  }
+
+  if (isFourwayMode()) {
+    if (!isHost()) return `<section class="card host-panel"><p>Producers cannot control 4-Way. The host must manage it.</p></section>`;
+    return renderFourwayHostPanel(settings, players);
   }
 
   const settingsLocked = round.status === ROUND_STATUSES.OPEN || round.status === ROUND_STATUSES.ROULETTE;
@@ -12809,8 +14311,11 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <button type="button" data-set-mode="quixort" ${settingDisabledAttr} ${settings.inputMode === "quixort" || isCoopMode(settings) ? "disabled" : ""}>Quixort</button>
                 <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +250 each (+250 all-trash bonus with 2+ trash blocks), wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
+              <div>
+                <p class="setting-helper"><strong>Roadkill</strong> is episode-creator only — two clues on top, a connector word streaming through the middle. It is not selectable here by design; build a Roadkill question in the Episode Creator and load it from the episode runner.${isCoopMode(settings) ? " Coopertition is supported." : ""}</p>
+              </div>
             </div>
-            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort"
+            ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort" || isRoadkillMode()
               ? `<p class="setting-helper" style="margin-top:0.4rem">Currently active. Open the panel below to control the round.</p>`
               : ""}
           </div>
@@ -12841,7 +14346,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               : ""}
             <button type="button" data-host-action="open" ${round.status === ROUND_STATUSES.OPEN || missingTeamAssignments || coopNeedsPreset || (isTerminallyClosedRound(round) && !settings.rebuzzAllowed) ? "disabled" : ""}>Open Buzzers</button>
             <button type="button" data-host-action="pause" ${round.status !== ROUND_STATUSES.OPEN ? "disabled" : ""} ${round.status === ROUND_STATUSES.LOCKED ? `title="Timer is already paused for the ruling"` : ""}>Pause Timer</button>
-            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === "open" || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
+            <button type="button" data-host-action="resume" ${!(round.status === ROUND_STATUSES.CLOSED && Number.isFinite(Number(round.remainingCs)) && Number(round.remainingCs) > 0 && (round.pausedFrom === ROUND_STATUSES.OPEN || settings.rebuzzAllowed)) ? "disabled" : ""}>Resume Timer</button>
             <button type="button" data-host-action="reset">Next Round</button>
             ${!round.screw?.active && round.status === ROUND_STATUSES.OPEN && !isCoopMode(settings) && settings.screwMode === "individual"
               ? `<button type="button" class="screw-btn" data-host-screw>Screw a Player</button>`
@@ -13098,7 +14603,18 @@ function renderScores(players, scores, extraClass = "") {
   const controllerId = getControllerId();
   const producerIds = getSafeState("producerIds", []);
   const kicked = new Set(settings.kickedPlayerIds || []);
-  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id));
+  // Hide player from scoreboard if their name normalizes to "fuck you" (easter egg)
+  const fYouPlayerId = (() => {
+    try {
+      const all = Object.values(getParticipants() || {});
+      for (const p of all) {
+        const name = getPlayerName(p);
+        if (normalizeAnswerForCompare(name) === "fuck you") return p.id;
+      }
+    } catch {}
+    return null;
+  })();
+  const visiblePlayers = players.filter((player) => player.id !== controllerId && !(Array.isArray(producerIds) && producerIds.includes(player.id)) && !kicked.has(player.id) && player.id !== fYouPlayerId);
   const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
 
   if (isCoopMode(settings)) {
@@ -13442,11 +14958,11 @@ function render() {
     const displayTimeLeftCs = audienceTimerFrozenCs !== null ? audienceTimerFrozenCs : timeLeftCs;
 
     if (clientMode === "tablet_timer" || me()?.getState?.("clientMode") === "tablet_timer") {
-      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? "tablet-fibbage" : "tablet";
+      const tabletKey = isTeamSelectActive() ? "tablet-teamselect" : isBingoMode() ? "tablet-bingo" : isDisOrDatMode() ? "tablet-disordat" : isFibbageMode() ? "tablet-fibbage" : isRoadkillMode() ? "tablet-roadkill" : "tablet";
       const html = renderTabletTimerDisplay(settings, round, players, displayTimeLeftCs);
       if (!transitionMount(mount, html, tabletKey)) mount.innerHTML = html;
     } else {
-      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? "audience-disordat" : isFibbageMode() ? "audience-fibbage" : "audience";
+      const audienceKey = isTeamSelectActive() ? "audience-teamselect" : isBingoMode() ? "audience-bingo" : isDisOrDatMode() ? "audience-disordat" : isFibbageMode() ? "audience-fibbage" : isRoadkillMode() ? "audience-roadkill" : "audience";
       const html = renderAudienceDisplay(settings, round, players, scores, displayTimeLeftCs, pendingEntry);
       mountView(mount, html, audienceKey);
     }
@@ -13524,6 +15040,42 @@ function render() {
       </main>
     `;
     mountView(mount, _html_bingo, "bingo");
+    lastUiSignature = getUiSignature();
+    requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
+    return;
+  }
+
+  if (isRoadkillMode()) {
+    const roadkillBody = showAdminData ? `
+      ${renderHostSettings(settings, round, timeLeftCs, players, controller?.id || null)}
+      ${renderBroadcastHostCard()}
+      ${renderEpisodeHostCard()}
+      <section class="grid">
+        ${renderScores(players, scores, "score-card-host")}
+      </section>
+      ${renderLog(gameLog, settings)}` : `
+      <section class="grid grid-single">
+        ${renderEpisodePromptBanner()}
+        ${renderBuzzerPanel(settings, round, mePlayer, timeLeftCs)}
+        ${showScoresToPlayers ? renderScores(players, scores) : (renderAllianceTeammateCard(players, scores) || renderHiddenPanel(getSnark("player.scores.scoresTitle", "Scores"), getSnark("player.scores.scoresHidden", "Only the Host can view scores right now.")))}
+      </section>` ;
+    const _html_roadkill = `
+      <main class="layout" data-roadkill-active="true">
+        <header class="hero">
+          <div>
+            <h1>Roadkill</h1>
+            <p class="muted" style="margin-bottom:0.15rem">${getSnark("player.misc.roomCodeLabel", "Room code")}</p>
+            <div class="room-code-badge">${getRoomCode() || "..."}</div>
+          </div>
+          <div class="hero-meta">
+            <span>${getSnark("player.misc.youLabel", `You: ${getPlayerName(mePlayer)}`, { name: getPlayerName(mePlayer) })}</span>
+            <span>${getSnark("player.misc.hostLabel", `Host: ${controller ? getPlayerName(controller) : "-"}`, { name: controller ? getPlayerName(controller) : "-" })}</span>
+          </div>
+        </header>
+        ${roadkillBody}
+      </main>
+    `;
+    mountView(mount, _html_roadkill, "roadkill");
     lastUiSignature = getUiSignature();
     requestAnimationFrame(()=>{ try{ if(!isAudienceDisplayClient()) applyScoreDeltas(scoreDeltas); }catch{}});
     return;
@@ -13708,6 +15260,10 @@ function bindEvents() {
   if (!bingoSpaceKeydownBound) {
     document.addEventListener("keydown", handleBingoSpaceKeydown);
     bingoSpaceKeydownBound = true;
+  }
+  if (!roadkillKeydownBound) {
+    document.addEventListener("keydown", handleRoadkillSpaceKeydown);
+    roadkillKeydownBound = true;
   }
   if (!quixortKeydownBound) {
     document.addEventListener("keydown", handleQuixortKeydown);
@@ -13983,6 +15539,23 @@ function bindEvents() {
     const slot = slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw);
     await submitBingoBuzz(Number.isInteger(slot) ? slot : null);
   });
+  // Roadkill host controls (host-only, like Bingo)
+  delegate("click", "[data-roadkill-start]", requireHost(() => startRoadkill()));
+  delegate("click", "[data-roadkill-pause]", requireHost(() => pauseRoadkill()));
+  delegate("click", "[data-roadkill-resume]", requireHost(() => resumeRoadkill()));
+  delegate("click", "[data-roadkill-next-word]", requireHost(() => advanceRoadkillWord()));
+  delegate("click", "[data-roadkill-reveal]", requireHost(() => revealRoadkillAnswer()));
+  delegate("click", "[data-roadkill-next-pair]", requireHost(() => nextRoadkillStage()));
+  delegate("click", "[data-roadkill-restart]", requireHost(() => startRoadkill()));
+  delegate("click", "[data-roadkill-end]", requireHost(() => endRoadkill(false)));
+  delegate("click", "[data-roadkill-exit]", requireHost(() => endRoadkill(true)));
+  delegate("pointerdown", "[data-roadkill-buzz]", async (e, btn) => {
+    e.preventDefault();
+    if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+    const slotRaw = btn?.dataset?.coopSlot;
+    const slot = slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw);
+    await submitRoadkillBuzz(Number.isInteger(slot) ? slot : null);
+  });
   delegate("click", "[data-f-you-close]", () => { fYouEasterEggUnlocked = false; scheduleRender(render); });
   // DisOrDat host
   delegate("change", "#disordat-dis-label", requireHost((e) => setState("disordat", { ...getDisOrDat(), disLabel: String(e.target.value || "").trim() }, true)));
@@ -14040,6 +15613,34 @@ function bindEvents() {
     const slotRaw = btn?.dataset?.coopSlot;
     await submitDisOrDatClaim(q, slotRaw === undefined || slotRaw === "" ? null : Number(slotRaw));
   });
+
+  // Four-Way host controls
+  delegate("click", "[data-fourway-start]", requireHost((e, btn) => {
+    const mode = btn.dataset.fourwayStart;
+    startFourway(mode);
+  }));
+  delegate("click", "[data-fourway-next]", requireHost(() => nextFourwayQuestion()));
+  delegate("click", "[data-fourway-end]", requireHost(() => finalizeFourway()));
+  delegate("click", "[data-fourway-exit]", requireHost(() => exitFourway()));
+  delegate("click", "[data-fourway-submit]", async (e, btn) => {
+    if (isControllerPlayer() || isProducer()) return;
+    const checkboxes = document.querySelectorAll("[data-fourway-answer].is-chosen");
+    const selected = Array.from(checkboxes).map(c => Number(c.dataset.option));
+    const payload = { round: getFourway().currentRound, selected };
+    try {
+      const result = await RPC.call("fourway-answer", payload, RPC.Mode.HOST);
+      if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+      else if (result?.message) setBuzzNotice(result.message);
+      scheduleRender(render);
+    } catch { setBuzzNotice(getSnark("player.fourway.answerSendFailed", "Could not send answer.")); scheduleRender(render); }
+  });
+  delegate("click", "[data-fourway-answer]", (e, btn) => {
+    if (isControllerPlayer() || isProducer()) return;
+    const option = Number(btn.dataset.option);
+    btn.classList.toggle("is-chosen");
+    scheduleRender(render);
+  });
+
   delegate("click", "[data-coop-text-tab]", (e, btn) => {
     const slot = Number(btn?.dataset?.coopTextTab);
     if (Number.isInteger(slot)) {
@@ -14185,11 +15786,14 @@ function bindEvents() {
   delegate("click", "[data-ep-round-add]", () => {
     harvestIntoDraft();
     const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
-    if (!sel || (sel.kind !== "bingo" && sel.kind !== "wendithapn")) return;
+    if (!sel) return;
+    const isRoadkill = sel.kind === "roadkill";
+    if (sel.kind !== "bingo" && sel.kind !== "wendithapn" && !isRoadkill) return;
     const rounds = Array.isArray(sel.rounds) ? sel.rounds : [];
-    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : EP_MAX_WEN_ROUNDS;
+    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : isRoadkill ? EP_MAX_ROADKILL_ROUNDS : EP_MAX_WEN_ROUNDS;
     if (rounds.length >= max) return;
-    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, { prompt: "", answer: "" }] });
+    const blank = isRoadkill ? { clues: ["", ""], answer: "", decoys: [] } : { prompt: "", answer: "" };
+    episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, blank] });
     epPersistDraft(episodeDraft);
     refreshCreator();
   });
@@ -14289,6 +15893,14 @@ function bindEvents() {
     if (prejoinMode !== "creator") return;
     harvestIntoDraft();
     refreshCreator();
+  });
+
+  // Coop marker details (episode creator). In-place toggles, no re-render.
+  delegate("click", "[data-ep-coop-problems]", (e, btn) => {
+    toggleCoopPanel("ep-coop-problems", btn);
+  });
+  delegate("click", "[data-ep-coop-learn]", (e, btn) => {
+    toggleCoopPanel("ep-coop-learn", btn);
   });
 
   // --- Episode runner (host + producer via producer-action relay) ---
@@ -14664,6 +16276,26 @@ function handleBingoSpaceKeydown(event) {
   submitBingoBuzz(slot);
 }
 
+// Roadkill spacebar buzz. Multi-slot coop devices use Q/B/P (the per-slot
+// buttons are the canonical target); Space covers single-slot devices and
+// non-coop players.
+function handleRoadkillSpaceKeydown(event) {
+  if (event.code !== "Space" && event.key !== " ") return;
+  if (event.repeat) return;
+  if (isEditingControl()) return;
+  try { if (document.activeElement?.tagName === "BUTTON") return; } catch {}
+  if (!isRoadkillMode()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const self = me();
+  if (!self?.id) return;
+  const settings = getSettings();
+  if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) return;
+  event.preventDefault();
+  submitRoadkillBuzz(null);
+}
+
 // =============================================================================
 function handleRouletteKeydown(event) {
   if (event.code !== "Space" && event.key !== " ") {
@@ -14785,6 +16417,13 @@ function handleCoopBuzzKeydown(event) {
     submitBingoBuzz(slot);
     return;
   }
+  if (isRoadkillMode()) {
+    const rk = getRoadkill();
+    if (!rk.active || rk.phase !== "playing") return;
+    event.preventDefault();
+    submitRoadkillBuzz(slot);
+    return;
+  }
   if (isDisOrDatMode()) {
     const dd = getDisOrDat();
     if (dd.active && dd.phase === "playing" && dd.mode === "allPlayHostPaced") {
@@ -14841,6 +16480,42 @@ async function submitBingoBuzz(slot = null) {
   if (slot !== null && slot !== undefined) payload.coopSlot = slot;
   try {
     const result = await RPC.call("bingo-buzz", payload, RPC.Mode.HOST);
+    if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
+    else if (result?.message) setBuzzNotice(result.message);
+  } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
+  scheduleRender(render);
+}
+
+async function submitRoadkillBuzz(slot = null) {
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const rk = getRoadkill();
+  if (!rk.active || rk.phase !== "playing") return;
+  const self = me();
+  if (!self?.id) return;
+  const settings = getSettings();
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), currentParticipants(), getControllerId());
+  let myKey = null;
+  if (isCoopMode(settings)) {
+    const count = getCoopSlotCount(self.id);
+    if (count > 1) {
+      if (!Number.isInteger(slot) || slot < 0 || slot >= count) return;
+      myKey = getCoopScoreKey(self.id, slot);
+    } else {
+      myKey = getCoopScoreKey(self.id, 0);
+    }
+  } else {
+    myKey = getTeamTrackKey(self.id, settings, assignments);
+  }
+  if (myKey && Number(rk.guessed?.[myKey]) === Number(rk.wordSeq)) {
+    setBuzzNotice(getSnark("player.roadkill.oneGuess", "One guess per word — wait for the next one."));
+    scheduleRender(render);
+    return;
+  }
+  if (myKey && isCoopMode(settings)) noteCoopLocalBuzz(myKey);
+  const payload = { wordSeq: Number(rk.wordSeq) || 0 };
+  if (slot !== null && slot !== undefined) payload.coopSlot = slot;
+  try {
+    const result = await RPC.call("roadkill-buzz", payload, RPC.Mode.HOST);
     if (result?.ok === false && result?.reason) setBuzzNotice(result.reason);
     else if (result?.message) setBuzzNotice(result.message);
   } catch { setBuzzNotice(getSnark("player.buzzer.buzzSendFailedShort", "Could not send buzz.")); }
@@ -15335,9 +17010,24 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     return handleBingoBuzz(senderPlayer, payload);
   });
 
+  RPC.register("roadkill-buzz", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleRoadkillBuzz(senderPlayer, payload);
+  });
+
   RPC.register("disordat-answer", async (payload, senderPlayer) => {
     if (!isHost()) return { ok: false, reason: "Not host" };
     return handleDisOrDatAnswer(senderPlayer, payload);
+  });
+
+  RPC.register("fourway-answer", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleFourwayAnswer(senderPlayer, payload);
+  });
+
+  RPC.register("fourway-submit", async (payload, senderPlayer) => {
+    if (!isHost()) return { ok: false, reason: "Not host" };
+    return handleFourwayAnswer(senderPlayer, { ...payload, submitted: true });
   });
 
   RPC.register("select-team", async (payload, senderPlayer) => {
@@ -15535,6 +17225,11 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     try { scheduleRender(render); } catch {}
   }, 250);
   startRouletteAnimationLoop();
+  // Roadkill stream driver: host-only work inside; 100 ms keeps the 800 ms
+  // word cadence sharp without a fat 1 s tick.
+  setInterval(() => {
+    try { roadkillHostTick(); } catch (e) { console.warn("[roadkill] tick failed", e); }
+  }, 100);
 
   setInterval(() => {
     try { ensureHostInit(); } catch (e) { console.warn("[hostInit] failed", e); }
@@ -15584,6 +17279,17 @@ async function launchGame({ playerName, roomCode, clientMode: nextClientMode = "
     lastBingoRenderKey = key;
     scheduleRender(render);
   }, BINGO_RENDER_INTERVAL_MS);
+
+  // Roadkill mode re-render — the 800 ms word stream needs a tighter poll than
+  // the 1 s signature tick (players included; audience has its own 250 ms one).
+  setInterval(() => {
+    if (!isRoadkillMode()) return;
+    const rk = getRoadkill();
+    const key = `${rk.active}|${rk.phase}|${rk.pairIndex}|${rk.wordIndex}|${rk.wordSeq}|${rk.paused}|${rk.revealAnswer || ""}|${rk.outcome?.ts || ""}|${rk.correctKey || ""}|${JSON.stringify(rk.guessed || {})}`;
+    if (key === lastRoadkillRenderKey) return;
+    lastRoadkillRenderKey = key;
+    scheduleRender(render);
+  }, ROADKILL_RENDER_INTERVAL_MS);
 }
 
 // =============================================================================
@@ -15644,11 +17350,11 @@ function boot() {
   // Feature 3: smooth rAF timer (display/tablet + player OPEN; audience/tablet reuse same timers)
   try {
     startSmoothTimer([
-      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && r?.status === "OPEN"; } },
+      { getCs: () => { const r=getRound(); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-live-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && r?.status === ROUND_STATUSES.OPEN; } },
       // audience main timer mirrors live timer, but shows SCREW when screw active without timer
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-audience-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === ROUND_STATUSES.OPEN || r?.screw?.active); } },
       // tablet main timer: screw overrides live, otherwise live; SCREW shows static text
-      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === "OPEN" || r?.screw?.active); } },
+      { getCs: () => { const r=getRound(); if (r.screw?.active && getScrewTimerMs(r)==null) return null; const ms=getScrewTimerMs(r); if (ms!=null) return Math.ceil(ms/10); const s=getSettings(); return getTimeLeftCs(r,s); }, selector: "[data-tablet-time-left]", isUrgent: (cs) => { const r=getRound(); return cs <= 500 && cs > 0 && (r?.status === ROUND_STATUSES.OPEN || r?.screw?.active); } },
       { getCs: () => getDisOrDatTimeLeftCs(getDisOrDat()), selector: "[data-disordat-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
       { getCs: () => { const fb=getFibbage(); return fb.phase==="lying"?getFibbageLieTimeLeftCs(fb): fb.phase==="voting"?getFibbageVoteTimeLeftCs(fb): null; }, selector: "[data-fibbage-time-left]", isUrgent: (cs) => cs <= 500 && cs > 0 },
       { getCs: () => { const r=getRound(); const ms=getScrewTimerMs(r); return ms!=null? Math.ceil(ms/10): null; }, selector: "[data-screw-timer]", isUrgent: (cs) => { const r=getRound(); return r?.screw?.active && cs > 0; } },
@@ -15723,5 +17429,30 @@ try {
     loadReviewerByCode,
     downloadReviewerJson,
     reviewerDownloadFileName,
+    // Roadkill test seams (host-only actions + RPC handler + setup builder).
+    buildRoadkillSetup,
+    getRoadkill,
+    startRoadkill,
+    endRoadkill,
+    roadkillHostTick,
+    advanceRoadkillWord,
+    pauseRoadkill,
+    resumeRoadkill,
+    revealRoadkillAnswer,
+    nextRoadkillStage,
+    handleRoadkillBuzz,
+    roadkillStageState,
+    renderRoadkillPlayerPanel,
+    // Four-Way test seams
+    getFourway,
+    startFourway,
+    nextFourwayQuestion,
+    finalizeFourway,
+    resetFourway,
+    exitFourway,
+    handleFourwayTick,
+    handleFourwayAnswer,
+    renderFourwayPlayerPanel,
+    renderFourwayAudienceDisplay,
   });
 } catch {}
