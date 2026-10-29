@@ -116,7 +116,7 @@ Plain (non-strip) images are also accepted — they simply swap in statically. `
 
 ---
 
-## Implementation Notes (for maintainers)
+## Implementation Notes (for self-hosters)
 
 - **Probing:** `Image` probes at login on every client; audience and player screens both probe. `coopCharsProbed` guard prevents duplicate probes.
 - **Lifecycle:**
