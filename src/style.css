@@ -29,6 +29,78 @@ body {
   transition: background 800ms ease, background-color 800ms ease, filter 800ms ease, background-image 800ms ease;
 }
 
+body[data-theme="light"] {
+  --bg-0: #f8f9fa;
+  --bg-1: #e9ecef;
+  --panel: rgba(255, 255, 255, 0.8);
+  --panel-border: rgba(0, 0, 0, 0.15);
+  --text: #212529;
+  --muted: #6c757d;
+  --amber: #ff8b24;
+  --red: #dc3545;
+  --green: #28a745;
+  --blue: #20c997;
+  --shadow: 0 16px 45px rgba(0, 0, 0, 0.15);
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.1), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(34, 166, 242, 0.1), transparent 55%),
+    linear-gradient(160deg, var(--bg-0), var(--bg-1));
+}
+
+body[data-theme="ydkj-ride"] {
+  --bg-0: #0b0a08;
+  --bg-1: #141008;
+  --panel: rgba(11, 10, 8, 0.85);
+  --panel-border: rgba(255, 215, 0, 0.2);
+  --text: #ffe4b5;
+  --muted: #a09a8a;
+  --amber: #ffb347;
+  --red: #ff6b6b;
+  --green: #4ecdc4;
+  --blue: #45b7d1;
+  --shadow: 0 16px 45px rgba(0, 0, 0, 0.5);
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(255, 139, 36, 0.35), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(69, 183, 209, 0.12), transparent 55%),
+    linear-gradient(160deg, #0b0a08, #141008);
+}
+
+body[data-theme="ydkj-5th"] {
+  --bg-0: #1a0a2e;
+  --bg-1: #2d0f46;
+  --panel: rgba(26, 10, 46, 0.85);
+  --panel-border: rgba(255, 0, 255, 0.2);
+  --text: #ff6bff;
+  --muted: #ba68c8;
+  --amber: #ffd166;
+  --red: #ff847c;
+  --green: #78ff9b;
+  --blue: #a2c4c9;
+  --shadow: 0 16px 45px rgba(0, 0, 0, 0.5);
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(255, 0, 255, 0.3), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(162, 196, 201, 0.1), transparent 55%),
+    linear-gradient(160deg, #1a0a2e, #2d0f46);
+}
+
+body[data-theme="ydkj-2011"] {
+  --bg-0: #0d2b1d;
+  --bg-1: #1a3d2c;
+  --panel: rgba(13, 43, 29, 0.8);
+  --panel-border: rgba(34, 139, 34, 0.3);
+  --text: #a8e6cf;
+  --muted: #66b299;
+  --amber: #ffd166;
+  --red: #eb3d30;
+  --green: #2ecc71;
+  --blue: #3498db;
+  --shadow: 0 16px 45px rgba(0, 0, 0, 0.4);
+  background:
+    radial-gradient(1200px 500px at 8% -20%, rgba(46, 204, 113, 0.2), transparent 58%),
+    radial-gradient(1000px 520px at 100% 0%, rgba(52, 152, 219, 0.1), transparent 55%),
+    linear-gradient(160deg, #0d2b1d, #1a3d2c);
+}
+
 #app {
   min-height: 100vh;
   /* Lift app + footer above the idle-glow body::before layer below. */
