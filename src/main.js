@@ -1311,8 +1311,12 @@ function getCoopFaceKey(scoreKey, mood, round) {
 }
 // First render of a faceKey animates; repeats within the same render pass
 // (microseconds apart) also animate, but later re-renders stay frozen.
+// The "-in" prefix on a faceKey causes it to always animate on first show;
+  // e.g. a new key with “-in” suffix will never freeze on re-render.
 function isFreshCoopFace(faceKey) {
   if (!faceKey) return false;
+  // "-in" prefix: always fresh, never freeze on re-render
+  if (faceKey.includes("|-in")) return true;
   let t = 0;
   try { t = now(); } catch { t = Date.now(); }
   const seen = coopFaceSeen.get(faceKey);
