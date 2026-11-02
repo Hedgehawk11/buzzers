@@ -23,7 +23,7 @@ import {
   updateMeta as epUpdateMeta,
 } from "./episodes/editor.js";
 import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
-import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_ROADKILL_MAX_ROUNDS as EP_MAX_ROADKILL_ROUNDS, EPISODE_ROADKILL_DEFAULT_CORRECT, EPISODE_ROADKILL_DEFAULT_PENALTY, EPISODE_ROADKILL_WORD_MAX, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode } from "./episodes/schema.js";
+import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_ROADKILL_MAX_ROUNDS as EP_MAX_ROADKILL_ROUNDS, EPISODE_ROADKILL_DEFAULT_CORRECT, EPISODE_ROADKILL_DEFAULT_PENALTY, EPISODE_ROADKILL_WORD_MAX, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode, isBetaKind as epIsBetaKind } from "./episodes/schema.js";
 import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 import {
   RESULTS_KIND as RESULTS_KIND_CONST,
@@ -13299,7 +13299,7 @@ function renderEpisodeRunnerCard() {
         <h2>Episode: ${escapeHtml(ep.meta?.title || "Untitled")} (Q${idx + 1}/${ep.items.length})</h2>
         <button type="button" data-ep-run-end>End episode</button>
       </div>
-      <p><span class="ep-badge">${escapeHtml(epKindLabel(item.kind))}</span> ${escapeHtml(item.prompt || "")}</p>
+      <p><span class="ep-badge">${escapeHtml(epKindLabel(item.kind))}</span>${epIsBetaKind(item.kind) ? `<span class="ep-badge ep-beta">BETA</span>` : ""} ${escapeHtml(item.prompt || "")}</p>
       ${episodeLockNote()}
       ${roundBusy ? `<p class="muted">Reset the round to load a question.</p>` : ""}
       <div class="ep-toolbar">

@@ -3778,6 +3778,7 @@ body[data-ui-anims="off"] .credits-crawl {
 .ep-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; padding: 0.5rem 0.6rem; border: 1px solid var(--line, #2a3b4d); border-radius: 8px; }
 .ep-row-index { font-weight: 700; min-width: 2.2rem; }
 .ep-badge { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.85; border: 1px solid var(--line, #2a3b4d); border-radius: 999px; padding: 0.1rem 0.5rem; }
+.ep-beta { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); border: none; background: color-mix(in srgb, var(--amber) 55%, transparent); border-radius: 999px; padding: 0.08rem 0.45rem; margin-left: 0.25rem; white-space: nowrap; }
 .ep-row-prompt { flex: 1 1 12rem; overflow-wrap: anywhere; }
 .ep-row-sub { flex-basis: 100%; font-size: 0.85rem; }
 .ep-row-errors { color: var(--bad, #e05c5c); font-weight: 600; font-size: 0.85rem; }

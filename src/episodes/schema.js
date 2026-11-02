@@ -23,6 +23,14 @@ export const EPISODE_KINDS = [
   "fourway",
 ];
 
+// Gamemodes added after the core launch set that are still shaking out.
+// Tagged with a small "BETA" pill wherever the gamemode label is shown to users.
+export const EPISODE_KIND_BETA = new Set(["roadkill", "fourway"]);
+
+export function isBetaKind(kind) {
+  return EPISODE_KIND_BETA.has(kind);
+}
+
 export const EPISODE_MAX_ITEMS = 200;
 export const EPISODE_PROMPT_MAX = 300;
 export const EPISODE_LABEL_MAX = 120;

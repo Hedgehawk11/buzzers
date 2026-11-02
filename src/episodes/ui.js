@@ -32,6 +32,7 @@ import {
   EPISODE_FOURWAY_TOTAL_OPTIONS,
   EPISODE_FOURWAY_OPTION_MAX,
   episodeCoopReport,
+  isBetaKind,
 } from "./schema.js";
 
 export const EPISODE_KIND_LABELS = {
@@ -119,7 +120,7 @@ function renderItemRows(ep, errors, esc) {
     const n = counts.get(i) || 0;
     return `<li class="ep-row" data-kind="${esc(item.kind)}">
       <span class="ep-row-index">Q${i + 1}</span>
-      <span class="ep-badge">${esc(kindLabel(item.kind))}</span>
+      <span class="ep-badge">${esc(kindLabel(item.kind))}</span>${isBetaKind(item.kind) ? `<span class="ep-badge ep-beta">BETA</span>` : ""}
       <span class="ep-row-prompt">${esc(item.prompt || "(no prompt)")}</span>
       <span class="muted ep-row-sub">${esc(itemSummary(item))}</span>
       ${n ? `<span class="ep-row-errors">${n} problem${n === 1 ? "" : "s"}</span>` : ""}
