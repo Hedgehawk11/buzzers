@@ -14950,13 +14950,22 @@ function render() {
   } else {
     delete document.body.dataset.team;
   }
+  // Theme is overridden by active game modes — skip setting it when a mode
+  // is active so the mode-specific background (bingo, roadkill, fibbage, teams)
+  // takes over. The theme is only applied when the round is idle/closed.
+  const applyTheme = round?.status === ROUND_STATUSES.IDLE || round?.status === ROUND_STATUSES.CLOSED;
+  if (applyTheme) {
+    document.body.dataset.theme = settings.theme;
+  } else {
+    // Ensure theme is removed when a mode is active, in case it was previously set.
+    delete document.body.dataset.theme;
+  }
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
   if (settings.uiAnimationsEnabled) {
     document.body.dataset.uiAnims = "on";
   } else {
     document.body.dataset.uiAnims = "off";
   }
-  document.body.dataset.theme = settings.theme;
   // Background wash when the viewer's own team changed since last render.
   try { maybeFlashRosterBackground(); } catch {}
 
