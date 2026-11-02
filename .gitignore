@@ -25,25 +25,36 @@ dist-ssr
 *.sw?
 
 #tests for anims/music
-public/3.gif
-public/3-dance.gif
-public/2.gif
-public/2-dance.gif
 public/1.gif
-public/1-dance.gif
-public/3-wrong.png
-public/3-correct.png
-public/3-buzz.png
-public/2-wrong.png
-public/2-correct.png
-public/2-buzz.png
-public/1-wrong.png
-public/1-correct.png
-public/1-buzz.png
-*.ogg
-*.mp3
+public/2.gif
+public/3.gif
+public/avatars/1-buzz.png
+public/avatars/1-correct.png
+public/avatars/1-dance.gif
+public/avatars/1-wrong.png
+public/avatars/2-buzz.png
+public/avatars/2-correct.png
+public/avatars/2-dance.gif
+public/avatars/2-wrong.png
+public/avatars/3-buzz.png
+public/avatars/3-correct.png
+public/avatars/3-dance.gif
+public/avatars/3-wrong.png
+public/avatars
 
 # NONONONONO
 .env
 
 
+public/1-buzz.png
+public/1-correct.png
+public/1-dance.gif
+public/1-wrong.png
+public/2-buzz.png
+public/2-correct.png
+public/2-dance.gif
+public/2-wrong.png
+public/3-buzz.png
+public/3-correct.png
+public/3-dance.gif
+public/3-wrong.png

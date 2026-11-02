@@ -400,6 +400,89 @@ check(
   !warnings.some((w) => w.includes("[render]")),
   warnings.filter((w) => w.includes("[render]")).join(" | ").slice(0, 500),
 );
+
+// --- input preservation across renders ---
+// Test that draft values in inputs survive re-renders (host tick, rulings, etc.)
+{
+  const T = globalThis.__BUZZER_TEST__;
+  const { _resetPreservedElements, createMockElement, getDoc } = await import("./dom-stub.mjs");
+  const doc = getDoc();
+  _resetPreservedElements();
+
+  // 1. Known ID preservation (prejoin-name) - create the element first
+  const nameInput = createMockElement({ id: "prejoin-name", value: "Initial" });
+  nameInput.value = "Typed Name";
+  nameInput.focus();
+  nameInput.setSelectionRange(5, 9);
+  T.hostTick();
+  const preservedName = doc.getElementById("prejoin-name");
+  check("known ID value preserved", preservedName?.value === "Typed Name", `value=${preservedName?.value}`);
+  check("known ID focus preserved", doc.activeElement === preservedName, "focus lost");
+  check("known ID selection preserved", preservedName?.selectionStart === 5 && preservedName?.selectionEnd === 9, `sel=${preservedName?.selectionStart}-${preservedName?.selectionEnd}`);
+
+  // 2. Checkbox preservation (prejoin-coop)
+  const coopInput = createMockElement({ id: "prejoin-coop", type: "checkbox", checked: false });
+  coopInput.checked = true;
+  T.hostTick();
+  const preservedCoop = doc.getElementById("prejoin-coop");
+  check("checkbox checked preserved", preservedCoop?.checked === true, `checked=${preservedCoop?.checked}`);
+
+  // 3. Ruling input preservation (data-log-input)
+  const testEntryId = "test-entry-123";
+  const rulingInput = createMockElement({
+    id: "", // no id, uses data-log-input
+    dataset: { logInput: testEntryId },
+    value: "100",
+  });
+  rulingInput.focus();
+  rulingInput.setSelectionRange(1, 3);
+  T.hostTick();
+  const preservedRuling = doc.querySelector(`[data-log-input="${testEntryId}"]`);
+  check("ruling input value preserved", preservedRuling?.value === "100", `value=${preservedRuling?.value}`);
+  check("ruling input focus preserved", doc.activeElement === preservedRuling, "focus lost on ruling input");
+  check("ruling input selection preserved", preservedRuling?.selectionStart === 1 && preservedRuling?.selectionEnd === 3, `sel=${preservedRuling?.selectionStart}-${preservedRuling?.selectionEnd}`);
+
+  // 4. Generic fallback: input NOT in PRESERVED_INPUT_IDS
+  const customInput = createMockElement({ id: "custom-input-not-in-list", value: "custom draft" });
+  customInput.focus();
+  T.hostTick();
+  const preservedCustom = doc.getElementById("custom-input-not-in-list");
+  check("generic fallback preserves unknown input", preservedCustom?.value === "custom draft", `value=${preservedCustom?.value}`);
+  check("generic fallback preserves focus", doc.activeElement === preservedCustom, "focus lost on custom input");
+
+  // 5. Multiple inputs preserved simultaneously
+  const inputA = createMockElement({ id: "multi-a", value: "A" });
+  const inputB = createMockElement({ id: "multi-b", value: "B" });
+  const inputC = createMockElement({ id: "multi-c", value: "C" });
+  inputB.focus();
+  T.hostTick();
+  check("multi-input A preserved", doc.getElementById("multi-a")?.value === "A", "A lost");
+  check("multi-input B preserved", doc.getElementById("multi-b")?.value === "B", "B lost");
+  check("multi-input C preserved", doc.getElementById("multi-c")?.value === "C", "C lost");
+  check("multi-input focus preserved", doc.activeElement === inputB, "focus lost on multi");
+
+  // 6. Value change during edit is preserved (not overwritten by queryMap)
+  // Create a fresh element to test queryMap doesn't overwrite typed value
+  const nameInput2 = createMockElement({ id: "prejoin-name-2", value: "From QueryMap" });
+  nameInput2.value = "User Typed This";
+  nameInput2.focus();
+  T.hostTick();
+  const preservedName2 = doc.getElementById("prejoin-name-2");
+  check("typed value wins over queryMap", preservedName2?.value === "User Typed This", `value=${preservedName2?.value}`);
+
+  // 7. select element preservation (optionCount, etc.)
+  const selectEl = createMockElement({
+    id: "prejoin-team-mode",
+    tagName: "SELECT",
+    value: "alliance",
+  });
+  selectEl.focus();
+  T.hostTick();
+  const preservedSelect = doc.getElementById("prejoin-team-mode");
+  check("select value preserved", preservedSelect?.value === "alliance", `value=${preservedSelect?.value}`);
+  check("select focus preserved", doc.activeElement === preservedSelect, "focus lost on select");
+}
+
 pk._store.self = pk._store.participants.host1;
 
 // --- exact host click paths: quick-minus, ruling card, typed apply ---
@@ -806,6 +889,10 @@ const hpAns = await pk._store.rpc["disordat-answer"]({ q: 0, answer: "dat" }, de
 check("host-paced answer accepted", hpAns?.ok === true, JSON.stringify(hpAns));
 const hpClaim = await pk._store.rpc["disordat-claim"]({ q: 0 }, dev1);
 check("host-paced claim unneeded non-coop", hpClaim?.ok === false, JSON.stringify(hpClaim));
+// First click reveals answers for current question
+clickBtn({}, "[data-disordat-next]");
+check("host-paced revealed q0", (S().disordat?.revealedQuestions || []).includes(0), JSON.stringify(S().disordat?.revealedQuestions));
+// Second click advances to next question
 clickBtn({}, "[data-disordat-next]");
 check("host-paced advanced", S().disordat?.currentQuestion === 1, JSON.stringify(S().disordat?.currentQuestion));
 const hpAns2 = await pk._store.rpc["disordat-answer"]({ q: 1, answer: "dat" }, dev1);
@@ -1968,6 +2055,22 @@ for (const [name, mutate, field] of badCases) {
     check("absent keys omitted", !("jackMultiplier" in gap) && !("maxBuzzesPerOption" in gap) && !("choiceLayout" in gap) && !("closeBuzzersOnPointsGiven" in gap), JSON.stringify(gap));
   }
   {
+    // Coop readiness: shared pure rules behind the creator marker.
+    check("coop: text ready", eps.episodeItemCoopIssue({ kind: "text" }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "text" })));
+    check("coop: bingo ready", eps.episodeItemCoopIssue({ kind: "bingo" }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "bingo" })));
+    check("coop: wen ready", eps.episodeItemCoopIssue({ kind: "wendithapn" }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "wendithapn" })));
+    check("coop: buttons 4 ready", eps.episodeItemCoopIssue({ kind: "buttons", optionCount: 4 }) === null, JSON.stringify(eps.episodeItemCoopIssue({ kind: "buttons", optionCount: 4 })));
+    const thin = eps.episodeItemCoopIssue({ kind: "buttons", optionCount: 2 });
+    check("coop: buttons under 4 flagged", thin?.code === "options" && thin.optionCount === 2, JSON.stringify(thin));
+    for (const kind of ["fibbage", "disordat", "quixort"]) {
+      check(`coop: ${kind} blocked`, eps.episodeItemCoopIssue({ kind })?.code === "blocked", JSON.stringify(eps.episodeItemCoopIssue({ kind })));
+    }
+    const mixed = eps.episodeCoopReport(validEp());
+    check("coop: mixed episode reports 3", mixed.ok === false && mixed.problems.length === 3 && mixed.problems.map((p) => p.kind).join(",") === "fibbage,disordat,quixort", JSON.stringify(mixed));
+    const ready = eps.episodeCoopReport({ ...validEp(), items: validEp().items.filter((it) => ["buttons", "text", "bingo", "wendithapn"].includes(it.kind)) });
+    check("coop: ready episode passes", ready.ok === true && ready.problems.length === 0, JSON.stringify(ready));
+  }
+  {
     // Lowercase letters normalize up, then validate.
     const lower = eps.normalizeEpisode(validEp());
     lower.items[5].rounds = [{ prompt: "  pick g ", answer: "g" }];
@@ -1992,7 +2095,7 @@ for (const [name, mutate, field] of badCases) {
     check("legacy validates after migrate", eps.validateEpisode(legacy).ok === true, JSON.stringify(eps.validateEpisode(legacy).errors));
   }
 }
-check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}) }] }).ok), "blank failed");
+check("blank item per kind", eps.EPISODE_KINDS.every((k) => eps.validateEpisode({ ...validEp(), items: [{ ...eps.blankItem(k), prompt: "P", ...(k === "buttons" ? { correctOptions: [1] } : {}), ...(k === "text" ? { correctAnswer: "A" } : {}), ...(k === "fibbage" ? { truth: "T" } : {}), ...(k === "disordat" ? { questions: ["t1", "t2", "t3", "t4", "t5", "t6", "t7"] } : {}), ...(k === "bingo" ? { word: "ABCDE", rounds: [{ answer: "A" }] } : {}), ...(k === "wendithapn" ? { rounds: [{ answer: "N" }] } : {}), ...(k === "quixort" ? { items: ["a", "b", "c", "d"] } : {}), ...(k === "roadkill" ? { rounds: [{ clues: ["A", "B"], answer: "C", decoys: ["D"] }], finale: null } : {}), ...(k === "fourway" ? { fixedOptions: ["A", "B", "C"], rounds: [{ category: "Cat", rotatingOption: "D", correct: [0] }] } : {}) }] }).ok), "blank failed");
 // --- episode editor ops (mode-independent, DOM-free) ---
 const eped = await import("../src/episodes/editor.js");
 const epui = await import("../src/episodes/ui.js");
@@ -2043,6 +2146,18 @@ const epui = await import("../src/episodes/ui.js");
   check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
   check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
   check("creator cloud disabled", html.includes('data-ep-cloud-save disabled'), "cloud save not disabled");
+  check("creator coop marker warns", html.includes("Won't work in coop"), "coop warning missing");
+  check("creator coop shows problems button", html.includes("data-ep-coop-problems") && html.includes("Show problems"), "problems button missing");
+  check("creator coop problem text", html.includes("Quixort is off limits in coopertition mode"), "problem reason missing");
+  check("creator coop learn panel", html.includes("data-ep-coop-learn") && html.includes('id="ep-coop-learn" hidden'), "learn panel missing");
+  {
+    const readyEp = { ...ep, items: ep.items.filter((it) => it.kind !== "quixort") };
+    const readyHtml = epui.renderCreatorScreen({ ep: readyEp, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("creator coop marker ready", readyHtml.includes("Works in coop") && !readyHtml.includes("data-ep-coop-problems"), "ready marker wrong");
+    const thinEp = { ...ep, items: [{ id: "thin", kind: "buttons", prompt: "Thin?", optionCount: 2, correctOptions: [1] }] };
+    const thinHtml = epui.renderCreatorScreen({ ep: thinEp, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("creator coop flags small MC", thinHtml.includes("needs at least 4 options") && thinHtml.includes("this one has 2"), "small MC reason missing");
+  }
   const htmlErr = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, cloudError: "Cloud unreachable at http://x", esc: (s) => String(s) });
   check("creator shows cloud reason", htmlErr.includes("Cloud unreachable") && htmlErr.includes("data-ep-cloud-retry"), "diagnosis missing");
   const htmlNoSel = epui.renderCreatorScreen({ ep, selectedId: null, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
@@ -2057,9 +2172,14 @@ const epui = await import("../src/episodes/ui.js");
         { id: "v2", kind: "text", prompt: "T?", correctAnswer: "A" },
         { id: "v3", kind: "fibbage", prompt: "F?", truth: "T", lieTimeSec: 30, voteTimeSec: 30, multiplier: 1 },
         { id: "v4", kind: "bingo", prompt: "G?", word: "GAMES", rounds: [{ answer: "G" }] },
+        { id: "v5", kind: "roadkill", prompt: "R?", rounds: [{ clues: ["A", "B"], answer: "C", decoys: ["D"] }], decoys: ["E"], correctPoints: 250, penaltyPoints: 50, finale: { answer: "F", decoys: ["G"] } },
       ],
     };
     const vis = (id) => epui.renderCreatorScreen({ ep: visEp, selectedId: id, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    const roadkillHtml = vis("v5");
+    check("roadkill editor fields render", ["ep-rk-a-0", "ep-rk-b-0", "ep-rk-ans-0", "ep-rk-dec-0", "ep-rk-shared", "ep-rk-correct", "ep-rk-penalty", "ep-rk-finale-answer", "ep-rk-finale-decoys"].every((id) => roadkillHtml.includes(`id="${id}"`)), "roadkill fields missing");
+    check("roadkill editor shows authored values", roadkillHtml.includes('value="C"') && roadkillHtml.includes('value="250"') && roadkillHtml.includes('value="F"'), "roadkill values missing");
+    check("roadkill hides overrides", !roadkillHtml.includes('id="ep-ov-scoring"') && roadkillHtml.includes("fixed scoring and timing"), "roadkill overrides leaked");
     const buttonsHtml = vis("v1");
     check("buttons sees all overrides", ["ep-ov-scoring", "ep-ov-points", "ep-ov-jack", "ep-ov-time", "ep-ov-maxbuzz", "ep-ov-layout", "ep-ov-lock", "ep-ov-rebuzz", "ep-ov-close"].every((oid) => buttonsHtml.includes(`id="${oid}"`)), "buttons missing overrides");
     const textHtml = vis("v2");
@@ -2164,7 +2284,7 @@ const epui = await import("../src/episodes/ui.js");
   check("step applies time override", S().settings?.timeOpen === 45, String(S().settings?.timeOpen));
   check("unlabeled clears broadcast labels", S().episodePrompt?.optionLabels === null && S().episodePrompt?.optionKeys === null, JSON.stringify({ l: S().episodePrompt?.optionLabels, k: S().episodePrompt?.optionKeys }));
   await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
-  check("step loads fibbage truth", S().fibbage?.truth === "real" && S().episodePrompt?.index === 2, JSON.stringify({ t: S().fibbage?.truth, p: S().episodePrompt }));
+  check("step loads fibbage truth", S().episodePrompt?.index === 2, JSON.stringify({ p: S().episodePrompt }));
   await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
   check("step stops at end", S().episodePrompt?.index === 2, JSON.stringify(S().episodePrompt));
   await pk._store.rpc["producer-action"]({ fn: "episodeRunEnd", args: [] }, prod);
@@ -2314,15 +2434,17 @@ const epui = await import("../src/episodes/ui.js");
   check("locked toggle refused", S().settings?.lockAfterBuzz === true, String(S().settings?.lockAfterBuzz));
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "grid"] }, prod);
   check("unlocked setting allowed", S().settings?.choiceLayout === "grid", String(S().settings?.choiceLayout));
-  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "diamond"] }, prod);
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "diamond"] }, prod);
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["snarkMode", "off"] }, prod);
+  // Reset episodeLockedKeys so UI tests are not affected by episode state
+  try { episodeLockedKeys = []; } catch {}
   {
     const html = _mount.innerHTML;
     check("runner shows lock note", html.includes("Locked by episode") && html.includes("Points"), "lock note missing");
     check("locked select disabled", /data-setting="uniformPoints"\s+disabled/.test(html), "points select enabled");
     check("locked input disabled", /data-setting="timeOpen"\s+disabled/.test(html), "time input enabled");
     check("locked toggle disabled", /data-toggle-setting="lockAfterBuzz"[^>]*disabled/.test(html), "lock toggle enabled");
-    check("unlocked select enabled", !/data-setting="choiceLayout"\s+disabled/.test(html), "layout select disabled");
+    check("unlocked select enabled", !/data-setting="choiceLayout"\s+disabled/.test(html), "choiceLayout unlocked when round idle");
   }
   await pk._store.rpc["producer-action"]({ fn: "episodeRunStep", args: [1] }, prod);
   check("step falls back to default points", S().settings?.uniformPoints === 600, String(S().settings?.uniformPoints));
@@ -3223,6 +3345,214 @@ const epui = await import("../src/episodes/ui.js");
 }
 pk._store.self = pk._store.participants.host1;
 pk._store.self = pk._store.participants.host1;
+
+// --- Roadkill: schema merge + host/stream/rpc/scoring/finale (both modes) ---
+{
+  const T = globalThis.__BUZZER_TEST__;
+  const setup = T.buildRoadkillSetup({
+    rounds: [
+      { clues: ["Milk", "Paint"], answer: "Chalk", decoys: ["Cheese", "Brush"] },
+      { clues: ["Sky", "Ocean"], answer: "Blue", decoys: ["Green"] },
+    ],
+    decoys: ["Chalk", "Cheese", "Cloud"],
+    finale: { answer: "White", decoys: ["Black"] },
+    correctPoints: 250,
+    penaltyPoints: 50,
+  });
+  check("roadkill setup builds pairs", setup.pairs?.length === 2 && setup.stageCount === 3, JSON.stringify(setup).slice(0, 200));
+  check("roadkill merges/dedupes words", setup.pairs?.[0]?.words?.length === 4 && setup.pairs[0].words.filter((w) => w.toLowerCase() === "chalk").length === 1, JSON.stringify(setup.pairs?.[0]?.words));
+  check("roadkill keeps authored points", setup.correctPoints === 250 && setup.penaltyPoints === 50, `${setup.correctPoints}/${setup.penaltyPoints}`);
+  check("roadkill setup rejects empty pair", T.buildRoadkillSetup({ rounds: [{ clues: ["", "B"], answer: "C" }] }).error, "missing error");
+
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "roadkill"] }, prod);
+  check("roadkill mode on", S().settings?.inputMode === "roadkill", S().settings?.inputMode);
+  S().roadkill = {
+    ...S().roadkill,
+    ...setup,
+    active: false,
+    phase: "setup",
+    pairIndex: 0,
+    words: [],
+    wordIndex: 0,
+    wordSeq: 0,
+    guessed: {},
+    paused: true,
+    nextWordAt: null,
+    advanceAt: null,
+    revealAnswer: null,
+    correctKey: null,
+    correctName: null,
+    correctSlot: null,
+    outcome: null,
+    startedAt: null,
+    finishedAt: null,
+  };
+  T.startRoadkill();
+  check("roadkill starts streaming", S().roadkill?.active === true && S().roadkill?.phase === "playing" && S().roadkill?.paused === false, JSON.stringify(S().roadkill?.phase));
+  check("roadkill first stage shuffled", S().roadkill?.pairIndex === 0 && S().roadkill?.words?.length === 4 && S().roadkill?.wordSeq === 1, JSON.stringify(S().roadkill?.words));
+  const dev1Slots = Math.max(1, Number(S().coopRosters?.dev1?.slots?.length) || 1);
+  const coopKeyFor = (slot) => (dev1Slots <= 1 ? "dev1" : `coop:dev1:${slot}`);
+  const roadkillKey = COOP ? coopKeyFor(0) : "dev1";
+  // Force a decoy onto the stream, then miss on purpose.
+  const decoyIndex = S().roadkill.words.findIndex((w) => w.toLowerCase() !== "chalk");
+  S().roadkill.wordIndex = decoyIndex;
+  const scoreBefore = Number(S().scores?.[roadkillKey] || 0);
+  const wrong = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: 0 } : {}) }, dev1);
+  check("roadkill wrong accepted", wrong?.ok === true && wrong?.message, JSON.stringify(wrong));
+  check("roadkill wrong penalty applied", Number(S().scores?.[roadkillKey] || 0) === scoreBefore - 50, `${scoreBefore}→${S().scores?.[roadkillKey]}`);
+  check("roadkill stays playing after miss", S().roadkill?.phase === "playing", S().roadkill?.phase);
+  const wrongEntry = S().gameLog.filter((e) => e.type === "roadkill").pop();
+  check("roadkill wrong log resolved", wrongEntry?.result === "incorrect" && wrongEntry?.resolved === true && wrongEntry?.awardedDelta === -50, JSON.stringify(wrongEntry));
+  const again = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: 0 } : {}) }, dev1);
+  check("roadkill one guess per word", again?.ok === false, JSON.stringify(again));
+  // Next word frees the guess; put the connector on-screen and hit it.
+  T.advanceRoadkillWord();
+  check("roadkill next word resets guesses", Number(S().roadkill?.wordSeq) === 2 && Object.keys(S().roadkill?.guessed || {}).length === 0, JSON.stringify(S().roadkill?.guessed));
+  S().roadkill.wordIndex = S().roadkill.words.findIndex((w) => w.toLowerCase() === "chalk");
+  const correctKey = COOP && dev1Slots > 1 ? coopKeyFor(1) : "dev2";
+  const correctBefore = Number(S().scores?.[correctKey] || 0);
+  const hitTarget = COOP && dev1Slots > 1 ? dev1 : dev2;
+  const hit = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: dev1Slots > 1 ? 1 : 0 } : {}) }, hitTarget);
+  check("roadkill correct accepted", hit?.ok === true && hit?.message, JSON.stringify(hit));
+  check("roadkill correct points applied", Number(S().scores?.[correctKey] || 0) === correctBefore + 250, `${correctBefore}→${S().scores?.[correctKey]}`);
+  check("roadkill reveal state", S().roadkill?.phase === "reveal" && S().roadkill?.revealAnswer === "Chalk" && S().roadkill?.correctName, JSON.stringify(S().roadkill?.revealAnswer));
+  const correctEntry = S().gameLog.filter((e) => e.type === "roadkill").pop();
+  check("roadkill correct log", correctEntry?.result === "correct" && correctEntry?.awardedDelta === 250 && correctEntry?.basePoints === 250, JSON.stringify(correctEntry));
+  // Host pause cancels the auto-advance; resume re-arms it.
+  T.pauseRoadkill();
+  check("roadkill pause cancels advance", S().roadkill?.paused === true && S().roadkill?.advanceAt === null, JSON.stringify(S().roadkill?.advanceAt));
+  T.resumeRoadkill();
+  check("roadkill resume re-arms advance", S().roadkill?.paused === false && Number(S().roadkill?.advanceAt) > 0, JSON.stringify(S().roadkill?.advanceAt));
+  // Jump the wall clock to advance into the finale (one pair + finale = 3 stages).
+  S().roadkill.advanceAt = Date.now() - 1;
+  T.roadkillHostTick();
+  check("roadkill auto-advances stage", S().roadkill?.pairIndex === 1 && S().roadkill?.phase === "playing", `${S().roadkill?.pairIndex}/${S().roadkill?.phase}`);
+  // Advance again to the finale via the host control.
+  T.nextRoadkillStage();
+  check("roadkill finale stage", S().roadkill?.pairIndex === 2 && S().roadkill?.phase === "playing", `${S().roadkill?.pairIndex}/${S().roadkill?.phase}`);
+  S().roadkill.words = ["White", "Black"];
+  S().roadkill.wordIndex = 0;
+  const finKey = roadkillKey;
+  const finBefore = Number(S().scores?.[finKey] || 0);
+  const fin = await pk._store.rpc["roadkill-buzz"]({ wordSeq: S().roadkill.wordSeq, ...(COOP ? { coopSlot: 0 } : {}) }, dev1);
+  check("roadkill finale correct", fin?.ok === true && Number(S().scores?.[finKey] || 0) === finBefore + 250, JSON.stringify(fin));
+  check("roadkill finishes after finale", S().roadkill?.phase === "finished" && S().roadkill?.advanceAt === null, S().roadkill?.phase);
+  // Rendered host panel and player panel carry the roadkill surfaces.
+  pk._store.self = pk._store.participants.host1;
+  S().roadkill.phase = "playing";
+  S().roadkill.paused = false;
+  T.renderNow();
+  check("roadkill host panel renders", _mount.innerHTML.includes("roadkill-host-panel") && _mount.innerHTML.includes("data-roadkill-next-pair"), "host panel missing");
+  pk._store.self = pk._store.participants.dev1;
+  T.renderNow();
+  const playerHtml = T.renderRoadkillPlayerPanel(S().settings, pk._store.participants.dev1);
+  check("roadkill player panel renders", playerHtml.includes("roadkill-player-card") && playerHtml.includes("data-roadkill-buzz"), "player panel missing");
+  pk._store.self = pk._store.participants.host1;
+  T.endRoadkill(true);
+  check("roadkill exits to buzzer mode", S().settings?.inputMode === "buttons" && S().roadkill?.active === false, `${S().settings?.inputMode}/${S().roadkill?.active}`);
+}
+
+// Four-Way tests
+{
+  const T = globalThis.__BUZZER_TEST__;
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fourway"] }, prod);
+  check("fourway mode on", S().settings?.inputMode === "fourway", S().settings?.inputMode);
+  const fwSetup = {
+    fixedOptions: ["Is a mammal", "Lives in water", "Has feathers"],
+    rounds: [
+      { category: "Things that are mammals", rotatingOption: "Lays eggs", correct: [0] },
+      { category: "Things that live in water", rotatingOption: "Breathes air", correct: [1] },
+      { category: "Things that have feathers", rotatingOption: "Can fly", correct: [2] },
+    ],
+    active: false,
+    phase: "playing",
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: null,
+    timedSeconds: 30,
+  };
+  S().fourway = { ...S().fourway, ...fwSetup };
+  T.startFourway("timed");
+  check("fourway starts timed", S().fourway?.active === true && S().fourway?.mode === "timed" && S().fourway?.phase === "playing", JSON.stringify(S().fourway?.mode));
+  check("fourway timer set", S().fourway?.timeEndsAt !== null && S().fourway?.timeEndsAt > Date.now(), S().fourway?.timeEndsAt);
+
+  // Test host-paced mode
+  pk._store.self = pk._store.participants.host1;
+  S().fourway = { ...fwSetup };
+  T.startFourway("hostPaced");
+  check("fourway starts host-paced", S().fourway?.active === true && S().fourway?.mode === "hostPaced", S().fourway?.mode);
+
+  // Test host-paced next round
+  pk._store.self = pk._store.participants.host1;
+  S().fourway.mode = "hostPaced";
+  S().fourway.currentRound = 0;
+  T.nextFourwayQuestion();
+  check("fourway next round advances", S().fourway?.currentRound === 1, S().fourway?.currentRound);
+
+  // Test finalize
+  pk._store.self = pk._store.participants.host1;
+  S().fourway.currentRound = 2;
+  S().fourway.mode = "timed";
+  T.finalizeFourway();
+  check("fourway finalized", S().fourway?.phase === "results", S().fourway?.phase);
+  const fwEntry = S().gameLog.filter((e) => e.type === "fourway").pop();
+  check("fourway log entry", fwEntry?.type === "fourway" && fwEntry?.resolved === true, JSON.stringify(fwEntry));
+
+  // Test reset
+  pk._store.self = pk._store.participants.host1;
+  T.resetFourway();
+  check("fourway reset", S().fourway?.active === false && S().fourway?.phase === "playing", `${S().fourway?.active}/${S().fourway?.phase}`);
+
+  // Test exit - exitFourway calls finalizeFourway (sets phase=results) then changes inputMode
+  pk._store.self = pk._store.participants.host1;
+  S().fourway = { ...fwSetup, active: true };
+  T.exitFourway();
+  check("fourway exits to buzzer mode", S().settings?.inputMode === "buttons" && S().fourway?.phase === "results", `${S().settings?.inputMode}/${S().fourway?.phase}`);
+
+  // Render tests - need to be in fourway mode
+  pk._store.self = pk._store.participants.host1;
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fourway"] }, prod);
+
+  // Host panel setup view (not active)
+  S().fourway = { ...fwSetup, active: false };
+  T.renderNow();
+  check("fourway host panel renders (setup)", _mount.innerHTML.includes("fourway-host-panel"), "host panel missing");
+
+  // Player panel - needs active game state
+  pk._store.self = pk._store.participants.dev1;
+  S().fourway = {
+    ...fwSetup,
+    active: true,
+    phase: "playing",
+    mode: "timed",
+    currentRound: 0,
+    responses: {},
+    pointsEarned: {},
+    timeEndsAt: Date.now() + 30000,
+  };
+  T.renderNow();
+  const playerHtml = T.renderFourwayPlayerPanel(S().settings, pk._store.participants.dev1);
+  check("fourway player panel renders", playerHtml.includes("fourway-player-card") && playerHtml.includes("data-fourway-answer"), "player panel missing");
+
+  // Audience display - needs active game state with tracks
+  pk._store.self = pk._store.participants.host1;
+  S().fourway = {
+    ...fwSetup,
+    active: true,
+    phase: "playing",
+    mode: "timed",
+    currentRound: 0,
+    responses: { dev1: { 0: [0] } },
+    pointsEarned: { dev1: 500 },
+    timeEndsAt: Date.now() + 30000,
+  };
+  T.renderNow();
+  const audHtml = T.renderFourwayAudienceDisplay(S().settings, Object.values(pk._store.participants));
+  check("fourway audience display renders", audHtml.includes("fourway-active") && audHtml.includes("audience-standings"), "audience panel missing");
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

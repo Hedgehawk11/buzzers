@@ -5,7 +5,7 @@
 // { findOne, insertOne, updateOne } and returns { status, body } — callers
 // only translate that into their HTTP flavor. No express, no req/res here.
 
-import { randomInt, randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
+import { randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { normalizeEpisode, validateEpisode } from "../src/episodes/schema.js";
 import {
@@ -24,6 +24,25 @@ const scrypt = promisify(scryptCb);
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const CODE_LEN = 6;
 export const CODE_RE = /^[A-Z2-9]{6}$/;
+
+// Portable randomInt replacement using WebCrypto (Node 15+ has crypto.webcrypto,
+// older Node has global crypto.getRandomValues). Avoids node:crypto.randomInt
+// which doesn't exist in browsers and broke harness/prod before.
+function randomInt(max) {
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const maxU32 = 0xffffffff;
+    const limit = maxU32 - (maxU32 % max);
+    const buf = new Uint32Array(1);
+    let x;
+    do {
+      crypto.getRandomValues(buf);
+      x = buf[0];
+    } while (x >= limit);
+    return x % max;
+  }
+  // Fallback for very old Node (pre-15) without WebCrypto
+  return Math.floor(Math.random() * max);
+}
 
 export function makeShareCode() {
   let code = "";
