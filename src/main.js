@@ -88,9 +88,6 @@ const DEFAULT_SETTINGS = {
   // When set, avatar paths are prefixed with "/${namespace}" enabling a separate
   // image set for this specific scenario. Default "" keeps the existing layout.
   gibberishQuestionNamespace: "",
-  // Host-selectable page theme. Overrides CSS custom properties + body background.
-  // Values: "dark" (current/default), "light", "ydkj-ride", "ydkj-5th", "ydkj-2011"
-  theme: "dark",
 };
 
 const TEAM_COLORS = ["red", "blue", "green", "purple", "gray", "orange", "pink", "brown", "cyan", "lime"];
@@ -554,10 +551,6 @@ function getAllBuzzedTeamMemberIds(playerId, players, assignments) {
 // =============================================================================
 function isCoopMode(settings = getSettings()) {
   return Boolean(settings.coopertitionEnabled);
-}
-
-function isTeamModeActive(settings = getSettings()) {
-  return settings.teamModeEnabled;
 }
 
 function getCoopRosters() {
@@ -2242,7 +2235,6 @@ showScoresToPlayers: settings.showScoresToPlayers,
       disOrDatTimedSeconds: settings.disOrDatTimedSeconds,
       quixortAudienceLive: settings.quixortAudienceLive === true,
       snarkMode: settings.snarkMode,
-      theme: settings.theme,
     },
     coopRosters: getCoopRosters(),
     coopMoods: getCoopMoods(),
@@ -14273,17 +14265,6 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 </select>
                 <p class="setting-helper">Swap player-facing text for snarky variants.</p>
               </label>
-              <label>
-                Theme
-                <select data-setting="theme" ${settingDisabledAttr} ${isTeamModeActive() ? "disabled" : ""}>
-                  <option value="dark" ${settings.theme === "dark" ? "selected" : ""}>Dark (current)</option>
-                  <option value="light" ${settings.theme === "light" ? "selected" : ""}>Light</option>
-                  <option value="ydkj-ride" ${settings.theme === "ydkj-ride" ? "selected" : ""}>YDKJ: The Ride</option>
-                  <option value="ydkj-5th" ${settings.theme === "ydkj-5th" ? "selected" : ""}>YDKJ: The 5th Dementia</option>
-                  <option value="ydkj-2011" ${settings.theme === "ydkj-2011" ? "selected" : ""}>YDKJ 2011/2015</option>
-                </select>
-                <p class="setting-selector-helper">Host-selectable page theme.</p>
-              </label>
             </div>
             ${renderPlayerToggles(settings, players, controllerId, settingDisabledAttr)}
             <div class="control-grid" style="margin-top:0.75rem;border-top:1px solid var(--panel-border);padding-top:0.75rem">
@@ -14955,16 +14936,10 @@ function render() {
     delete document.body.dataset.team;
   }
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
-  if (settings.teamModeEnabled) {
-    document.body.dataset.theme = "dark";
-    document.body.dataset.uiAnims = settings.uiAnimationsEnabled ? "on" : "off";
+  if (settings.uiAnimationsEnabled) {
+    document.body.dataset.uiAnims = "on";
   } else {
-    if (settings.uiAnimationsEnabled) {
-      document.body.dataset.uiAnims = "on";
-    } else {
-      document.body.dataset.uiAnims = "off";
-    }
-    document.body.dataset.theme = settings.theme;
+    document.body.dataset.uiAnims = "off";
   }
   // Background wash when the viewer's own team changed since last render.
   try { maybeFlashRosterBackground(); } catch {}
@@ -15398,15 +15373,6 @@ function bindEvents() {
     if (setting === "jackMultiplier") { setHostSetting("jackMultiplier", normalizeJackMultiplier(input.value)); return; }
     if (setting === "teamScoringMode") { setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance"); return; }
     if (setting === "snarkMode") { setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off"); return; }
-    if (setting === "theme") {
-    if (settings.teamModeEnabled) {
-      setBuzzNotice("Theme cannot be changed while team mode is active.");
-      render();
-      return;
-    }
-    setHostSetting("theme", input.value);
-    return;
-  }
     if (setting === "choiceLayout") { setHostSetting("choiceLayout", normalizeChoiceLayout(input.value)); return; }
     if (setting === "maxBuzzesPerOption") { setHostSetting("maxBuzzesPerOption", clamp(parseInt(input.value, 10) || 1, 1, 50)); return; }
     if (setting === "screwTimerSec") { setHostSetting("screwTimerSec", normalizeScrewTimerSec(input.value)); return; }
