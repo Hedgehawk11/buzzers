@@ -556,6 +556,10 @@ function isCoopMode(settings = getSettings()) {
   return Boolean(settings.coopertitionEnabled);
 }
 
+function isTeamModeActive(settings = getSettings()) {
+  return settings.teamModeEnabled;
+}
+
 function getCoopRosters() {
   return getSafeState("coopRosters", {});
 }
@@ -14271,7 +14275,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
               </label>
               <label>
                 Theme
-                <select data-setting="theme" ${settingDisabledAttr}>
+                <select data-setting="theme" ${settingDisabledAttr} ${isTeamModeActive() ? "disabled" : ""}>
                   <option value="dark" ${settings.theme === "dark" ? "selected" : ""}>Dark (current)</option>
                   <option value="light" ${settings.theme === "light" ? "selected" : ""}>Light</option>
                   <option value="ydkj-ride" ${settings.theme === "ydkj-ride" ? "selected" : ""}>YDKJ: The Ride</option>
@@ -14950,21 +14954,17 @@ function render() {
   } else {
     delete document.body.dataset.team;
   }
-  // Theme is overridden by active game modes — skip setting it when a mode
-  // is active so the mode-specific background (bingo, roadkill, fibbage, teams)
-  // takes over. The theme is only applied when the round is idle/closed.
-  const applyTheme = round?.status === ROUND_STATUSES.IDLE || round?.status === ROUND_STATUSES.CLOSED;
-  if (applyTheme) {
-    document.body.dataset.theme = settings.theme;
-  } else {
-    // Ensure theme is removed when a mode is active, in case it was previously set.
-    delete document.body.dataset.theme;
-  }
   const showScoresToPlayers = Boolean(settings.showScoresToPlayers);
-  if (settings.uiAnimationsEnabled) {
-    document.body.dataset.uiAnims = "on";
+  if (settings.teamModeEnabled) {
+    document.body.dataset.theme = "dark";
+    document.body.dataset.uiAnims = settings.uiAnimationsEnabled ? "on" : "off";
   } else {
-    document.body.dataset.uiAnims = "off";
+    if (settings.uiAnimationsEnabled) {
+      document.body.dataset.uiAnims = "on";
+    } else {
+      document.body.dataset.uiAnims = "off";
+    }
+    document.body.dataset.theme = settings.theme;
   }
   // Background wash when the viewer's own team changed since last render.
   try { maybeFlashRosterBackground(); } catch {}
@@ -15398,7 +15398,15 @@ function bindEvents() {
     if (setting === "jackMultiplier") { setHostSetting("jackMultiplier", normalizeJackMultiplier(input.value)); return; }
     if (setting === "teamScoringMode") { setHostSetting("teamScoringMode", input.value === "shared" ? "shared" : "alliance"); return; }
     if (setting === "snarkMode") { setHostSetting("snarkMode", input.value === "1" ? "1" : input.value === "2" ? "2" : "off"); return; }
-    if (setting === "theme") { setHostSetting("theme", input.value); return; }
+    if (setting === "theme") {
+    if (settings.teamModeEnabled) {
+      setBuzzNotice("Theme cannot be changed while team mode is active.");
+      render();
+      return;
+    }
+    setHostSetting("theme", input.value);
+    return;
+  }
     if (setting === "choiceLayout") { setHostSetting("choiceLayout", normalizeChoiceLayout(input.value)); return; }
     if (setting === "maxBuzzesPerOption") { setHostSetting("maxBuzzesPerOption", clamp(parseInt(input.value, 10) || 1, 1, 50)); return; }
     if (setting === "screwTimerSec") { setHostSetting("screwTimerSec", normalizeScrewTimerSec(input.value)); return; }
