@@ -1159,7 +1159,8 @@ function getRankBadgeHtml(rank) {
 // plain GIFs are accepted as fallback but loop instead of freezing.
 // See public/avatars.md.
 // =============================================================================
-const COOP_CHAR_STATES = ["base", "buzz", "dance", "correct", "wrong"];
+const COOP_CHAR_STATES = ["base", "buzz", "dance", "correct", "wrong", "in"];
+let coopInAnimationSuffix = "";
 const coopCharUrls = { 1: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 2: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 3: { base: null, buzz: null, dance: null, correct: null, wrong: null } };
 const coopCharFrames = { 1: { buzz: 0, correct: 0, wrong: 0 }, 2: { buzz: 0, correct: 0, wrong: 0 }, 3: { buzz: 0, correct: 0, wrong: 0 } };
 let coopCharsProbed = false;
@@ -1255,8 +1256,8 @@ function getCoopFaceSourceId(scoreKey, mood, round) {
     if (mood === "rewind") return `epoch:${coopFaceEpoch}`;
     if (mood === "buzz") {
       const entry = getCurrentRoundBuzzMap().get(scoreKey);
-      if (entry?.id) return `buzz:${entry.id}`;
-      if (coopLocalBuzz?.key === scoreKey) return `local:${coopLocalBuzz.ts}`;
+      if (entry?.id) return `${coopInAnimationSuffix}buzz:${entry.id}`;
+      if (coopLocalBuzz?.key === scoreKey) return `${coopInAnimationSuffix}local:${coopLocalBuzz.ts}`;
       return null;
     }
     // Judged faces: latest resolved buzz entry for this key in this round
@@ -1272,7 +1273,7 @@ function getCoopFaceSourceId(scoreKey, mood, round) {
       const d = Number(e.awardedDelta || 0);
       if (mood === "correct" && !(d > 0)) continue;
       if (mood === "wrong" && !(d < 0)) continue;
-      return `log:${e.id}:${e.updatedAt || d}`;
+      return `${coopInAnimationSuffix}log:${e.id}:${e.updatedAt || d}`;
     }
     return null;
   } catch { return null; }
@@ -7795,6 +7796,11 @@ function setPlayerTeam(playerId, teamColor) {
   }
 
   applyTeamAssignment(playerId, teamColor);
+  if (teamColor) {
+    coopInAnimationSuffix = "-in";
+  } else {
+    coopInAnimationSuffix = "";
+  }
   render();
 }
 
@@ -7940,6 +7946,11 @@ function handleSelectTeam(senderPlayer, teamColor) {
     }
   }
   applyTeamAssignment(senderPlayer.id, teamColor || null);
+  if (teamColor) {
+    coopInAnimationSuffix = "-in";
+  } else {
+    coopInAnimationSuffix = "";
+  }
   render();
   if (teamColor) {
     return { ok: true, message: getSnark("player.teamSelect.joined", `Joined Team ${teamColor}.`, { team: teamColor }) };
