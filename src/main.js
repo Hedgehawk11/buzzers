@@ -1311,8 +1311,12 @@ function getCoopFaceKey(scoreKey, mood, round) {
 }
 // First render of a faceKey animates; repeats within the same render pass
 // (microseconds apart) also animate, but later re-renders stay frozen.
+// The "-in" prefix on a faceKey causes it to always animate on first show;
+  // e.g. a new key with “-in” suffix will never freeze on re-render.
 function isFreshCoopFace(faceKey) {
   if (!faceKey) return false;
+  // "-in" prefix: always fresh, never freeze on re-render
+  const keyParts = faceKey.split("|"); for (let i = 1; i < keyParts.length; i++) { if (keyParts[i].includes("-in")) return true; }
   let t = 0;
   try { t = now(); } catch { t = Date.now(); }
   const seen = coopFaceSeen.get(faceKey);
@@ -1324,6 +1328,19 @@ function isFreshCoopFace(faceKey) {
     }
     return true;
   }
+  // Alliance faces: always animate on first render when a player joins an alliance
+  try {
+    const settings = getSettings();
+    if (!isCoopMode(settings) && settings.teamModeEnabled && settings.teamScoringMode !== "shared") {
+      const round = getRound();
+      if (round && round.status === "open") {
+        const keyParts = faceKey.split("|");
+        if (keyParts.length >= 3 && (keyParts[2] === "correct" || keyParts[2] === "wrong")) {
+          return true;
+        }
+      }
+    }
+  } catch {}
   return (t - seen) < 150;
 }
 
@@ -11115,7 +11132,7 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
     };
     grid = renderChoiceLayout4(
       normalizeChoiceLayout(settings.choiceLayout),
-      [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]],
+      [[1, "pos-a"], [2, "pos-x"], [3, "pos-b"], [4, "pos-y"]],
       button,
       roundLabel,
     );
@@ -11425,7 +11442,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `
         <section class="card player-card">
           ${screweeHead}
-          ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[4, "pos-y"], [2, "pos-x"], [3, "pos-b"], [1, "pos-a"]], button, roundLabel)}
+          ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[1, "pos-a"], [2, "pos-x"], [3, "pos-b"], [4, "pos-y"]], button, roundLabel)}
         </section>
       `;
     }
@@ -11607,12 +11624,12 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
         : `<span class="diamond-value">${computeBasePoints(settings, timeLeftCs, round)}</span>`
       : "";
 
-    // Map optionOrder to diamond positions: pos-a=1, pos-b=2, pos-x=3, pos-y=4
-    // The renderChoiceLayout4 uses [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]]
-    // We need to map the scrambled order to these positions
-    const scrambledPlacements = optionOrder.map((opt, idx) => {
-      const positions = [[4, "pos-y"], [3, "pos-b"], [2, "pos-x"], [1, "pos-a"]];
-      return [opt, positions[idx][1]];
+    // Map optionOrder to diamond positions: pos-a=1, pos-x=3, pos-b=2, pos-y=4
+    // (X and B swapped from default ABXY positions)
+    // We map each option to its correct diamond position
+    const scrambledPlacements = optionOrder.map((opt) => {
+      const positionMap = { 1: "pos-a", 2: "pos-x", 3: "pos-b", 4: "pos-y" };
+      return [opt, positionMap[opt] || "pos-a"];
     });
 
     return `

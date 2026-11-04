@@ -34,7 +34,7 @@ In no particular order:
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Bounce gamemode (think Jackbox survey scramble, for lists longer than quixort, this one is probably not happening tho)
  - BINGO/Wendit UI revamp
- - Connections
+ - Connections Gamemode
  - Some love to the main buzzer system
  - Better UI
  - YDKJ The Ride RNG preset for pick-a-value
@@ -96,7 +96,7 @@ No. (someone else must do this beast)
 - Per-player host powers (disable buzzer, kick / re-admit, screw-block, rename)
 - Organized labeled menu
 - Handwritten snark
-- Coopertition mode (up to 3 players per device, Jeopardy-style control, animated faces)
+- Coopertition mode (up to 3 players per device, Jeopardy-style control, optional animated avatars)
 - Per-round Analytics
 - Post-Game Review (export / share via code)
 - ADHD stream-of-consciousness made README and eventual tutorial on how to use.

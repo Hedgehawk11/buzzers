@@ -8,9 +8,9 @@ Character art for coopertition mode. Files live in `/public` alongside rank badg
 
 | File base | Slot index | Keyboard key | Character number (internal) |
 |-----------|------------|--------------|----------------------------|
-| `1.*`     | 0 (Player 1) | `Q` | 1 |
+| `1.*`     | 0 (Player 1) | `Q`          | 1                            |
 | `2.*`     | 1 (Player 2) | `B` (3-player) / `P` (2-player) | 2 |
-| `3.*`     | 2 (Player 3) | `P` | 3 |
+| `3.*`     | 2 (Player 3) | `P`          | 3                            |
 
 In coopertition mode these images identify **slots**, not 1st/2nd/3rd place. Rank badges continue working as before and appear alongside avatars on grouped scoreboard rows. Single-player (1-slot) devices use the slot-1 art.
 
@@ -24,14 +24,14 @@ In coopertition mode these images identify **slots**, not 1st/2nd/3rd place. Ran
 
 `state` is omitted for the base/idle image.
 
-| State | File example | Purpose |
-|-------|--------------|---------|
-| **idle** (base) | `1.png` | Default avatar — used everywhere, including audience display 24/7 |
-| **buzz** | `1-buzz.gif` | Plays once when that slot buzzes in |
-| **dance** | `1-dance.gif` | Loops while that slot is the pick-a-value rep (roulette, coop mode only) |
-| **correct** | `1-correct.png` | One-shot spritesheet on a positive ruling (multiple-choice only) |
-| **wrong** | `1-wrong.png` | One-shot spritesheet on a negative ruling, holds last frame |
-| **rewind** | (uses `wrong` art) | Plays wrong strip **in reverse** when a new round opens/reset (~1s), then idle |
+| State        | File example | Purpose                                                                                                                              |
+|--------------|--------------|--------------------------------------------------------------------------------------------------------------------------------------|
+| **idle** (base) | `1.png`      | Default avatar — used everywhere, including audience display 24/7                                                                    |
+| **buzz**     | `1-buzz.gif` | Plays once when that slot buzzes in                                                                                                   |
+| **dance**    | `1-dance.gif`| Loops while that slot is the pick-a-value rep (roulette, coop mode only)                                                             |
+| **correct**  | `1-correct.png` | One-shot spritesheet on a positive ruling (multiple-choice only)                                                                     |
+| **wrong**    | `1-wrong.png` | One-shot spritesheet on a negative ruling, holds last frame                                                                          |
+| **rewind**   | (uses `wrong` art) | Plays wrong strip **in reverse** when a new round opens/reset (~1s), then idle                                                         |
 
 **Supported extensions (probed in order):** `png`, `jpg`, `jpeg`, `webp`, `gif`, `svg`, `avif`.
 
@@ -70,14 +70,14 @@ Plain (non-strip) images are also accepted — they simply swap in statically. `
 
 ## Behavior Summary
 
-| State | Trigger | Lifetime | Where |
-|-------|---------|----------|-------|
-| **idle** (base) | Default | — | Everywhere, including audience 24/7 |
-| **buzz** | Slot buzzes in | Plays once on keypress, holds last frame until judged | Buzzing device + host/producer screens (alliance teammates too) |
-| **dance** | Slot is pick-a-value rep | Whole roulette phase (coop mode only) | Player + host screens (highlight glow on audience) |
-| **correct** | Positive ruling (multiple-choice only) | Plays once, then idle | Buzzing device + host/producer screens (alliance teammates too) |
-| **wrong** | Negative ruling (multiple-choice only) | Plays once, holds last frame until new round/reset, then rewinds to idle | Buzzing device + host/producer screens (alliance teammates too) |
-| **rewind** | New round opens or reset | Plays wrong strip in reverse ~1s, then idle | Same devices as `wrong` |
+| State      | Trigger                              | Lifetime                              | Where                                                                                      |
+|------------|--------------------------------------|---------------------------------------|-------------------------------------------------------------------------------------------|
+| **idle**   | Default                              | —                                     | Everywhere, including audience 24/7                                                       |
+| **buzz**   | Slot buzzes in                       | Plays once on keypress, holds last frame until judged | Buzzing device + host/producer screens (alliance teammates too)                             |
+| **dance**  | Slot is pick-a-value rep             | Whole roulette phase (coop mode only) | Player + host screens (highlight glow on audience)                                         |
+| **correct**| Positive ruling (multiple-choice only)| Plays once, then idle                 | Buzzing device + host/producer screens (alliance teammates too)                            |
+| **wrong**  | Negative ruling (multiple-choice only)| Plays once, holds last frame until new round/reset, then rewinds to idle | Buzzing device + host/producer screens (alliance teammates too)                            |
+| **rewind** | New round opens or reset             | Plays wrong strip in reverse ~1s, then idle | Same devices as `wrong`                                                                    |
 
 **Notes:**
 - Zero-point rulings stay neutral (no face animation)
