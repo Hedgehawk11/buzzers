@@ -1160,7 +1160,6 @@ function getRankBadgeHtml(rank) {
 // See public/avatars.md.
 // =============================================================================
 const COOP_CHAR_STATES = ["base", "buzz", "dance", "correct", "wrong", "in"];
-let coopInAnimationSuffix = "";
 const coopCharUrls = { 1: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 2: { base: null, buzz: null, dance: null, correct: null, wrong: null }, 3: { base: null, buzz: null, dance: null, correct: null, wrong: null } };
 const coopCharFrames = { 1: { buzz: 0, correct: 0, wrong: 0 }, 2: { buzz: 0, correct: 0, wrong: 0 }, 3: { buzz: 0, correct: 0, wrong: 0 } };
 let coopCharsProbed = false;
@@ -1256,8 +1255,8 @@ function getCoopFaceSourceId(scoreKey, mood, round) {
     if (mood === "rewind") return `epoch:${coopFaceEpoch}`;
     if (mood === "buzz") {
       const entry = getCurrentRoundBuzzMap().get(scoreKey);
-      if (entry?.id) return `${coopInAnimationSuffix}buzz:${entry.id}`;
-      if (coopLocalBuzz?.key === scoreKey) return `${coopInAnimationSuffix}local:${coopLocalBuzz.ts}`;
+      if (entry?.id) return `${getSafeState("coopInAnimationSuffix") || ""}buzz:${entry.id}`;
+      if (coopLocalBuzz?.key === scoreKey) return `${getSafeState("coopInAnimationSuffix") || ""}local:${coopLocalBuzz.ts}`;
       return null;
     }
     // Judged faces: latest resolved buzz entry for this key in this round
@@ -1273,7 +1272,7 @@ function getCoopFaceSourceId(scoreKey, mood, round) {
       const d = Number(e.awardedDelta || 0);
       if (mood === "correct" && !(d > 0)) continue;
       if (mood === "wrong" && !(d < 0)) continue;
-      return `${coopInAnimationSuffix}log:${e.id}:${e.updatedAt || d}`;
+      return `${getSafeState("coopInAnimationSuffix") || ""}log:${e.id}:${e.updatedAt || d}`;
     }
     return null;
   } catch { return null; }
@@ -7797,9 +7796,19 @@ function setPlayerTeam(playerId, teamColor) {
 
   applyTeamAssignment(playerId, teamColor);
   if (teamColor) {
-    coopInAnimationSuffix = "-in";
+    setState("coopInAnimationSuffix", "-in", true);
+    // Set mood to buzz so animation plays fresh on join
+    // Use scoreKey format coop:playerId:slot (slot defaults to 0 for single player)
+    const scoreKey = `coop:${playerId}:0`;
+    const curMoods = getCoopMoods();
+    if (!curMoods[scoreKey]) {
+      setState("coopMoods", { ...curMoods, [scoreKey]: "buzz" }, true);
+    }
   } else {
-    coopInAnimationSuffix = "";
+    setState("coopInAnimationSuffix", "", true);
+    // Reset mood to idle when player leaves
+    const scoreKey = `coop:${playerId}:0`;
+    setState("coopMoods", { [scoreKey]: "idle" }, true);
   }
   render();
 }
@@ -7947,9 +7956,19 @@ function handleSelectTeam(senderPlayer, teamColor) {
   }
   applyTeamAssignment(senderPlayer.id, teamColor || null);
   if (teamColor) {
-    coopInAnimationSuffix = "-in";
+    setState("coopInAnimationSuffix", "-in", true);
+    // Set mood to buzz so animation plays fresh on join
+    // Use scoreKey format coop:playerId:slot (slot defaults to 0 for single player)
+    const scoreKey = `coop:${senderPlayer.id}:0`;
+    const curMoods = getCoopMoods();
+    if (!curMoods[scoreKey]) {
+      setState("coopMoods", { ...curMoods, [scoreKey]: "buzz" }, true);
+    }
   } else {
-    coopInAnimationSuffix = "";
+    setState("coopInAnimationSuffix", "", true);
+    // Reset mood to idle when player leaves
+    const scoreKey = `coop:${senderPlayer.id}:0`;
+    setState("coopMoods", { [scoreKey]: "idle" }, true);
   }
   render();
   if (teamColor) {
@@ -8481,6 +8500,12 @@ function ensureHostInit() {
     return;
   }
   if (getState("settings") === undefined || getState("settings") === null) {
+
+  // Initialize coopInAnimationSuffix shared state
+  if (getState("coopInAnimationSuffix") === undefined || getState("coopInAnimationSuffix") === null) {
+    setState("coopInAnimationSuffix", "", true);
+  }
+
     const teamModeEnabled = hostPrejoinTeamSetting !== "off";
     const teamScoringMode = hostPrejoinTeamSetting === "shared" ? "shared" : "alliance";
     setState(
