@@ -529,7 +529,7 @@ function compareJoinOrder(aId, bId) {
 
 function hasUnassignedTeamPlayers(settings = getSettings(), players = currentParticipants(), assignments = getTeamAssignments()) {
   if (!settings.teamModeEnabled) {
-    return false;
+    return true;
   }
   const controllerId = getControllerId();
   const producerIds = getSafeState("producerIds", []);
