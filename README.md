@@ -31,6 +31,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 
 ### What's coming?
 In no particular order:
+ - Literal jack attack support (minimize the jank)
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Bounce gamemode (think Jackbox survey scramble, for lists longer than quixort, this one is probably not happening tho)
  - BINGO/Wendit UI revamp
