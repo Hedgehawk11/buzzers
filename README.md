@@ -9,7 +9,7 @@ But wait! isnt this just kahoot? I hear you ask! yes and no (see "why?" in the F
 ## FAQ
 
 ### You said this is made for YDKJ games, Is there a "F*** You" easter egg?
-Yes. yes there is, handwritten response too, try it, I dare ya (Text question easter egg modifiable in settings, name easter egg kicks them immediatly)
+Yes. yes there is, handwritten response too, try it, I dare ya (Text question easter egg toggleable in settings)
 
 ### My players are being evil
 Screw em' you as the host (or producer) have as many as you need.
@@ -31,6 +31,7 @@ You need to enable it in the settings, please read [This file](/src/snark.json) 
 
 ### What's coming?
 In no particular order:
+ - Literal jack attack support (minimize the jank)
  - Better [Tutorial](https://github.com/Hedgehawk11/buzzers/wiki/Quick-start)
  - Bounce gamemode (think Jackbox survey scramble, for lists longer than quixort, this one is probably not happening tho)
  - BINGO/Wendit UI revamp
@@ -152,6 +153,6 @@ I am currently trying to learn node.js, and this was a project I decided to make
 This is mostly vibe-coded in its current state (github copilot and opencode), this was to serve as an example for me later on. I probably will de-vibe it later, with a better UI, and stuff like that. No promises tho as I am super lazy.\
 Still adding new features using AI at this time, and dont worry, I dont YOLO ai code instantly, I test it out, make sure it works, then fix it myself if I have to. Also, I work on this in phases, where a lot gets added then I leave it be for a month or two, If there is a feature you want to add in, fork, make, PR, I read my emails.
 
-Real Cool AI Scale: 5 
+Real Cool AI Scale: 5 (However I will frown on you if you use AI-generated art if you run a deployment (see AVATARS.md in /public for what I mean))
 
 Built on playroom kit and nodejs
