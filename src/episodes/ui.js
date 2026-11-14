@@ -45,6 +45,7 @@ export const EPISODE_KIND_LABELS = {
   quixort: "Quixort",
   roadkill: "Roadkill",
   fourway: "4-Way",
+  attack: "Jack Attack",
 };
 
 export function kindLabel(kind) {
@@ -460,6 +461,7 @@ function renderEditForm(item, esc, layout = "diamond") {
     case "wendithapn": kindFields = renderWenFields(item, esc); break;
     case "roadkill": kindFields = renderRoadkillFields(item, esc); break;
     case "fourway": kindFields = renderFourwayFields(item, esc); break;
+    case "attack": kindFields = renderAttackFields(item, esc); break;
     default: kindFields = "";
   }
   return `

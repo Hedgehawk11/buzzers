@@ -1474,6 +1474,10 @@ function isRoadkillMode() {
 
 function isFourwayMode() {
   return getSettings().inputMode === "fourway";
+
+function isAttackMode() {
+  return getSettings().inputMode === "attack";
+}
 }
 
 function hasAudienceDisplay() {
@@ -1713,6 +1717,25 @@ function freshFourwayState() {
 
 function getFourway() {
   return getSafeState("fourway", freshFourwayState());
+}
+
+function freshAttackState() {
+  return {
+    active: false,
+    submode: "fullStream", // "fullStream" | "classic"
+    optionCount: 4,
+    correctOptions: [],
+    attackSubmode: "fullStream",
+    optionLabels: [],
+    timeEndsAt: null,
+    revealedIndex: 0,
+    timerId: null,
+    paValue: null,
+  };
+}
+
+function getAttack() {
+  return getSafeState("attack", freshAttackState());
 }
 
 function normalizeRoadkillPoints(value, fallback) {

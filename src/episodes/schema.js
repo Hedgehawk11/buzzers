@@ -20,6 +20,7 @@ export const EPISODE_KINDS = [
   "fibbage",
   "quixort",
   "roadkill",
+  "attack",
   "fourway",
 ];
 
@@ -40,6 +41,10 @@ export const EPISODE_LABEL_MAX = 120;
 // for Multiple choice questions. Text, Bingo, Wen Dit Happn, and Roadkill work.
 export const EPISODE_COOP_BLOCKED_KINDS = ["fibbage", "disordat", "quixort", "fourway"];
 export const EPISODE_COOP_MIN_OPTIONS = 4;
+
+export const EPISODE_ATTACK_MIN_OPTIONS = 3;
+export const EPISODE_ATTACK_MAX_OPTIONS = 8;
+export const EPISODE_ATTACK_SUBMODES = ["classic", "fullStream"];
 
 // Four-Way (The Category Game): 3 fixed options + 1 rotating per round.
 // Players pick which options apply to each round's category.
@@ -171,6 +176,8 @@ export function blankItem(kind) {
         fixedOptions: ["", "", ""],
         rounds: Array.from({ length: EPISODE_FOURWAY_DEFAULT_ROUNDS }, () => ({ category: "", rotatingOption: "", correct: [] })),
       };
+    case "attack":
+      return { ...base, optionCount: 4, correctOptions: [], attackSubmode: "fullStream" };
     default:
       return { ...base, kind: "buttons", optionCount: 4, correctOptions: [] };
   }
@@ -622,6 +629,84 @@ function validateBingo(item, index) {
     },
   }));
   return errors;
+
+
+// Attack question type validation function.
+function validateAttack(item, index) {
+  const errors = [];
+
+  // Check prompt (category)
+  const promptErrors = checkPrompt(item, index);
+  errors.push(...promptErrors);
+
+  // Validate optionCount
+  const optionCount = Number(item.optionCount);
+  if (!Number.isInteger(optionCount) || optionCount < EPISODE_ATTACK_MIN_OPTIONS || optionCount > EPISODE_ATTACK_MAX_OPTIONS) {
+    errors.push(err(index, item.id, "optionCount", "Option count must be between " + EPISODE_ATTACK_MIN_OPTIONS + " and " + EPISODE_ATTACK_MAX_OPTIONS + "."));
+  }
+
+  // Validate correctOptions array
+  if (!Array.isArray(item.correctOptions) || item.correctOptions.length === 0) {
+    errors.push(err(index, item.id, "correctOptions", "Pick at least one correct option."));
+  } else {
+    const seen = new Set();
+    for (const o of item.correctOptions) {
+      const n = Number(o);
+      if (!Number.isInteger(n) || n < 1 || n > optionCount) {
+        errors.push(err(index, item.id, "correctOptions", "Correct options must be whole numbers from 1 to " + optionCount + "."));
+        break;
+      }
+      if (seen.has(n)) {
+        errors.push(err(index, item.id, "correctOptions", "Correct options must not repeat."));
+        break;
+      }
+      seen.add(n);
+    }
+  }
+
+  // Validate options array if provided
+  if (item.options !== undefined && item.options !== null) {
+    if (!Array.isArray(item.options)) {
+      errors.push(err(index, item.id, "options", "Option labels must be an array, or omitted."));
+    } else if (item.options.length === 0) {
+      // Cleared in the editor = no custom labels. Valid, treated as absent.
+    } else {
+      if (item.options.length !== optionCount) {
+        errors.push(err(index, item.id, "options", "Provide exactly " + optionCount + " option labels (one per option)."));
+      }
+      const seenLabels = new Set();
+      for (const label of item.options) {
+        const s = String(label ?? "").trim();
+        if (!s) {
+          errors.push(err(index, item.id, "options", "Option labels cannot be empty."));
+          break;
+        }
+        if (s.length > EPISODE_OPTION_LABEL_MAX) {
+          errors.push(err(index, item.id, "options", "Keep option labels under " + EPISODE_OPTION_LABEL_MAX + " characters."));
+          break;
+        }
+        const k = normCompare(s);
+        if (seenLabels.has(k)) {
+          errors.push(err(index, item.id, "options", "Option labels must all be different."));
+          break;
+        }
+        seenLabels.add(k);
+      }
+    }
+  }
+
+  // Validate attackSubmode
+  if (item.attackSubmode !== undefined && !EPISODE_ATTACK_SUBMODES.includes(item.attackSubmode)) {
+    errors.push(err(index, item.id, "attackSubmode", "attackSubmode must be one of: " + EPISODE_ATTACK_SUBMODES.join(", ") + "."));
+  }
+
+  return errors;
+}
+
+// Shared answer-round validation for cycling modes. Repeats across rounds
+// are allowed (each round is a fresh contest for that target — per-target
+// scores reset on letter nav, and other tracks can still score it; only
+// bingo collects).
 }
 
 function validateWenDitHapn(item, index) {
@@ -682,6 +767,7 @@ const ITEM_VALIDATORS = {
   wendithapn: validateWenDitHapn,
   roadkill: validateRoadkill,
   fourway: validateFourway,
+  attack: validateAttack,
 };
 
 const ITEM_FIELDS = {
@@ -694,6 +780,7 @@ const ITEM_FIELDS = {
   wendithapn: ["id", "kind", "prompt", "rounds", "overrides"],
   roadkill: ["id", "kind", "prompt", "rounds", "decoys", "finale", "correctPoints", "penaltyPoints", "overrides"],
   fourway: ["id", "kind", "prompt", "fixedOptions", "rounds", "overrides"],
+  attack: ["id", "kind", "prompt", "correctOptions", "optionCount", "attackSubmode", "options", "overrides"],
 };
 
 // Shared validation for episode defaults and per-question overrides.
