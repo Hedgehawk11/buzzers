@@ -12,16 +12,19 @@ Quixort - Quixort
 
 Special thanks to:
 Jackbox Games
-Opencode
 Vercel
+
+Mediocire Thanks to:
+OpenCode
 
 No thanks to:
 Kahoot
 Blooket
+Other things in that realm
 
 Thanks for playing!
 
-Made with PlayroomKit and OpenCode (Muse Spark 1.3 Free).
+Made with PlayroomKit and OpenCode.
 
 
 
