@@ -71,6 +71,7 @@ const DEFAULT_SETTINGS = {
   teamScoringMode: "alliance",
   coopertitionEnabled: false,
   coopAllowEdit: false,
+  allianceScoringFairnessEnabled: true,
   disabledCoopSlots: [],
   bingoAlternateViewers: false,
   bingoLessRandom: true,
@@ -1112,6 +1113,38 @@ function getRound() {
 // =============================================================================
 function getScores() {
   return getSafeState("scores", {});
+}
+
+// =============================================================================
+// Alliance scoring fairness: when enabled, adds average score * (maxAllianceSize - currentAllianceSize)
+// to each alliance total to balance scoring between alliances of different sizes.
+//============================================================================
+function getAllianceFairnessData(players, scores, settings, controllerId) {
+  const assignments = normalizeTeamAssignments(getTeamAssignments(), players, controllerId);
+  const teamColors = TEAM_COLORS;
+
+  // Compute per-team size and total score
+  const teamData = teamColors.reduce((acc, color) => {
+    const members = getTeamMembers(color, players, assignments);
+    const memberCount = members.length;
+    const totalScore = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
+    acc[color] = { memberCount, totalScore };
+    return acc;
+  }, {});
+
+  // Find max alliance size
+  const maxAllianceSize = Math.max(...Object.values(teamData).map((d) => d.memberCount), 0);
+
+  // Compute average score per alliance and fairness adjustment
+  const adjustments = {};
+  for (const color of teamColors) {
+    const { memberCount, totalScore } = teamData[color];
+    const avgScore = memberCount > 0 ? totalScore / memberCount : 0;
+    const adjustment = avgScore * (maxAllianceSize - memberCount);
+    adjustments[color] = { avgScore, memberCount, adjustment };
+  }
+
+  return { maxAllianceSize, adjustments };
 }
 
 // =============================================================================
@@ -2245,6 +2278,7 @@ showScoresToPlayers: settings.showScoresToPlayers,
       teamScoringMode: settings.teamScoringMode,
       coopertitionEnabled: settings.coopertitionEnabled,
       coopAllowEdit: settings.coopAllowEdit,
+      allianceScoringFairnessEnabled: settings.allianceScoringFairnessEnabled,
       disabledCoopSlots: settings.disabledCoopSlots,
       bingoAlternateViewers: settings.bingoAlternateViewers,
       bingoLessRandom: settings.bingoLessRandom,
@@ -13511,7 +13545,17 @@ function getCreditsPlayerSections(players, scores, settings, controllerId, produ
         if (members.length === 0) return null;
         const total = isShared
           ? Number(scores[getTeamScoreKey(teamColor)] || 0)
-          : members.reduce((sum, member) => sum + (Number.isFinite(member.total) ? member.total : 0), 0);
+          : (() => {
+              const baseTotal = members.reduce((sum, member) => sum + (Number.isFinite(member.total) ? member.total : 0), 0);
+              if (settings.allianceScoringFairnessEnabled) {
+                const fairness = getAllianceFairnessData(players, scores, settings, controllerId);
+                const adj = fairness.adjustments[teamColor];
+                if (adj && adj.memberCount > 0) {
+                  return baseTotal + adj.adjustment;
+                }
+              }
+              return baseTotal;
+            })();
         return { name: teamColor, total, members };
       })
       .filter(Boolean);
@@ -14723,6 +14767,13 @@ function renderScores(players, scores, extraClass = "") {
             return "";
           }
           const total = members.reduce((sum, member) => sum + Number(scores[member.id] || 0), 0);
+          if (settings.allianceScoringFairnessEnabled) {
+            const fairness = getAllianceFairnessData(players, scores, settings, getControllerId());
+            const adj = fairness.adjustments[teamColor];
+            if (adj && adj.memberCount > 0) {
+              total += adj.adjustment;
+            }
+          }
           return { teamColor, total };
         })
         .filter(Boolean)
@@ -14780,6 +14831,13 @@ function renderAllianceTeammateCard(players, scores) {
       })
       .join("");
     const total = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
+    if (settings.allianceScoringFairnessEnabled) {
+      const fairness = getAllianceFairnessData(players, scores, settings, getControllerId());
+      const adj = fairness.adjustments[myTeamColor];
+      if (adj && adj.memberCount > 0) {
+        total += adj.adjustment;
+      }
+    }
     return `
     <section class="card score-card alliance-teammates" data-alliance-teammates="${escapeHtml(myTeamColor)}">
       <h2>${getSnark("shared.scores.teammatesTitle", "Your alliance")} <span class="team-pill team-${myTeamColor}">${myTeamColor}</span></h2>
