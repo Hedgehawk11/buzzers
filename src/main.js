@@ -724,7 +724,13 @@ function getDiamondOptionForCode(code) {
   return DIAMOND_KEY_OPTIONS[code] || null;
 }
 
-function getGridOptionForCode(code) {
+function getGridOptionForCode(code, optionCount) {
+  if (optionCount === 4) {
+    const grid4 = {
+      KeyQ: 1, KeyW: 2, KeyA: 3, KeyS: 4,
+    };
+    return grid4[code] || null;
+  }
   return GRID_KEY_OPTIONS[code] || null;
 }
 
@@ -737,14 +743,21 @@ function getNumberKeyOption(code) {
   return n >= 1 && n <= 8 ? n : null;
 }
 
-function getCoopOptionForCode(code, slot) {
+function getCoopOptionForCode(code, slot, optionCount) {
   if (!Number.isInteger(slot) || slot < 0 || slot >= COOP_CLUSTER_CODES.length) return null;
+  if (optionCount === 4) {
+    const cluster = COOP_CLUSTER_CODES[slot];
+    for (let i = 0; i < 4; i++) {
+      if (cluster[i] === code) return i + 1;
+    }
+    return null;
+  }
   const index = COOP_CLUSTER_CODES[slot].indexOf(code);
   return index < 0 ? null : index + 1;
 }
 
-function getNormalOptionForCode(code, layout) {
-  const layoutOption = layout === "grid" ? getGridOptionForCode(code)
+function getNormalOptionForCode(code, layout, optionCount) {
+  const layoutOption = layout === "grid" ? getGridOptionForCode(code, optionCount)
     : layout === "list" ? null
       : getDiamondOptionForCode(code);
   return layoutOption ?? getNumberKeyOption(code);
@@ -7159,6 +7172,9 @@ function setHostSetting(key, value) {
       next.disabledOptions = normalizeDisabledOptions(settings.disabledOptions, next.optionCount);
       effectiveCount = next.optionCount;
     }
+    if (next.optionCount !== 4) {
+      next.choiceLayout = "grid";
+    }
     // Prune a multi-correct preset down to the new option range so hidden
     // options (e.g. 5/6 after a 6->4 shrink) can't linger as an unhittable preset.
     try {
@@ -8609,6 +8625,10 @@ function ensureHostInit() {
       },
       true,
     );
+  const s = getSettings();
+  if (s.optionCount !== 4) {
+    setState("settings", { ...s, choiceLayout: "grid" }, true);
+  }
   }
   // Episode attach (host prejoin): seed episode defaults once, then stash the
   // playlist host-local for the runner card. Consumed once — the 1s hostTick
@@ -16621,7 +16641,7 @@ function handleNormalBuzzerKeydown(event) {
   if (!self?.id) return;
   // Multi-slot coop uses the per-slot clusters in handleCoopBuzzKeydown.
   if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) return;
-  const option = getNormalOptionForCode(code, normalizeChoiceLayout(settings.choiceLayout));
+  const option = getNormalOptionForCode(code, normalizeChoiceLayout(settings.choiceLayout), settings.optionCount);
   if (option === null) return;
   // Arrow keys would otherwise scroll the page even when buzzers are closed.
   if (code.startsWith("Arrow")) event.preventDefault();
@@ -16666,7 +16686,7 @@ function handleCoopBuzzKeydown(event) {
   if (settings.inputMode === "buttons" && round.status === ROUND_STATUSES.OPEN) {
     const ctrl = parseCoopScoreKey(round.coopControl);
     if (ctrl && ctrl.deviceId === self.id) {
-      const option = getCoopOptionForCode(code, ctrl.slot) ?? getNumberKeyOption(code);
+      const option = getCoopOptionForCode(code, ctrl.slot, settings.optionCount) ?? getNumberKeyOption(code);
       if (option !== null) {
         let btn = null;
         try { btn = (getApp() || app)?.querySelector(`[data-coop-buzz="${option}"]`); } catch {}
