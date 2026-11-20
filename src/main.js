@@ -8903,6 +8903,8 @@ function optionButtonLabel(option) {
     layout = getSettings().choiceLayout || "diamond";
   } catch {}
   if (layout !== "diamond") return String(option);
+  // When optionCount > 4, always show numeric labels (ABXY only makes sense for 4 options)
+  try { const oc = getSettings().optionCount; if (Number(oc) > 4) return String(option); } catch {}
   const labels = {
     1: "A",
     2: "B",
