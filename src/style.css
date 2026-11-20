@@ -3398,6 +3398,38 @@ body:not([data-ui-anims="off"]) .fibbage-spotlight {
   padding: 0 0.3rem;
   background: rgba(255,255,255,0.06);
 }
+/* Player buzzer card keyboard legend — static, no animation. */
+.key-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.8rem;
+  margin: 0.35rem 0 0.6rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.key-legend-title {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+.key-legend-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.key-legend-name {
+  margin-right: 0.25rem;
+  font-weight: 700;
+}
+.key-legend kbd {
+  font-size: 0.7rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  background: rgba(255,255,255,0.06);
+}
 .coop-opt-grid {
   display: grid;
   gap: 0.35rem;

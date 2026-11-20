@@ -225,6 +225,7 @@ let disOrDatRevealUntil = 0;
 let lastAudienceParticipantCount = 0;
 let audienceJoinRefreshTimeout = null;
 let coopKeydownBound = false;
+let normalBuzzerKeydownBound = false;
 let bingoSpaceKeydownBound = false;
 let quixortKeydownBound = false;
 let roadkillKeydownBound = false;
@@ -679,7 +680,8 @@ function getCoopControlName(round) {
   return getCoopSlotName(parsed.deviceId, parsed.slot);
 }
 
-// Q/B/P keyboard mapping: 2 players -> Q,P. 3 players -> Q,B,P.
+// Q/B/P keyboard mapping (buzz-in only): 2 players -> Q,P. 3 players -> Q,B,P.
+// Options are picked from each slot's own cluster after control is claimed.
 function getCoopSlotForCode(code, slotCount) {
   if (slotCount <= 1) return 0;
   if (slotCount === 2) {
@@ -691,6 +693,61 @@ function getCoopSlotForCode(code, slotCount) {
   if (code === "KeyB") return 1;
   if (code === "KeyP") return 2;
   return null;
+}
+
+// Keyboard option maps. Keyed by `event.code` (physical position) so the
+// mapping survives shift state and non-US layouts. Dots below are option
+// numbers, matching the number printed on each buzzer button.
+const DIAMOND_KEY_OPTIONS = {
+  KeyW: 4, ArrowUp: 4,   // Y (top)
+  KeyA: 3, ArrowLeft: 3, // X (left)
+  KeyS: 1, ArrowDown: 1, // A (bottom)
+  KeyD: 2, ArrowRight: 2,// B (right)
+};
+const GRID_KEY_OPTIONS = {
+  KeyQ: 1, KeyW: 2, KeyE: 3,
+  KeyA: 4, KeyS: 5, KeyD: 6,
+};
+// One 6-key cluster per coop slot; index + 1 is the option number.
+const COOP_CLUSTER_CODES = [
+  ["KeyQ", "KeyW", "KeyE", "KeyA", "KeyS", "KeyD"],         // P1
+  ["KeyG", "KeyH", "KeyJ", "KeyV", "KeyB", "KeyN"],         // P2
+  ["KeyO", "KeyP", "BracketLeft", "KeyL", "Semicolon", "Quote"], // P3
+];
+const KEY_CODE_LABELS = {
+  KeyQ: "Q", KeyW: "W", KeyE: "E", KeyA: "A", KeyS: "S", KeyD: "D",
+  KeyG: "G", KeyH: "H", KeyJ: "J", KeyV: "V", KeyB: "B", KeyN: "N",
+  KeyO: "O", KeyP: "P", BracketLeft: "[", KeyL: "L", Semicolon: ";", Quote: "'",
+};
+
+function getDiamondOptionForCode(code) {
+  return DIAMOND_KEY_OPTIONS[code] || null;
+}
+
+function getGridOptionForCode(code) {
+  return GRID_KEY_OPTIONS[code] || null;
+}
+
+// Top-row number keys are a universal fallback (list mode's primary map,
+// options 7-8 everywhere, and 1-option BUZZ rounds).
+function getNumberKeyOption(code) {
+  const match = /^Digit([1-8])$/.exec(code || "");
+  if (!match) return null;
+  const n = Number(match[1]);
+  return n >= 1 && n <= 8 ? n : null;
+}
+
+function getCoopOptionForCode(code, slot) {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= COOP_CLUSTER_CODES.length) return null;
+  const index = COOP_CLUSTER_CODES[slot].indexOf(code);
+  return index < 0 ? null : index + 1;
+}
+
+function getNormalOptionForCode(code, layout) {
+  const layoutOption = layout === "grid" ? getGridOptionForCode(code)
+    : layout === "list" ? null
+      : getDiamondOptionForCode(code);
+  return layoutOption ?? getNumberKeyOption(code);
 }
 
 function getCoopKeyHint(slot, slotCount) {
@@ -11240,6 +11297,7 @@ function renderCoopGroupBuzzer(settings, round, deviceId, count) {
 function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
   const deviceId = mePlayer.id;
   const count = getCoopSlotCount(deviceId);
+  const coopKeyLegend = renderCoopKeyLegend(deviceId, count);
   const group = getCoopGroupName(deviceId, getPlayerName(mePlayer));
   const timeText = timeLeftCs === null || timeLeftCs === undefined ? getSnark("player.buzzer.noTimerLabel", "No timer") : `${formatSeconds(timeLeftCs)}s`;
   const editBtn = settings.coopAllowEdit
@@ -11279,6 +11337,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
         <h2>${escapeHtml(group)}</h2>
         <p class="muted">${helper}</p>
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
+        ${coopKeyLegend}
         ${tabs}
         <div class="text-entry">
           <input id="answer-entry" type="text" maxlength="120" placeholder="${getSnark("player.buzzer.answerPlaceholder", "Type your answer")}" ${disabledAttr} />
@@ -11294,6 +11353,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
     <section class="card player-card coop-player-card">
       <h2>${escapeHtml(group)}</h2>
       <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
+      ${coopKeyLegend}
       ${renderCoopGroupBuzzer(settings, round, deviceId, count)}
       ${renderCoopStrip(settings, round, deviceId, count)}
       ${editBtn}
@@ -11337,11 +11397,40 @@ function renderCoopRoulettePanel(settings, round, mePlayer, count, group, editBt
   `;
 }
 
+// Keyboard legend shown on the player buzzer card only. Other Q/B/P hints
+// (setup labels, score strip, snark, host helper) deliberately stay unchanged.
+function renderNormalKeyLegend(settings) {
+  const layout = normalizeChoiceLayout(settings.choiceLayout);
+  const rows = layout === "diamond"
+    ? [`<kbd>W</kbd>/<kbd>↑</kbd> Y`, `<kbd>A</kbd>/<kbd>←</kbd> X`, `<kbd>S</kbd>/<kbd>↓</kbd> A`, `<kbd>D</kbd>/<kbd>→</kbd> B`]
+    : layout === "grid"
+      ? [`<kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd> = 1–3`, `<kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> = 4–6`]
+      : [`<kbd>1</kbd>–<kbd>8</kbd> pick an option`];
+  return `<div class="key-legend"><span class="key-legend-title">Keyboard</span>${rows.map((row) => `<span class="key-legend-row">${row}</span>`).join("")}</div>`;
+}
+
+function renderCoopKeyLegend(deviceId, count) {
+  if (count <= 1) return "";
+  const rows = [];
+  for (let slot = 0; slot < count; slot++) {
+    const keys = COOP_CLUSTER_CODES[slot]
+      .map((code) => `<kbd>${escapeHtml(KEY_CODE_LABELS[code] || code)}</kbd>`)
+      .join("");
+    rows.push(`<span class="key-legend-row"><span class="key-legend-name">${escapeHtml(getCoopSlotName(deviceId, slot))}</span>${keys}</span>`);
+  }
+  const buzzKeys = count === 2
+    ? `<kbd>Q</kbd>/<kbd>P</kbd>`
+    : `<kbd>Q</kbd>/<kbd>B</kbd>/<kbd>P</kbd>`;
+  rows.push(`<span class="key-legend-row">${buzzKeys} buzz in</span>`);
+  return `<div class="key-legend"><span class="key-legend-title">Option keys</span>${rows.join("")}</div>`;
+}
+
 // =============================================================================
 // Player buzzer panel — shows appropriate UI depending on game state
 // (roulette, screw, buttons, text entry, etc.)
 // =============================================================================
 function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
+  const keyLegend = renderNormalKeyLegend(settings);
   if (isCoopMode(settings) && !isControllerPlayer() && !isProducer()) {
     const gate = renderCoopGate(settings, mePlayer);
     if (gate) return gate;
@@ -11475,6 +11564,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `
         <section class="card player-card">
           ${screweeHead}
+          ${keyLegend}
           <button type="button" class="${appendTeamButtonClass("big-red")}" data-buzz="1" ${disabledAttr}>${singleBuzzerContent()}</button>
         </section>
       `;
@@ -11491,6 +11581,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `
         <section class="card player-card">
           ${screweeHead}
+          ${keyLegend}
           <div class="${count === 6 ? "six-grid" : "eight-grid"}">${buttons}</div>
         </section>
       `;
@@ -11512,6 +11603,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
       return `
         <section class="card player-card">
           ${screweeHead}
+          ${keyLegend}
           ${renderChoiceLayout4(normalizeChoiceLayout(settings.choiceLayout), [[1, "pos-a"], [2, "pos-x"], [3, "pos-b"], [4, "pos-y"]], button, roundLabel)}
         </section>
       `;
@@ -11523,6 +11615,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return `
       <section class="card player-card">
         ${screweeHead}
+        ${keyLegend}
         <div class="six-grid">${fallbackButtons}</div>
       </section>
     `;
@@ -11620,6 +11713,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+        ${keyLegend}
         <p class="muted">${optionDisabled ? getSnark("player.buzzer.singleBuzzerDisabled", "This buzzer is disabled by the Host.") : helperText}</p>
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
@@ -11643,6 +11737,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+        ${keyLegend}
         <p class="muted">${helperText}</p>
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
@@ -11666,6 +11761,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+        ${keyLegend}
         <p class="muted">${helperText}</p>
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
@@ -11705,6 +11801,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
     return `
       <section class="card player-card">
         <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+        ${keyLegend}
         <p class="muted">${helperText}</p>
         ${myScoreLine}
         <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
@@ -11728,6 +11825,7 @@ function renderBuzzerPanel(settings, round, mePlayer, timeLeftCs) {
   return `
     <section class="card player-card">
       <h2>${getSnark("player.buzzer.yourBuzzerTitle", "Your Buzzer")}</h2>
+      ${keyLegend}
         ${myScoreLine}
       <p class="muted">${helperText}</p>
       <p class="muted">${getSnark("player.buzzer.timeLeftLabel", "Time left")}: <strong data-live-time-left>${timeText}</strong></p>
@@ -14766,7 +14864,7 @@ function renderScores(players, scores, extraClass = "") {
           if (members.length === 0) {
             return "";
           }
-          const total = members.reduce((sum, member) => sum + Number(scores[member.id] || 0), 0);
+          let total = members.reduce((sum, member) => sum + Number(scores[member.id] || 0), 0);
           if (settings.allianceScoringFairnessEnabled) {
             const fairness = getAllianceFairnessData(players, scores, settings, getControllerId());
             const adj = fairness.adjustments[teamColor];
@@ -14830,7 +14928,7 @@ function renderAllianceTeammateCard(players, scores) {
         return `<li data-score-key="${escapeHtml(m.id)}"><span class="teammate-line">${badge}<span class="teammate-name">${escapeHtml(getPlayerName(m))}${you}</span></span><strong data-score-value>${value}</strong></li>`;
       })
       .join("");
-    const total = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
+    let total = members.reduce((sum, m) => sum + Number(scores[m.id] || 0), 0);
     if (settings.allianceScoringFairnessEnabled) {
       const fairness = getAllianceFairnessData(players, scores, settings, getControllerId());
       const adj = fairness.adjustments[myTeamColor];
@@ -15367,6 +15465,10 @@ function bindEvents() {
   if (!coopKeydownBound) {
     document.addEventListener("keydown", handleCoopBuzzKeydown);
     coopKeydownBound = true;
+  }
+  if (!normalBuzzerKeydownBound) {
+    document.addEventListener("keydown", handleNormalBuzzerKeydown);
+    normalBuzzerKeydownBound = true;
   }
   if (!bingoSpaceKeydownBound) {
     document.addEventListener("keydown", handleBingoSpaceKeydown);
@@ -16500,17 +16602,51 @@ function submitRouletteStop() {
 }
 
 // =============================================================================
-// Coopertition keyboard buzzers — Q/B/P select a slot (2P: Q,P. 3P: Q,B,P).
-// In buttons mode the key is a generic "buzz in" for that slot (no option);
-// precise options use the on-screen per-slot buttons. In text mode the key
-// switches the shared answer box tab. Bingo buzzes that slot directly.
+// Normal-mode buzzer keyboard: WASD/arrows for diamond, QWEASD for grid,
+// number keys for list (and as a fallback in every layout / options 7-8).
+// The rendered button is the gate, so screw timers, disabled options and
+// option limits keep working exactly as they do for pointer input.
+// =============================================================================
+function handleNormalBuzzerKeydown(event) {
+  const code = event?.code;
+  if (!code) return;
+  if (event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+  if (isEditingControl()) return;
+  if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
+  const settings = getSettings();
+  if (settings.inputMode !== "buttons") return;
+  const self = me();
+  if (!self?.id) return;
+  // Multi-slot coop uses the per-slot clusters in handleCoopBuzzKeydown.
+  if (isCoopMode(settings) && getCoopSlotCount(self.id) > 1) return;
+  const option = getNormalOptionForCode(code, normalizeChoiceLayout(settings.choiceLayout));
+  if (option === null) return;
+  // Arrow keys would otherwise scroll the page even when buzzers are closed.
+  if (code.startsWith("Arrow")) event.preventDefault();
+  let btn = null;
+  try {
+    const mount = getApp() || app;
+    btn = mount?.querySelector(`[data-buzz="${option}"]`) || mount?.querySelector(`[data-coop-buzz="${option}"]`);
+  } catch {}
+  if (!btn || btn.disabled) return;
+  event.preventDefault();
+  submitResponse({ option });
+}
+
+// =============================================================================
+// Coopertition keyboard buzzers. Q/B/P claim control (2P: Q,P. 3P: Q,B,P);
+// once a slot owns control, that slot's 6-key cluster (or a top-row number key)
+// picks the option. Other slots' keys are gated by the host's control check.
+// Text mode still uses Q/B/P to switch the answer-box tab; Bingo/Roadkill/
+// DisOrDat use them to buzz that slot directly.
 // =============================================================================
 function handleCoopBuzzKeydown(event) {
   const code = event?.code;
-  if (code !== "KeyQ" && code !== "KeyB" && code !== "KeyP") return;
+  if (!code) return;
   // Held keys auto-repeat — one physical press must equal one buzz (the
   // submitResponse spam guard is the backstop, but don't even send repeats).
   if (event.repeat) return;
+  if (event.ctrlKey || event.altKey || event.metaKey) return;
   if (isEditingControl()) return;
   if (isControllerPlayer() || isProducer() || isAudienceDisplayClient()) return;
   if (!isCoopMode()) return;
@@ -16518,6 +16654,31 @@ function handleCoopBuzzKeydown(event) {
   if (!self?.id) return;
   const count = getCoopSlotCount(self.id);
   if (count <= 1) return;
+
+  const settings = getSettings();
+  const round = getRound();
+
+  // Option pick (buttons mode only): the key must belong to the slot that
+  // currently holds this device's control. Checked before Q/B/P so those keys
+  // double as options 1/5/2 for their owners once control is held.
+  if (settings.inputMode === "buttons" && round.status === ROUND_STATUSES.OPEN) {
+    const ctrl = parseCoopScoreKey(round.coopControl);
+    if (ctrl && ctrl.deviceId === self.id) {
+      const option = getCoopOptionForCode(code, ctrl.slot) ?? getNumberKeyOption(code);
+      if (option !== null) {
+        let btn = null;
+        try { btn = (getApp() || app)?.querySelector(`[data-coop-buzz="${option}"]`); } catch {}
+        // Swallow disabled/unrendered option keys — falling through to the
+        // buzz-in branch here would just produce a "you have control" toast.
+        if (!btn || btn.disabled) return;
+        event.preventDefault();
+        submitResponse({ option, coopSlot: ctrl.slot });
+        return;
+      }
+    }
+  }
+
+  if (code !== "KeyQ" && code !== "KeyB" && code !== "KeyP") return;
   const slot = getCoopSlotForCode(code, count);
   if (slot === null || slot === undefined) return;
 
@@ -16544,9 +16705,8 @@ function handleCoopBuzzKeydown(event) {
     return;
   }
   if (isFibbageMode()) return;
-  const round = getRound();
   if (round.status === ROUND_STATUSES.ROULETTE) return;
-  if (getSettings().inputMode === "text") {
+  if (settings.inputMode === "text") {
     if (round.status !== ROUND_STATUSES.OPEN) return;
     event.preventDefault();
     coopTextSlot = slot;
@@ -17498,6 +17658,15 @@ try {
     retainTicks: HOST_RETAIN_TICKS,
     hostTick,
     renderNow: () => { render(); },
+    // Keyboard mapping seams (pure functions, no DOM/RPC).
+    getDiamondOptionForCode,
+    getGridOptionForCode,
+    getNumberKeyOption,
+    getCoopOptionForCode,
+    getNormalOptionForCode,
+    getCoopSlotForCode,
+    renderNormalKeyLegend,
+    renderCoopKeyLegend,
     getTimeLeftCs,
     normalizeTimeOpen,
     setFibbageLieTime,

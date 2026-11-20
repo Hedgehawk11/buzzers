@@ -52,6 +52,46 @@ await sleep(50);
 check(`coop ${COOP ? "enabled" : "disabled"} from prejoin`, S().settings?.coopertitionEnabled === COOP, JSON.stringify(S().settings?.coopertitionEnabled));
 check("pause-on-points defaults off", S().settings?.closeBuzzersOnPointsGiven === false, JSON.stringify(S().settings?.closeBuzzersOnPointsGiven));
 
+// --- keyboard option maps (pure helpers, both runs) ---
+{
+  const K = globalThis.__BUZZER_TEST__;
+  const diamond = { KeyW: 4, ArrowUp: 4, KeyA: 3, ArrowLeft: 3, KeyS: 1, ArrowDown: 1, KeyD: 2, ArrowRight: 2 };
+  for (const [code, option] of Object.entries(diamond)) {
+    check(`diamond key ${code} -> ${option}`, K.getDiamondOptionForCode(code) === option, String(K.getDiamondOptionForCode(code)));
+  }
+  const grid = { KeyQ: 1, KeyW: 2, KeyE: 3, KeyA: 4, KeyS: 5, KeyD: 6 };
+  for (const [code, option] of Object.entries(grid)) {
+    check(`grid key ${code} -> ${option}`, K.getGridOptionForCode(code) === option, String(K.getGridOptionForCode(code)));
+  }
+  for (let n = 1; n <= 8; n++) {
+    check(`number key ${n}`, K.getNumberKeyOption(`Digit${n}`) === n, String(K.getNumberKeyOption(`Digit${n}`)));
+  }
+  check("number key 9 unmapped", K.getNumberKeyOption("Digit9") === null, String(K.getNumberKeyOption("Digit9")));
+  const clusters = [
+    ["KeyQ", "KeyW", "KeyE", "KeyA", "KeyS", "KeyD"],
+    ["KeyG", "KeyH", "KeyJ", "KeyV", "KeyB", "KeyN"],
+    ["KeyO", "KeyP", "BracketLeft", "KeyL", "Semicolon", "Quote"],
+  ];
+  clusters.forEach((codes, slot) => codes.forEach((code, i) => {
+    check(`coop P${slot + 1} key ${code} -> ${i + 1}`, K.getCoopOptionForCode(code, slot) === i + 1, String(K.getCoopOptionForCode(code, slot)));
+  }));
+  check("coop clusters disjoint", new Set(clusters.flat()).size === 18, String(new Set(clusters.flat()).size));
+  check("coop out-of-range slot unmapped", K.getCoopOptionForCode("KeyQ", 3) === null, String(K.getCoopOptionForCode("KeyQ", 3)));
+  check("2P buzz keys Q/P", K.getCoopSlotForCode("KeyQ", 2) === 0 && K.getCoopSlotForCode("KeyP", 2) === 1 && K.getCoopSlotForCode("KeyB", 2) === null);
+  check("3P buzz keys Q/B/P", K.getCoopSlotForCode("KeyQ", 3) === 0 && K.getCoopSlotForCode("KeyB", 3) === 1 && K.getCoopSlotForCode("KeyP", 3) === 2);
+  check("normal layout diamond + number fallback", K.getNormalOptionForCode("KeyW", "diamond") === 4 && K.getNormalOptionForCode("Digit2", "diamond") === 2 && K.getNormalOptionForCode("KeyQ", "diamond") === null);
+  check("normal layout grid + number fallback", K.getNormalOptionForCode("KeyQ", "grid") === 1 && K.getNormalOptionForCode("KeyD", "grid") === 6 && K.getNormalOptionForCode("Digit8", "grid") === 8);
+  check("normal layout list", K.getNormalOptionForCode("Digit8", "list") === 8 && K.getNormalOptionForCode("KeyQ", "list") === null);
+  const diamondLegend = K.renderNormalKeyLegend({ choiceLayout: "diamond" });
+  check("diamond legend shows WASD/arrows", diamondLegend.includes("<kbd>W</kbd>/<kbd>↑</kbd> Y") && diamondLegend.includes("<kbd>D</kbd>/<kbd>→</kbd> B"), diamondLegend);
+  const gridLegend = K.renderNormalKeyLegend({ choiceLayout: "grid" });
+  check("grid legend shows QWEASD", gridLegend.includes("<kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd>") && gridLegend.includes("<kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>"), gridLegend);
+  const listLegend = K.renderNormalKeyLegend({ choiceLayout: "list" });
+  check("list legend shows number keys", listLegend.includes("<kbd>1</kbd>–<kbd>8</kbd>"), listLegend);
+  const coopLegend = K.renderCoopKeyLegend("dev1", 3);
+  check("coop legend shows all three clusters", ["<kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd>", "<kbd>G</kbd><kbd>H</kbd><kbd>J</kbd>", "<kbd>O</kbd><kbd>P</kbd><kbd>[</kbd>"].every((s) => coopLegend.includes(s)) && coopLegend.includes("buzz in"), coopLegend);
+}
+
 // --- dedicated producer fixture: drives all producer-action calls below ---
 const prod = pk.makePlayer("prod1", "Producer");
 pk._store.participants.prod1 = prod;
@@ -1764,6 +1804,9 @@ clickBtn({}, "[data-credits-end]");
 await sleep(50);
 check("credits ended after dismiss", S().credits?.active === false, JSON.stringify(S().credits));
 // --- credits in team-individual mode still groups by team with totals ---
+// Fairness adjustments are on by default and would change the summed totals
+// this check is verifying, so pin them off for the check and restore after.
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["allianceScoringFairnessEnabled", false] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamScoringMode", "alliance"] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setPlayerTeam", args: ["dev1", "red"] }, prod);
@@ -1781,6 +1824,7 @@ await sleep(50);
 clickBtn({}, "[data-credits-end]");
 await sleep(50);
 check("credits ended after team check", S().credits?.active === false, JSON.stringify(S().credits));
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["allianceScoringFairnessEnabled", true] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["teamModeEnabled", false] }, prod);
 // --- analytics card: current-round percentages, log badges, audience mirror ---
 pk._store.self = pk._store.participants.host1;
