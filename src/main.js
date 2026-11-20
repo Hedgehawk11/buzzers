@@ -763,8 +763,11 @@ function getNormalOptionForCode(code, layout, optionCount) {
   return layoutOption ?? getNumberKeyOption(code);
 }
 
-function getCoopKeyHint(slot, slotCount) {
+function getCoopKeyHint(slot, slotCount, optionCount) {
   if (slotCount <= 1) return "";
+  if (optionCount === 4) {
+    return String(slot + 1);
+  }
   if (slotCount === 2) return slot === 0 ? "Q" : "P";
   return ["Q", "B", "P"][slot] || "";
 }
@@ -9203,7 +9206,7 @@ function renderCoopBingoBuzzRow(settings, mePlayer, bingo, activeViewer, canBuzz
   for (let slot = 0; slot < count; slot++) {
     const key = getCoopScoreKey(deviceId, slot);
     const name = getCoopSlotName(deviceId, slot);
-    const hint = getCoopKeyHint(slot, count);
+    const hint = getCoopKeyHint(slot, count, settings.optionCount);
     const collected = ((bingo.playerItems || {})[key] || []).length;
     const locked = lockout[deviceId] && lockout[deviceId] !== key;
     const scored = scoredList.includes(key);
@@ -9433,7 +9436,7 @@ function renderRoadkillCoopBuzzRow(settings, mePlayer, rk) {
   for (let slot = 0; slot < count; slot++) {
     const key = getCoopScoreKey(deviceId, slot);
     const name = getCoopSlotName(deviceId, slot);
-    const hint = getCoopKeyHint(slot, count);
+    const hint = getCoopKeyHint(slot, count, settings.optionCount);
     const muted = isCoopSlotMuted(settings, deviceId, slot) || isCoopSlotFrozen(deviceId, slot);
     const spent = Number(rk.guessed?.[key]) === Number(rk.wordSeq);
     const outcome = rk.outcome?.key === key ? rk.outcome : null;
@@ -9956,7 +9959,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
     const claimBtns = [];
     for (let slot = 0; slot < count; slot++) {
       if (isCoopSlotMuted(settings, deviceId, slot)) continue;
-      claimBtns.push(`<button type="button" class="bingo-buzz-btn" data-disordat-claim data-q="${q}" data-coop-slot="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count)}</kbd></button>`);
+      claimBtns.push(`<button type="button" class="bingo-buzz-btn" data-disordat-claim data-q="${q}" data-coop-slot="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count, settings.optionCount)}</kbd></button>`);
     }
     return `<section class="card player-card disordat-player-card">${head}
       <p class="muted">${getSnark("player.disdat.claimPrompt", "Question {current}: buzz in to claim it!", { current: q + 1 })}</p>
@@ -9972,7 +9975,7 @@ function renderCoopDisOrDatPlayerPanel(settings, mePlayer, dd, isTimed, isOnePla
     const answeredAll = answeredCount >= DIS_OR_DAT_QUESTION_COUNT;
     const revealShowing = answeredCount > 0 && now() < disOrDatRevealUntil;
     const currentQ = revealShowing ? answeredCount - 1 : Math.min(answeredCount, DIS_OR_DAT_QUESTION_COUNT - 1);
-    cols.push(`<div class="coop-slot"><div class="coop-slot-head"><strong>${escapeHtml(getCoopSlotName(deviceId, slot))}</strong><kbd>${getCoopKeyHint(slot, count)}</kbd></div>
+    cols.push(`<div class="coop-slot"><div class="coop-slot-head"><strong>${escapeHtml(getCoopSlotName(deviceId, slot))}</strong><kbd>${getCoopKeyHint(slot, count, settings.optionCount)}</kbd></div>
       <div class="disordat-diamond-wrap">${!answeredAll || revealShowing ? diamondFor(slot, currentQ) : `<p class="disordat-done">${getSnark("player.disdat.allAnswered", "All answered! Wait for results.")}</p>`}</div></div>`);
   }
   return `<section class="card player-card disordat-player-card">${head}
@@ -11181,7 +11184,7 @@ function renderCoopSetupCard(settings, mePlayer, roster) {
   const groupDefault = roster?.group || getPlayerName(mePlayer) || "";
   const nameFields = count > 1
     ? [0, 1, 2].slice(0, count).map((i) => {
-        const hint = getCoopKeyHint(i, count);
+        const hint = getCoopKeyHint(i, count, settings.optionCount);
         const prefill = roster?.slots?.[i] || savedNames[i] || "";
         return `
           <label>Player ${i + 1} name (key ${hint})
@@ -11222,7 +11225,7 @@ function renderCoopStrip(settings, round, deviceId, count) {
   for (let slot = 0; slot < count; slot++) {
     const key = getCoopScoreKey(deviceId, slot);
     const name = getCoopSlotName(deviceId, slot);
-    const hint = getCoopKeyHint(slot, count);
+    const hint = getCoopKeyHint(slot, count, settings.optionCount);
     const score = Number(scores[key] || 0);
     const mood = getCoopCharMoodForKey(key, round);
     const muted = isCoopSlotMuted(settings, deviceId, slot);
@@ -11342,7 +11345,7 @@ function renderCoopPlayerArea(settings, round, mePlayer, timeLeftCs) {
     const tabs = count > 1
       ? `<div class="coop-text-tabs">${[0, 1, 2].slice(0, count).map((slot) => {
           const on = slot === activeSlot ? "is-on" : "";
-          return `<button type="button" class="toggle-chip ${on}" data-coop-text-tab="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count)}</kbd></button>`;
+          return `<button type="button" class="toggle-chip ${on}" data-coop-text-tab="${slot}">${escapeHtml(getCoopSlotName(deviceId, slot))} <kbd>${getCoopKeyHint(slot, count, settings.optionCount)}</kbd></button>`;
         }).join("")}</div>`
       : "";
     const helper = playerDisabled
@@ -14785,7 +14788,7 @@ function renderCoopScores(players, scores, settings, controllerId, producerIds, 
       const teamPill = teamColor ? `<span class="team-pill team-${teamColor}">${teamColor}</span>` : "";
       const subRows = slots
         .map(({ slot, key, name, score, mood, muted, frozen }) => {
-          const hint = !frozen ? getCoopKeyHint(slot, slots.filter((s) => !s.frozen).length || getCoopSlotCount(deviceId)) : "";
+          const hint = !frozen ? getCoopKeyHint(slot, slots.filter((s) => !s.frozen).length || getCoopSlotCount(deviceId), settings.optionCount) : "";
           return `<li class="coop-sub-row${muted ? " is-muted" : ""}${frozen ? " is-frozen" : ""}" data-score-key="${escapeHtml(key)}"><span>${getCoopCharHtml(slot, mood, "", key)}${escapeHtml(name)}${hint ? ` <kbd>${hint}</kbd>` : ""}</span><strong data-score-value>${score}</strong></li>`;
         })
         .join("");
