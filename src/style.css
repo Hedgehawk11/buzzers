@@ -3845,6 +3845,54 @@ body[data-ui-anims="off"] .credits-crawl {
 .ep-round-row input, .ep-round-row select { width: 100%; box-sizing: border-box; }
 @media (max-width: 640px) { .ep-round-row { grid-template-columns: 1fr 5.5rem 2.2rem; } }
 
+/* 4-Way creator: fixed options + per-round correct-option chips. */
+.ep-fw-rounds { gap: 1rem; }
+.ep-fw-fixed-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.ep-fw-fixed-grid label { margin: 0; }
+.ep-fw-row { grid-template-columns: 1.6rem minmax(0, 1fr) minmax(0, 0.85fr) 2.2rem; }
+.ep-fw-row > .ep-rk-num { grid-column: 1; grid-row: 1; }
+.ep-fw-row > input:nth-of-type(1) { grid-column: 2; grid-row: 1; }
+.ep-fw-row > input:nth-of-type(2) { grid-column: 3; grid-row: 1; }
+.ep-fw-row > button { grid-column: 4; grid-row: 1; }
+.ep-fw-corrects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.3rem; align-items: center; grid-column: 2 / -1; grid-row: 2; }
+.ep-fw-check {
+  position: relative;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem !important;
+  width: 100%;
+  min-width: 0;
+  min-height: 3.5rem;
+  margin: 0 !important;
+  padding: 0.55rem 1.6rem 0.55rem 0.55rem;
+  border: 2px solid var(--line, #2a3b4d);
+  border-radius: 10px;
+  text-align: center;
+  line-height: 1.25;
+  cursor: pointer;
+}
+.ep-fw-check:focus-within { outline: 2px solid var(--accent, #4aa3ff); outline-offset: 2px; }
+.ep-fw-check:has(input:checked) { border-color: var(--good, #4caf7d); background: color-mix(in srgb, var(--good, #4caf7d) 14%, transparent); }
+.ep-fw-check input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.ep-fw-key {
+  position: absolute;
+  top: 0.25rem;
+  left: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--muted, #8fa3b8);
+}
+.ep-fw-check:has(input:checked) .ep-fw-key { color: var(--good, #4caf7d); }
+.ep-fw-opt { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .ep-fw-row { grid-template-columns: 1.6rem minmax(0, 1fr) 2.2rem; }
+  .ep-fw-row > input:nth-of-type(2) { grid-column: 2 / -1; grid-row: 2; }
+  .ep-fw-row > button { grid-column: 3; grid-row: 1; }
+  .ep-fw-corrects { grid-row: 3; }
+}
+
 /* === Game-results export card + Result Reviewer === */
 .results-export-card .prejoin-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
 .reviewer-card { margin-top: 0.75rem; }

@@ -680,6 +680,8 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode
 if (COOP) {
   await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertitionEnabled", true] }, prod);
   check("coop re-enabled after disordat", S().settings?.coopertitionEnabled === true, JSON.stringify(S().settings?.coopertitionEnabled));
+  await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "fourway"] }, prod);
+  check("fourway mode blocked in coop", S().settings?.inputMode !== "fourway", S().settings?.inputMode);
 }
 
 // --- bingo host progress per-slot in coop ---
@@ -1375,6 +1377,8 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["coopertit
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["inputMode", "buttons"] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["optionCount", 4] }, prod);
 await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["valueSelectionMethod", "standard"] }, prod);
+// optionCount 6 above forces grid; restore diamond for the default-layout check.
+await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLayout", "diamond"] }, prod);
 pk._store.self = plain;
 await pk._store.rpc["producer-action"]({ fn: "openBuzzers", args: [] }, prod);
 check(
@@ -2188,7 +2192,21 @@ const epui = await import("../src/episodes/ui.js");
   check("items dirty", eped.isBlankEpisode({ schemaVersion: 1, meta: {}, defaults: {}, items: [{ id: "1" }] }) === false, "items missed");
   const html = epui.renderCreatorScreen({ ep, selectedId: firstId, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
   check("creator renders toolbar", html.includes("data-ep-add") && html.includes("data-ep-export") && html.includes("data-ep-import-btn"), "toolbar missing");
+  check("creator offers 4-Way", html.includes('<option value="fourway">4-Way</option>'), "4-Way missing from add-kind");
   check("creator renders edit form", html.includes('id="ep-prompt"') && html.includes("data-ep-close-edit"), "edit form missing");
+  {
+    const fwItem = {
+      ...eps.blankItem("fourway"),
+      prompt: "Which fit?",
+      fixedOptions: ["Is a mammal", "Lives in water", "Has feathers"],
+      rounds: [{ category: "Mammals", rotatingOption: "Lays eggs", correct: [0, 3] }],
+    };
+    const fwHtml = epui.renderCreatorScreen({ ep: { ...ep, items: [fwItem] }, selectedId: fwItem.id, errors: [], importErrors: [], cloudEnabled: false, esc: (s) => String(s) });
+    check("4-Way creator fixed grid", fwHtml.includes("ep-fw-fixed-grid") && fwHtml.includes("ep-fw-rounds"), "4-Way grids missing");
+    check("4-Way creator labels options", fwHtml.includes(">Is a mammal<") && fwHtml.includes(">Lays eggs<"), "option labels missing from check chips");
+    check("4-Way creator fixed label uses value", fwHtml.includes(">Is a mammal <span class=\"muted\">") && !fwHtml.includes(">Fixed 1 <span class=\"muted\">"), "fixed option label not showing real value");
+    check("4-Way creator keeps checks", fwHtml.includes('id="ep-fw-correct-0-0" value="0" checked') && fwHtml.includes('id="ep-fw-correct-0-3" value="3" checked'), "correct picks not rendered");
+  }
   check("creator cloud disabled", html.includes('data-ep-cloud-save disabled'), "cloud save not disabled");
   check("creator coop marker warns", html.includes("Won't work in coop"), "coop warning missing");
   check("creator coop shows problems button", html.includes("data-ep-coop-problems") && html.includes("Show problems"), "problems button missing");
@@ -2934,8 +2952,16 @@ await pk._store.rpc["producer-action"]({ fn: "setHostSetting", args: ["choiceLay
     check("creator opens from landing", _mount.innerHTML.includes("ep-panel") && _mount.innerHTML.includes("data-ep-add"), "creator panel missing");
     await firePrejoin("[data-ep-add]");
     check("creator add works headless", _mount.innerHTML.includes('id="ep-prompt"'), "edit form missing after add");
+    queryMap["#ep-add-kind"] = { value: "fourway" };
+    await firePrejoin("[data-ep-add]");
+    check("creator adds 4-Way headless", _mount.innerHTML.includes("ep-fw-fixed-grid") && _mount.innerHTML.includes("(7/12)"), "4-Way edit form missing");
+    await firePrejoin("[data-ep-round-add]");
+    check("4-Way add round works", _mount.innerHTML.includes("(8/12)"), "round not added");
+    await firePrejoin("[data-ep-round-del]", { epRoundDel: "7" });
+    check("4-Way remove round works", _mount.innerHTML.includes("(7/12)"), "round not removed");
     await firePrejoin("[data-ep-close-edit]");
     check("creator close works headless", !_mount.innerHTML.includes('id="ep-prompt"'), "edit form stuck open");
+    delete queryMap["#ep-add-kind"];
     check("no creator handler errors", handlerErrors.length === 0, handlerErrors.join(" || ").slice(0, 300));
   } finally {
     console.warn = origWarn2;

@@ -23,7 +23,7 @@ import {
   updateMeta as epUpdateMeta,
 } from "./episodes/editor.js";
 import { harvestCreatorFields, kindLabel as epKindLabel, episodeOptionLabel as epOptionLabel, renderCreatorScreen } from "./episodes/ui.js";
-import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_ROADKILL_MAX_ROUNDS as EP_MAX_ROADKILL_ROUNDS, EPISODE_ROADKILL_DEFAULT_CORRECT, EPISODE_ROADKILL_DEFAULT_PENALTY, EPISODE_ROADKILL_WORD_MAX, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode, isBetaKind as epIsBetaKind } from "./episodes/schema.js";
+import { EPISODE_BINGO_MAX_ROUNDS as EP_MAX_BINGO_ROUNDS, EPISODE_WEN_MAX_ROUNDS as EP_MAX_WEN_ROUNDS, EPISODE_ROADKILL_MAX_ROUNDS as EP_MAX_ROADKILL_ROUNDS, EPISODE_FOURWAY_MAX_ROUNDS as EP_MAX_FOURWAY_ROUNDS, EPISODE_ROADKILL_DEFAULT_CORRECT, EPISODE_ROADKILL_DEFAULT_PENALTY, EPISODE_ROADKILL_WORD_MAX, EPISODE_KINDS as EP_CREATOR_KINDS, effectiveItemSettings as epEffectiveSettings, validateEpisode as epValidateEpisode, isBetaKind as epIsBetaKind } from "./episodes/schema.js";
 import { episodeCloudDiagnosis as epCloudDiagnosis, isEpisodeCloudEnabled, loadEpisode as epCloudLoad, overwriteEpisode as epCloudOverwrite, saveEpisode as epCloudSave } from "./episodes/api.js";
 import {
   RESULTS_KIND as RESULTS_KIND_CONST,
@@ -7160,6 +7160,11 @@ function setHostSetting(key, value) {
     }
     if (key === "inputMode" && value === "quixort") {
       setBuzzNotice("Quixort is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
+      render();
+      return;
+    }
+    if (key === "inputMode" && value === "fourway") {
+      setBuzzNotice("4-Way is off limits in coopertition mode. Switch modes from buzzer mode with coop off.");
       render();
       return;
     }
@@ -14532,7 +14537,7 @@ function renderHostSettings(settings, round, timeLeftCs, players, controllerId) 
                 <p class="setting-helper">Sort-em-up! Enter an ordered list (4-9 items) plus up to 3 trash answers. Every player or team sorts their own shuffled deck one block at a time, inserting each block into a row or trashing it. Scored at the end, pairwise: correctly-ordered pairs score, inverted pairs cost, trash +250 each (+250 all-trash bonus with 2+ trash blocks), wrong trash calls −500 (times multiplier), plus a clean-run bonus. All play, teammates rotate each block.${isCoopMode(settings) ? " Off limits in coopertition mode." : ""}</p>
               </div>
               <div>
-                <p class="setting-helper"><strong>Roadkill</strong> is episode-creator only — two clues on top, a connector word streaming through the middle. It is not selectable here by design; build a Roadkill question in the Episode Creator and load it from the episode runner.${isCoopMode(settings) ? " Coopertition is supported." : ""}</p>
+                <p class="setting-helper"><strong>4-Way</strong> and <strong>Roadkill</strong> are episode-creator only — build a question in the Episode Creator and load it from the episode runner. It is not selectable here by design; Roadkill streams two clues on top and a connector word through the middle.${isCoopMode(settings) ? " 4-Way is off limits in coopertition mode; Roadkill is supported." : ""}</p>
               </div>
             </div>
             ${settings.inputMode === "bingo" || settings.inputMode === "wendithapn" || settings.inputMode === "disordat" || settings.inputMode === "fibbage" || settings.inputMode === "quixort" || isRoadkillMode()
@@ -16026,11 +16031,14 @@ function bindEvents() {
     const sel = episodeDraft.items.find((it) => it && it.id === creatorSelectedId);
     if (!sel) return;
     const isRoadkill = sel.kind === "roadkill";
-    if (sel.kind !== "bingo" && sel.kind !== "wendithapn" && !isRoadkill) return;
+    const isFourway = sel.kind === "fourway";
+    if (sel.kind !== "bingo" && sel.kind !== "wendithapn" && !isRoadkill && !isFourway) return;
     const rounds = Array.isArray(sel.rounds) ? sel.rounds : [];
-    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : isRoadkill ? EP_MAX_ROADKILL_ROUNDS : EP_MAX_WEN_ROUNDS;
+    const max = sel.kind === "bingo" ? EP_MAX_BINGO_ROUNDS : isRoadkill ? EP_MAX_ROADKILL_ROUNDS : isFourway ? EP_MAX_FOURWAY_ROUNDS : EP_MAX_WEN_ROUNDS;
     if (rounds.length >= max) return;
-    const blank = isRoadkill ? { clues: ["", ""], answer: "", decoys: [] } : { prompt: "", answer: "" };
+    const blank = isFourway
+      ? { category: "", rotatingOption: "", correct: [] }
+      : isRoadkill ? { clues: ["", ""], answer: "", decoys: [] } : { prompt: "", answer: "" };
     episodeDraft = epUpdateItem(episodeDraft, sel.id, { rounds: [...rounds, blank] });
     epPersistDraft(episodeDraft);
     refreshCreator();

@@ -279,36 +279,38 @@ function renderFourwayFields(item, esc) {
   const rounds = Array.isArray(item.rounds) && item.rounds.length
     ? item.rounds
     : Array.from({ length: EPISODE_FOURWAY_DEFAULT_ROUNDS }, () => ({ category: "", rotatingOption: "", correct: [] }));
+  const fixedLabel = (k) => String(fixedOptions[k] ?? "").trim() || `Fixed ${k + 1}`;
   const fixedInputs = Array.from({ length: EPISODE_FOURWAY_FIXED_OPTIONS }, (_, k) => `
-    <label>Fixed Option ${k + 1} <span class="muted">(shown every round)</span>
-      <input id="ep-fw-fixed-${k}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(fixedOptions[k] || "")}" placeholder="Required" />
+    <label>${esc(fixedLabel(k))} <span class="muted">shown every round</span>
+      <input id="ep-fw-fixed-${k}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(fixedOptions[k] || "")}" placeholder="e.g. Is a mammal" />
     </label>`).join("");
   const roundRows = rounds.map((round, i) => {
     const r = round && typeof round === "object" ? round : {};
     const correct = Array.isArray(r.correct) ? r.correct : [];
+    const rotating = String(r.rotatingOption ?? "").trim();
     const correctChecks = Array.from({ length: EPISODE_FOURWAY_TOTAL_OPTIONS }, (_, k) => {
       const isFixed = k < EPISODE_FOURWAY_FIXED_OPTIONS;
-      const label = isFixed ? (fixedOptions[k] || `Option ${k + 1}`) : "Option 4 (rotating)";
-      return `<label class="ep-check" title="${esc(label)}">
+      const name = isFixed ? String(fixedOptions[k] ?? "").trim() || `Fixed ${k + 1}` : rotating || "Rotating option";
+      return `<label class="ep-fw-check" title="${esc(`Option ${k + 1}: ${name}`)}">
         <input type="checkbox" data-ep-harvest id="ep-fw-correct-${i}-${k}" value="${k}" ${correct.includes(k) ? "checked" : ""} />
-        <span>${isFixed ? `${k + 1}` : "4★"}</span>
+        <span class="ep-fw-key">${k + 1}</span><span class="ep-fw-opt">${esc(name)}</span>
       </label>`;
     }).join("");
     return `<div class="ep-round-row ep-fw-row">
       <span class="ep-rk-num">${i + 1}</span>
-      <input id="ep-fw-cat-${i}" type="text" maxlength="300" value="${esc(r.category || "")}" placeholder="Category" aria-label="Round ${i + 1} category" />
+      <input id="ep-fw-cat-${i}" type="text" maxlength="300" value="${esc(r.category || "")}" placeholder="Category, e.g. Things that are mammals" aria-label="Round ${i + 1} category" />
       <input id="ep-fw-rot-${i}" type="text" maxlength="${EPISODE_FOURWAY_OPTION_MAX}" value="${esc(r.rotatingOption || "")}" placeholder="Rotating option" aria-label="Round ${i + 1} rotating option" />
-      <div class="ep-fw-corrects">${correctChecks}</div>
+      <div class="ep-fw-corrects" role="group" aria-label="Correct options for round ${i + 1}">${correctChecks}</div>
       <button type="button" data-ep-round-del="${i}" ${rounds.length <= 1 ? "disabled" : ""} aria-label="Remove round ${i + 1}">×</button>
     </div>`;
   }).join("");
   return `
-    <p class="muted">Each round: a category + 4 options (3 fixed below, 1 rotating per round). Check which options apply to the category.</p>
-    <fieldset class="ep-fieldset"><legend>Fixed Options (${EPISODE_FOURWAY_FIXED_OPTIONS}) — shown in every round</legend>
-      <div class="ep-grid2">${fixedInputs}</div>
+    <p class="muted">Each round asks which of four options fit a category: the ${EPISODE_FOURWAY_FIXED_OPTIONS} fixed below plus one rotating option. Check every correct pick — +500 each, −500 for wrong or missed picks.</p>
+    <fieldset class="ep-fieldset"><legend>Fixed options <span class="muted">(${EPISODE_FOURWAY_FIXED_OPTIONS}, shown every round)</span></legend>
+      <div class="ep-fw-fixed-grid">${fixedInputs}</div>
     </fieldset>
-    <fieldset class="ep-fieldset"><legend>Rounds (${rounds.length}/${EPISODE_FOURWAY_MAX_ROUNDS})</legend>
-      <div class="ep-rounds">${roundRows}</div>
+    <fieldset class="ep-fieldset"><legend>Rounds <span class="muted">(${rounds.length}/${EPISODE_FOURWAY_MAX_ROUNDS})</span></legend>
+      <div class="ep-rounds ep-fw-rounds">${roundRows}</div>
       <div class="ep-toolbar">
         <button type="button" data-ep-round-add ${rounds.length >= EPISODE_FOURWAY_MAX_ROUNDS ? "disabled" : ""}>Add round</button>
       </div>
@@ -683,7 +685,7 @@ export function renderCreatorScreen({ ep, selectedId, errors, importErrors, clou
         ${renderItemRows(ep, errors, esc)}
         <div class="ep-add">
           <select id="ep-add-kind" aria-label="Question type">
-            ${EPISODE_KINDS.filter((k) => k !== "fourway").map((k) => `<option value="${k}">${esc(kindLabel(k))}</option>`).join("")}
+            ${EPISODE_KINDS.map((k) => `<option value="${k}">${esc(kindLabel(k))}</option>`).join("")}
           </select>
           <button type="button" data-ep-add>Add question</button>
         </div>
